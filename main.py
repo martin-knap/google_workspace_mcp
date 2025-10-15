@@ -30,6 +30,45 @@ logger = logging.getLogger(__name__)
 configure_file_logging()
 
 
+def parse_enabled_services_from_env():
+    """
+    Parse ENABLED_SERVICES environment variable into a list of service names.
+
+    Format: Comma-separated list (case-insensitive)
+    Example: "Drive,Calendar,Docs,Sheets" or "gmail, drive, calendar"
+
+    Returns:
+        List of lowercase service names, or None if not set
+    """
+    enabled_services = os.getenv('ENABLED_SERVICES')
+    if not enabled_services:
+        return None
+
+    # Parse comma-separated values, strip whitespace, convert to lowercase
+    services = [s.strip().lower() for s in enabled_services.split(',') if s.strip()]
+
+    # Valid service names
+    valid_services = {'gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search'}
+
+    # Filter to only valid services and warn about invalid ones
+    valid_parsed = []
+    invalid = []
+    for service in services:
+        if service in valid_services:
+            valid_parsed.append(service)
+        else:
+            invalid.append(service)
+
+    if invalid:
+        logger.warning(f"Ignoring invalid services from ENABLED_SERVICES: {', '.join(invalid)}")
+
+    if valid_parsed:
+        logger.info(f"Loaded services from ENABLED_SERVICES: {', '.join(valid_parsed)}")
+        return valid_parsed
+
+    return None
+
+
 def safe_print(text):
     # Don't print to stderr when running as MCP server via uvx to avoid JSON parsing errors
     # Check if we're running as MCP server (no TTY and uvx in process name)
@@ -123,6 +162,7 @@ def main():
         "WORKSPACE_MCP_STATELESS_MODE": os.getenv('WORKSPACE_MCP_STATELESS_MODE', 'false'),
         "OAUTHLIB_INSECURE_TRANSPORT": os.getenv('OAUTHLIB_INSECURE_TRANSPORT', 'false'),
         "GOOGLE_CLIENT_SECRET_PATH": os.getenv('GOOGLE_CLIENT_SECRET_PATH', 'Not Set'),
+        "ENABLED_SERVICES": os.getenv('ENABLED_SERVICES', 'Not Set'),
     }
 
     for key, value in config_vars.items():
@@ -157,15 +197,24 @@ def main():
         'search': '🔍'
     }
 
-    # Determine which tools to import based on arguments
+    # Parse ENABLED_SERVICES environment variable
+    env_services = parse_enabled_services_from_env()
+
+    # Determine which tools to import based on arguments and environment
     if args.tool_tier is not None:
         # Use tier-based tool selection, optionally filtered by services
         try:
-            tier_tools, suggested_services = resolve_tools_from_tier(args.tool_tier, args.tools)
+            # Determine service filter: CLI args take precedence over env var
+            service_filter = args.tools if args.tools is not None else env_services
+            tier_tools, suggested_services = resolve_tools_from_tier(args.tool_tier, service_filter)
 
-            # If --tools specified, use those services; otherwise use all services that have tier tools
+            # If --tools specified, use those services
+            # Otherwise if ENABLED_SERVICES set, use those
+            # Otherwise use all services that have tier tools
             if args.tools is not None:
                 tools_to_import = args.tools
+            elif env_services is not None:
+                tools_to_import = env_services
             else:
                 tools_to_import = suggested_services
 
@@ -175,9 +224,14 @@ def main():
             safe_print(f"❌ Error loading tools for tier '{args.tool_tier}': {e}")
             sys.exit(1)
     elif args.tools is not None:
-        # Use explicit tool list without tier filtering
+        # Use explicit tool list from CLI args without tier filtering
         tools_to_import = args.tools
         # Don't filter individual tools when using explicit service list only
+        set_enabled_tool_names(None)
+    elif env_services is not None:
+        # Use services from environment variable
+        tools_to_import = env_services
+        # Don't filter individual tools when using env var service list
         set_enabled_tool_names(None)
     else:
         # Default: import all tools

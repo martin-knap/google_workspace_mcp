@@ -59,6 +59,46 @@ def configure_safe_logging():
 # Configure safe logging
 configure_safe_logging()
 
+
+def parse_enabled_services_from_env():
+    """
+    Parse ENABLED_SERVICES environment variable into a list of service names.
+
+    Format: Comma-separated list (case-insensitive)
+    Example: "Drive,Calendar,Docs,Sheets" or "gmail, drive, calendar"
+
+    Returns:
+        List of lowercase service names, or None if not set
+    """
+    enabled_services = os.getenv('ENABLED_SERVICES')
+    if not enabled_services:
+        return None
+
+    # Parse comma-separated values, strip whitespace, convert to lowercase
+    services = [s.strip().lower() for s in enabled_services.split(',') if s.strip()]
+
+    # Valid service names
+    valid_services = {'gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search'}
+
+    # Filter to only valid services and warn about invalid ones
+    valid_parsed = []
+    invalid = []
+    for service in services:
+        if service in valid_services:
+            valid_parsed.append(service)
+        else:
+            invalid.append(service)
+
+    if invalid:
+        logger.warning(f"Ignoring invalid services from ENABLED_SERVICES: {', '.join(invalid)}")
+
+    if valid_parsed:
+        logger.info(f"Loaded services from ENABLED_SERVICES: {', '.join(valid_parsed)}")
+        return valid_parsed
+
+    return None
+
+
 # Check credentials directory permissions (skip in stateless mode)
 if not is_stateless_mode():
     try:
@@ -75,25 +115,47 @@ else:
 # Set transport mode for HTTP (FastMCP CLI defaults to streamable-http)
 set_transport_mode('streamable-http')
 
-# Import all tool modules to register their @server.tool() decorators
-import gmail.gmail_tools
-import gdrive.drive_tools
-import gcalendar.calendar_tools
-import gdocs.docs_tools
-import gsheets.sheets_tools
-import gchat.chat_tools
-import gforms.forms_tools
-import gslides.slides_tools
-import gtasks.tasks_tools
-import gsearch.search_tools
+# Parse ENABLED_SERVICES environment variable
+env_services = parse_enabled_services_from_env()
+
+# Determine which services to import
+if env_services is not None:
+    services_to_import = env_services
+    logger.info(f"Importing services from ENABLED_SERVICES: {', '.join(services_to_import)}")
+else:
+    # Default: import all services
+    services_to_import = ['gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search']
+    logger.info("Importing all services (no ENABLED_SERVICES set)")
+
+# Service name to module mapping
+service_modules = {
+    'gmail': 'gmail.gmail_tools',
+    'drive': 'gdrive.drive_tools',
+    'calendar': 'gcalendar.calendar_tools',
+    'docs': 'gdocs.docs_tools',
+    'sheets': 'gsheets.sheets_tools',
+    'chat': 'gchat.chat_tools',
+    'forms': 'gforms.forms_tools',
+    'slides': 'gslides.slides_tools',
+    'tasks': 'gtasks.tasks_tools',
+    'search': 'gsearch.search_tools'
+}
+
+# Import selected tool modules to register their @server.tool() decorators
+for service in services_to_import:
+    if service in service_modules:
+        try:
+            __import__(service_modules[service])
+            logger.info(f"Loaded service module: {service}")
+        except ImportError as e:
+            logger.error(f"Failed to import {service}: {e}")
 
 # Configure tool registration
 wrap_server_tool_method(server)
 
-# Enable all tools and services by default
-all_services = ['gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search']
-set_enabled_tools(all_services)  # Set enabled services for scopes
-set_enabled_tool_names(None)  # Don't filter individual tools - enable all
+# Enable selected services for scope management
+set_enabled_tools(list(services_to_import))
+set_enabled_tool_names(None)  # Don't filter individual tools - enable all tools for selected services
 
 # Filter tools based on configuration
 filter_server_tools(server)
