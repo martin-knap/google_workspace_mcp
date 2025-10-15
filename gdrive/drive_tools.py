@@ -10,6 +10,7 @@ from typing import Optional
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
 import httpx
+import fitz  # PyMuPDF
 
 from auth.service_decorator import require_google_service
 from core.utils import extract_office_xml_text, handle_http_errors
@@ -492,5 +493,119 @@ async def check_drive_file_public_access(
             "❌ NO PUBLIC ACCESS - Cannot insert into Google Docs",
             "Fix: Drive → Share → 'Anyone with the link' → 'Viewer'"
         ])
-    
+
     return "\n".join(output_parts)
+
+
+@server.tool()
+@handle_http_errors("extract_drive_pdf_text", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def extract_drive_pdf_text(
+    service,
+    user_google_email: str,
+    file_id: str,
+    include_metadata: bool = True,
+) -> str:
+    """
+    Extracts readable text content from a PDF file stored in Google Drive.
+
+    This tool uses PyMuPDF (fitz) to parse PDF files and extract text content,
+    including both text-based PDFs and scanned documents with embedded text.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the PDF file in Google Drive.
+        include_metadata (bool): Whether to include file metadata in the output. Defaults to True.
+
+    Returns:
+        str: The extracted text content with optional metadata header.
+    """
+    logger.info(f"[extract_drive_pdf_text] Extracting PDF text for file ID: '{file_id}'")
+
+    # Get file metadata
+    file_metadata = await asyncio.to_thread(
+        service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType, size, modifiedTime, webViewLink",
+            supportsAllDrives=True
+        ).execute
+    )
+
+    file_name = file_metadata.get("name", "Unknown File")
+    mime_type = file_metadata.get("mimeType", "")
+
+    # Verify it's a PDF
+    if mime_type != "application/pdf":
+        return f"Error: File '{file_name}' is not a PDF (MIME type: {mime_type}). Use get_drive_file_content for other file types."
+
+    # Download the PDF binary
+    request_obj = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request_obj)
+    loop = asyncio.get_event_loop()
+    done = False
+
+    while not done:
+        status, done = await loop.run_in_executor(None, downloader.next_chunk)
+
+    pdf_bytes = fh.getvalue()
+
+    # Extract text using PyMuPDF in a thread to avoid blocking
+    def extract_text_from_pdf(pdf_data: bytes) -> tuple[str, dict]:
+        """Extract text from PDF bytes using PyMuPDF."""
+        doc = fitz.open(stream=pdf_data, filetype="pdf")
+
+        extracted_text_parts = []
+        pdf_info = {
+            "page_count": len(doc),
+            "has_text": False,
+            "total_chars": 0,
+        }
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            page_text = page.get_text()
+
+            if page_text.strip():
+                pdf_info["has_text"] = True
+                pdf_info["total_chars"] += len(page_text)
+                extracted_text_parts.append(f"--- Page {page_num + 1} ---\n{page_text}")
+
+        doc.close()
+
+        full_text = "\n\n".join(extracted_text_parts)
+        return full_text, pdf_info
+
+    # Run extraction in thread
+    try:
+        extracted_text, pdf_info = await loop.run_in_executor(None, extract_text_from_pdf, pdf_bytes)
+    except Exception as e:
+        logger.error(f"[extract_drive_pdf_text] Error extracting PDF text: {e}")
+        return f"Error extracting text from PDF '{file_name}': {str(e)}"
+
+    # Build response
+    if include_metadata:
+        header_parts = [
+            f"File: \"{file_name}\" (ID: {file_id})",
+            f"Type: {mime_type}",
+            f"Size: {file_metadata.get('size', 'N/A')} bytes",
+            f"Modified: {file_metadata.get('modifiedTime', 'N/A')}",
+            f"Link: {file_metadata.get('webViewLink', '#')}",
+            f"Pages: {pdf_info['page_count']}",
+            f"Total characters extracted: {pdf_info['total_chars']}",
+            "",
+            "--- EXTRACTED TEXT ---",
+            ""
+        ]
+        header = "\n".join(header_parts)
+    else:
+        header = ""
+
+    if not pdf_info["has_text"] or pdf_info["total_chars"] == 0:
+        return (
+            f"{header}No text content found in PDF '{file_name}'. "
+            f"This may be a scanned document without OCR, an image-based PDF, or an empty PDF. "
+            f"Consider using Google Drive's OCR feature by converting the PDF to Google Docs format."
+        )
+
+    return header + extracted_text

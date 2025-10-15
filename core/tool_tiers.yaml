@@ -21,6 +21,7 @@ drive:
   core:
     - search_drive_files
     - get_drive_file_content
+    - extract_drive_pdf_text
     - create_drive_file
   extended:
     - list_drive_items
