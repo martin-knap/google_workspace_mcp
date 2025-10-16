@@ -21,9 +21,11 @@ drive:
   core:
     - search_drive_files
     - get_drive_file_content
+    - extract_drive_pdf_text
     - create_drive_file
   extended:
     - list_drive_items
+    - extract_scanned_pdf_text_ocr
   complete:
     - get_drive_file_permissions
     - check_drive_file_public_access

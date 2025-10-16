@@ -24,6 +24,9 @@ DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
 DRIVE_READONLY_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
 DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 
+# Google Cloud Vision API scope (for OCR on scanned PDFs)
+CLOUD_VISION_SCOPE = 'https://www.googleapis.com/auth/cloud-vision'
+
 # Google Docs scopes
 DOCS_READONLY_SCOPE = 'https://www.googleapis.com/auth/documents.readonly'
 DOCS_WRITE_SCOPE = 'https://www.googleapis.com/auth/documents'
@@ -82,7 +85,8 @@ CALENDAR_SCOPES = [
 DRIVE_SCOPES = [
     DRIVE_SCOPE,
     DRIVE_READONLY_SCOPE,
-    DRIVE_FILE_SCOPE
+    DRIVE_FILE_SCOPE,
+    CLOUD_VISION_SCOPE
 ]
 
 GMAIL_SCOPES = [

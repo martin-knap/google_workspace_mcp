@@ -68,7 +68,19 @@ class MinimalOAuthServer:
 
                 logger.info(f"OAuth callback: Received code (state: {state}). Attempting to exchange for tokens.")
 
-                # Session ID tracking removed - not needed
+                # Try to get session_id from the state to avoid validation mismatch
+                session_id = None
+                try:
+                    from auth.oauth21_session_store import get_oauth21_session_store
+                    store = get_oauth21_session_store()
+                    # Peek at the state info without consuming it
+                    with store._lock:
+                        state_info = store._oauth_states.get(state)
+                        if state_info:
+                            session_id = state_info.get("session_id")
+                            logger.debug(f"Retrieved session_id from state: {session_id}")
+                except Exception as e:
+                    logger.debug(f"Could not retrieve session_id from state: {e}")
 
                 # Exchange code for credentials
                 redirect_uri = get_oauth_redirect_uri()
@@ -76,7 +88,7 @@ class MinimalOAuthServer:
                     scopes=get_current_scopes(),
                     authorization_response=str(request.url),
                     redirect_uri=redirect_uri,
-                    session_id=None
+                    session_id=session_id
                 )
 
                 logger.info(f"OAuth callback: Successfully authenticated user: {verified_user_id} (state: {state}).")

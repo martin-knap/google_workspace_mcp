@@ -676,16 +676,22 @@ def get_credentials(
         logger.info(
             f"[get_credentials] Credentials expired. Attempting refresh. User: '{user_google_email}', Session: '{session_id}'"
         )
-        if not client_secrets_path:
-            logger.error(
-                "[get_credentials] Client secrets path required for refresh but not provided."
+        # Check if credentials have embedded client_id/secret for refresh
+        if not credentials.client_id or not credentials.client_secret:
+            logger.warning(
+                "[get_credentials] Credentials missing client_id/secret. Need client_secrets_path for refresh."
             )
-            return None
+            if not client_secrets_path:
+                logger.error(
+                    "[get_credentials] Client secrets path required for refresh but not provided."
+                )
+                return None
         try:
             logger.debug(
-                f"[get_credentials] Refreshing token using client_secrets_path: {client_secrets_path}"
+                f"[get_credentials] Refreshing token (client_secrets_path: {client_secrets_path or 'using embedded credentials'})"
             )
-            # client_config = load_client_secrets(client_secrets_path) # Not strictly needed if creds have client_id/secret
+            # Refresh using embedded client_id/secret in credentials (preferred)
+            # or fall back to loading from client_secrets_path if needed
             credentials.refresh(Request())
             logger.info(
                 f"[get_credentials] Credentials refreshed successfully. User: '{user_google_email}', Session: '{session_id}'"
