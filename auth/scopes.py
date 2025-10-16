@@ -139,7 +139,9 @@ TOOL_SCOPES_MAP = {
     'forms': FORMS_SCOPES,
     'slides': SLIDES_SCOPES,
     'tasks': TASKS_SCOPES,
-    'search': CUSTOM_SEARCH_SCOPES
+    'search': CUSTOM_SEARCH_SCOPES,
+    'excel': DRIVE_SCOPES + SHEETS_SCOPES,  # Excel uses both Drive and Sheets APIs
+    'word': DRIVE_SCOPES + DOCS_SCOPES  # Word uses both Drive and Docs APIs
 }
 
 def set_enabled_tools(enabled_tools):
