@@ -25,6 +25,7 @@ drive:
     - create_drive_file
   extended:
     - list_drive_items
+    - extract_scanned_pdf_text_ocr
   complete:
     - get_drive_file_permissions
     - check_drive_file_public_access
