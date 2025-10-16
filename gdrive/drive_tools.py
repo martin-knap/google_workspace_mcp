@@ -16,6 +16,7 @@ from google.oauth2.credentials import Credentials as GoogleCredentials
 
 from auth.service_decorator import require_google_service
 from auth.google_auth import get_credentials
+from auth.scopes import CLOUD_VISION_SCOPE
 from core.utils import extract_office_xml_text, handle_http_errors
 from core.server import server
 from gdrive.drive_helpers import DRIVE_QUERY_PATTERNS, build_drive_list_params
@@ -706,7 +707,7 @@ async def extract_scanned_pdf_text_ocr(
 
     # Get OAuth credentials for Vision API
     try:
-        creds = await get_credentials(user_google_email)
+        creds = get_credentials(user_google_email, [CLOUD_VISION_SCOPE])
         if not creds:
             return "Error: Could not retrieve credentials for Google Cloud Vision API. Please authenticate first."
 
