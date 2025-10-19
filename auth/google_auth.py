@@ -334,7 +334,17 @@ async def start_auth_flow(
         f"[start_auth_flow] Initiating auth for {user_display_name} with scopes for enabled tools."
     )
 
-    # Note: Caller should ensure OAuth callback is available before calling this function
+    # Ensure OAuth callback is available
+    from auth.oauth_callback_server import ensure_oauth_callback_available
+    from core.config import get_transport_mode
+
+    config = get_oauth_config()
+    success, error_msg = ensure_oauth_callback_available(
+        get_transport_mode(), config.port, config.base_uri
+    )
+    if not success:
+        error_detail = f" ({error_msg})" if error_msg else ""
+        raise Exception(f"Cannot initiate OAuth flow - callback server unavailable{error_detail}")
 
     try:
         if "OAUTHLIB_INSECURE_TRANSPORT" not in os.environ and (
@@ -348,7 +358,7 @@ async def start_auth_flow(
         oauth_state = os.urandom(16).hex()
 
         flow = create_oauth_flow(
-            scopes=get_current_scopes(),  # Use scopes for enabled tools only
+            scopes=SCOPES,  # Use all scopes for OAuth (not just enabled tools)
             redirect_uri=redirect_uri,  # Use passed redirect_uri
             state=oauth_state,
         )

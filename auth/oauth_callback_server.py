@@ -85,7 +85,7 @@ class MinimalOAuthServer:
                 # Exchange code for credentials
                 redirect_uri = get_oauth_redirect_uri()
                 verified_user_id, credentials = handle_auth_callback(
-                    scopes=get_current_scopes(),
+                    scopes=SCOPES,
                     authorization_response=str(request.url),
                     redirect_uri=redirect_uri,
                     session_id=session_id
