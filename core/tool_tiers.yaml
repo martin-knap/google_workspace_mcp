@@ -23,12 +23,17 @@ drive:
     - get_drive_file_content
     - extract_drive_pdf_text
     - create_drive_file
+    - recursive_folder_scan
+    - get_recent_drive_activity
   extended:
     - list_drive_items
     - extract_scanned_pdf_text_ocr
+    - get_drive_folder_tree
+    - get_folder_statistics
   complete:
     - get_drive_file_permissions
     - check_drive_file_public_access
+    - batch_get_file_metadata
 
 calendar:
   core:
