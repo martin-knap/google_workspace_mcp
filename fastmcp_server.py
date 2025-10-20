@@ -78,7 +78,7 @@ def parse_enabled_services_from_env():
     services = [s.strip().lower() for s in enabled_services.split(',') if s.strip()]
 
     # Valid service names
-    valid_services = {'gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search'}
+    valid_services = {'gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search', 'excel', 'word'}
 
     # Filter to only valid services and warn about invalid ones
     valid_parsed = []
@@ -124,7 +124,7 @@ if env_services is not None:
     logger.info(f"Importing services from ENABLED_SERVICES: {', '.join(services_to_import)}")
 else:
     # Default: import all services
-    services_to_import = ['gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search']
+    services_to_import = ['gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search', 'excel', 'word']
     logger.info("Importing all services (no ENABLED_SERVICES set)")
 
 # Service name to module mapping
@@ -138,7 +138,9 @@ service_modules = {
     'forms': 'gforms.forms_tools',
     'slides': 'gslides.slides_tools',
     'tasks': 'gtasks.tasks_tools',
-    'search': 'gsearch.search_tools'
+    'search': 'gsearch.search_tools',
+    'excel': 'gexcel.excel_tools',
+    'word': 'gword.word_tools'
 }
 
 # Import selected tool modules to register their @server.tool() decorators

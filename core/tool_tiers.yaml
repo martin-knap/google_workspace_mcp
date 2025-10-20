@@ -135,3 +135,19 @@ search:
     - search_custom_siterestrict
   complete:
     - get_search_engine_info
+
+excel:
+  core:
+    - list_excel_files
+    - get_excel_info
+    - read_excel_values
+  extended: []
+  complete: []
+
+word:
+  core:
+    - list_word_files
+    - get_word_info
+    - read_word_content
+  extended: []
+  complete: []
