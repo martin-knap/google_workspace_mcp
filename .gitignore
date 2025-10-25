@@ -28,5 +28,9 @@ mcp_server_debug.log
 
 # ---- Local development files -------------------------------------------
 /.credentials
-/.claude
+/.claude/*
+!/.claude/README.md
+!/.claude/servers.json.template
+!/.claude/helpers.sh
+!/.claude/USAGE_EXAMPLE.md
 /.docs

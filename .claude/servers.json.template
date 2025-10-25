@@ -1,0 +1,12 @@
+{
+  "server_name": {
+    "description": "Description of this server",
+    "host": "your.server.ip.address",
+    "user": "root",
+    "ssh_key": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----",
+    "mcp_url": "https://your-server-url.com",
+    "deployment_path": "/opt/google_workspace_mcp",
+    "oauth_client_id": "your-oauth-client-id.apps.googleusercontent.com",
+    "oauth_client_secret": "your-oauth-client-secret"
+  }
+}
