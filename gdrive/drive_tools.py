@@ -8,6 +8,8 @@ import asyncio
 from typing import Optional, List
 from datetime import datetime, timedelta
 import time
+import json
+from pathlib import Path
 
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
@@ -810,11 +812,17 @@ async def recursive_folder_scan(
     folder_id: str,
     include_metadata: bool = True,
     include_stats: bool = True,
+    include_tree: bool = True,
+    include_all_files: bool = True,
     max_depth: Optional[int] = None,
     file_types: Optional[List[str]] = None,
     exclude_folders: Optional[List[str]] = None,
     output_format: str = "full",
-) -> dict:
+    max_files: Optional[int] = None,
+    page_size: Optional[int] = None,
+    page_number: Optional[int] = None,
+    output_file: Optional[str] = None,
+):
     """
     Recursively scans an entire Google Drive folder structure and returns comprehensive file inventory
     with metadata, aggregated statistics, and hierarchical structure.
@@ -827,13 +835,25 @@ async def recursive_folder_scan(
         folder_id (str): Root folder ID to scan (required).
         include_metadata (bool): Include full file metadata (default: True).
         include_stats (bool): Include aggregated statistics (default: True).
+        include_tree (bool): Include folder tree structure in output (default: True).
+        include_all_files (bool): Include flat list of all files in output (default: True).
         max_depth (Optional[int]): Maximum folder depth to scan (default: unlimited).
         file_types (Optional[List[str]]): Filter by file extensions like ["pdf", "xlsx"] (default: all types).
         exclude_folders (Optional[List[str]]): Folder names to skip like ["FOTKY", "images"] (default: none).
         output_format (str): Output format - "full", "summary", or "tree" (default: "full").
+        max_files (Optional[int]): Maximum number of files to return (default: all files).
+        page_size (Optional[int]): Number of files per page for pagination (default: None).
+        page_number (Optional[int]): Page number to return (0-indexed, default: None).
+        output_file (Optional[str]): Path to write results to file instead of returning (default: None).
 
     Returns:
-        dict: Comprehensive scan results with summary, stats, folder tree, and file list.
+        dict or str: If output_file is specified, returns confirmation message. Otherwise returns
+                     comprehensive scan results with summary, stats, folder tree, and file list.
+
+    Note:
+        - Pagination: Use either max_files OR (page_size + page_number), not both.
+        - If output_file is specified, results are written to that file as JSON.
+        - Pagination only affects the 'all_files' list, not the folder tree or stats.
     """
     logger.info(f"[recursive_folder_scan] Starting scan of folder {folder_id}")
 
@@ -942,7 +962,7 @@ async def recursive_folder_scan(
                 break
 
         return {
-            "path": folder_path or "/",
+            "path": folder_path,
             "folder_id": folder_id,
             "file_count": len(folder_files),
             "folder_count": len(subfolders),
@@ -951,33 +971,114 @@ async def recursive_folder_scan(
             "subfolders": subfolders,
         }
 
-    # Start recursive scan
-    folder_tree = await scan_folder_recursive(folder_id)
+    # Get root folder name first
+    root_folder_metadata = await asyncio.to_thread(
+        service.files().get(
+            fileId=folder_id,
+            fields="name",
+            supportsAllDrives=True
+        ).execute
+    )
+    root_folder_name = root_folder_metadata.get('name', folder_id)
+
+    # Start recursive scan with root folder name as the initial path
+    folder_tree = await scan_folder_recursive(folder_id, root_folder_name + "/")
 
     scan_time = time.time() - scan_start_time
 
+    # Apply pagination to all_files
+    total_files_scanned = len(all_files)
+    paginated_files = all_files
+    pagination_info = None
+
+    if max_files is not None and page_size is not None:
+        logger.warning("[recursive_folder_scan] Both max_files and page_size specified. Using max_files only.")
+
+    if max_files is not None:
+        # Simple limit on total files
+        paginated_files = all_files[:max_files]
+        pagination_info = {
+            "total_files": total_files_scanned,
+            "returned_files": len(paginated_files),
+            "max_files": max_files,
+        }
+        logger.info(f"[recursive_folder_scan] Pagination: returning {len(paginated_files)} of {total_files_scanned} files (max_files={max_files})")
+    elif page_size is not None and page_number is not None:
+        # Page-based pagination
+        start_idx = page_number * page_size
+        end_idx = start_idx + page_size
+        paginated_files = all_files[start_idx:end_idx]
+        total_pages = (total_files_scanned + page_size - 1) // page_size  # Ceiling division
+
+        pagination_info = {
+            "total_files": total_files_scanned,
+            "returned_files": len(paginated_files),
+            "page_size": page_size,
+            "page_number": page_number,
+            "total_pages": total_pages,
+            "has_next_page": page_number < total_pages - 1,
+            "has_previous_page": page_number > 0,
+        }
+        logger.info(f"[recursive_folder_scan] Pagination: returning page {page_number} ({len(paginated_files)} files) of {total_pages} total pages")
+
     # Build summary
     summary = {
-        "total_files": len(all_files),
+        "total_files": total_files_scanned,
         "total_folders": sum(1 for _ in _count_folders(folder_tree)),
         "total_size_bytes": total_size_bytes,
         "scan_depth": max_depth_reached + 1,
         "scan_time_seconds": round(scan_time, 2),
     }
 
-    # Return based on output format
+    # Add pagination info to summary if applicable
+    if pagination_info:
+        summary["pagination"] = pagination_info
+
+    # Build result based on output format
     if output_format == "summary":
-        return {"summary": summary, "stats_by_type": stats_by_type}
+        result = {"summary": summary, "stats_by_type": stats_by_type}
     elif output_format == "tree":
-        return {"summary": summary, "folder_tree": _format_tree_text(folder_tree)}
+        result = {"summary": summary, "folder_tree": _format_tree_text(folder_tree)}
     else:  # full
         result = {
             "summary": summary,
             "stats_by_type": stats_by_type if include_stats else {},
-            "folder_tree": [folder_tree] if include_metadata else [],
-            "all_files": all_files if include_metadata else [],
+            "folder_tree": [folder_tree] if (include_metadata and include_tree) else [],
+            "all_files": paginated_files if (include_metadata and include_all_files) else [],
         }
-        return result
+
+    # If output_file is specified, write to file instead of returning
+    if output_file:
+        try:
+            output_path = Path(output_file)
+            # Create parent directories if they don't exist
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write JSON to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+
+            file_size_kb = output_path.stat().st_size / 1024
+            confirmation = {
+                "status": "success",
+                "message": f"Scan results written to file: {output_file}",
+                "output_file": str(output_path.absolute()),
+                "file_size_kb": round(file_size_kb, 2),
+                "summary": summary,
+            }
+            logger.info(f"[recursive_folder_scan] Results written to {output_file} ({file_size_kb:.2f} KB)")
+            return confirmation
+
+        except Exception as e:
+            logger.error(f"[recursive_folder_scan] Error writing to file {output_file}: {e}")
+            return {
+                "status": "error",
+                "message": f"Failed to write to file: {str(e)}",
+                "output_file": output_file,
+            }
+
+    # Otherwise, return the result normally
+    return result
 
 
 def _count_folders(tree_node):
