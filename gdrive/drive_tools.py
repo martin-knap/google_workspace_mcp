@@ -5,7 +5,11 @@ This module provides MCP tools for interacting with Google Drive API.
 """
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, List
+from datetime import datetime, timedelta
+import time
+import json
+from pathlib import Path
 
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
@@ -795,3 +799,734 @@ async def extract_scanned_pdf_text_ocr(
 
     full_text = "\n\n".join(extracted_text_parts)
     return header + full_text
+
+
+# ===== NEW ADVANCED DRIVE TOOLS =====
+
+@server.tool()
+@handle_http_errors("recursive_folder_scan", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def recursive_folder_scan(
+    service,
+    user_google_email: str,
+    folder_id: str,
+    include_metadata: bool = True,
+    include_stats: bool = True,
+    include_tree: bool = True,
+    include_all_files: bool = True,
+    max_depth: Optional[int] = None,
+    file_types: Optional[List[str]] = None,
+    exclude_folders: Optional[List[str]] = None,
+    output_format: str = "full",
+    max_files: Optional[int] = None,
+    page_size: Optional[int] = None,
+    page_number: Optional[int] = None,
+    output_file: Optional[str] = None,
+):
+    """
+    Recursively scans an entire Google Drive folder structure and returns comprehensive file inventory
+    with metadata, aggregated statistics, and hierarchical structure.
+
+    This tool is designed for complete Drive inventory, storage analysis, and coverage reporting.
+    It returns both a flat list (for database insertion) and a tree structure (for visualization).
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        folder_id (str): Root folder ID to scan (required).
+        include_metadata (bool): Include full file metadata (default: True).
+        include_stats (bool): Include aggregated statistics (default: True).
+        include_tree (bool): Include folder tree structure in output (default: True).
+        include_all_files (bool): Include flat list of all files in output (default: True).
+        max_depth (Optional[int]): Maximum folder depth to scan (default: unlimited).
+        file_types (Optional[List[str]]): Filter by file extensions like ["pdf", "xlsx"] (default: all types).
+        exclude_folders (Optional[List[str]]): Folder names to skip like ["FOTKY", "images"] (default: none).
+        output_format (str): Output format - "full", "summary", or "tree" (default: "full").
+        max_files (Optional[int]): Maximum number of files to return (default: all files).
+        page_size (Optional[int]): Number of files per page for pagination (default: None).
+        page_number (Optional[int]): Page number to return (0-indexed, default: None).
+        output_file (Optional[str]): Path to write results to file instead of returning (default: None).
+
+    Returns:
+        dict or str: If output_file is specified, returns confirmation message. Otherwise returns
+                     comprehensive scan results with summary, stats, folder tree, and file list.
+
+    Note:
+        - Pagination: Use either max_files OR (page_size + page_number), not both.
+        - If output_file is specified, results are written to that file as JSON.
+        - Pagination only affects the 'all_files' list, not the folder tree or stats.
+    """
+    logger.info(f"[recursive_folder_scan] Starting scan of folder {folder_id}")
+
+    scan_start_time = time.time()
+    all_files = []
+    stats_by_type = {}
+    total_size_bytes = 0
+    max_depth_reached = 0
+
+    # File type extension mapping
+    mime_to_ext_map = {
+        "application/pdf": "pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+        "application/vnd.google-apps.spreadsheet": "xlsx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "application/vnd.google-apps.document": "docx",
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "application/vnd.google-apps.presentation": "pptx",
+    }
+
+    async def scan_folder_recursive(folder_id: str, folder_path: str = "", current_depth: int = 0):
+        """Recursively scan a folder and its subfolders."""
+        nonlocal max_depth_reached, total_size_bytes
+
+        if max_depth is not None and current_depth >= max_depth:
+            return {"path": folder_path, "file_count": 0, "folder_count": 0, "files": [], "subfolders": []}
+
+        max_depth_reached = max(max_depth_reached, current_depth)
+
+        # Query for all items in this folder
+        query = f"'{folder_id}' in parents and trashed=false"
+        page_token = None
+        folder_files = []
+        subfolders = []
+
+        while True:
+            list_params = {
+                "q": query,
+                "pageSize": 1000,
+                "fields": "nextPageToken, files(id, name, mimeType, size, modifiedTime, webViewLink, parents)",
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+                "pageToken": page_token,
+            }
+
+            results = await asyncio.to_thread(
+                service.files().list(**list_params).execute
+            )
+
+            items = results.get('files', [])
+
+            for item in items:
+                mime_type = item.get('mimeType', '')
+                file_name = item.get('name', '')
+
+                # Check if it's a folder
+                if mime_type == 'application/vnd.google-apps.folder':
+                    # Check if folder should be excluded
+                    if exclude_folders and file_name in exclude_folders:
+                        logger.info(f"[recursive_folder_scan] Skipping excluded folder: {file_name}")
+                        continue
+
+                    # Recursively scan subfolder
+                    subfolder_path = f"{folder_path}{file_name}/"
+                    subfolder_data = await scan_folder_recursive(
+                        item['id'],
+                        subfolder_path,
+                        current_depth + 1
+                    )
+                    subfolders.append(subfolder_data)
+                else:
+                    # It's a file
+                    file_ext = mime_to_ext_map.get(mime_type, file_name.split('.')[-1] if '.' in file_name else 'unknown')
+
+                    # Filter by file types if specified
+                    if file_types and file_ext.lower() not in [ft.lower() for ft in file_types]:
+                        continue
+
+                    file_size = int(item.get('size', 0)) if item.get('size') else 0
+                    total_size_bytes += file_size
+
+                    # Update stats by type
+                    if file_ext not in stats_by_type:
+                        stats_by_type[file_ext] = {"count": 0, "total_size": 0}
+                    stats_by_type[file_ext]["count"] += 1
+                    stats_by_type[file_ext]["total_size"] += file_size
+
+                    # Build file entry
+                    file_entry = {
+                        "file_id": item['id'],
+                        "file_name": file_name,
+                        "folder_path": folder_path,
+                        "file_type": file_ext,
+                        "file_size": file_size,
+                        "modified_date": item.get('modifiedTime', ''),
+                        "web_link": item.get('webViewLink', ''),
+                        "mime_type": mime_type,
+                    }
+
+                    folder_files.append(file_entry)
+                    all_files.append(file_entry)
+
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+
+        return {
+            "path": folder_path,
+            "folder_id": folder_id,
+            "file_count": len(folder_files),
+            "folder_count": len(subfolders),
+            "total_size": sum(f['file_size'] for f in folder_files),
+            "files": folder_files if include_metadata else [],
+            "subfolders": subfolders,
+        }
+
+    # Get root folder name first
+    root_folder_metadata = await asyncio.to_thread(
+        service.files().get(
+            fileId=folder_id,
+            fields="name",
+            supportsAllDrives=True
+        ).execute
+    )
+    root_folder_name = root_folder_metadata.get('name', folder_id)
+
+    # Start recursive scan with root folder name as the initial path
+    folder_tree = await scan_folder_recursive(folder_id, root_folder_name + "/")
+
+    scan_time = time.time() - scan_start_time
+
+    # Apply pagination to all_files
+    total_files_scanned = len(all_files)
+    paginated_files = all_files
+    pagination_info = None
+
+    if max_files is not None and page_size is not None:
+        logger.warning("[recursive_folder_scan] Both max_files and page_size specified. Using max_files only.")
+
+    if max_files is not None:
+        # Simple limit on total files
+        paginated_files = all_files[:max_files]
+        pagination_info = {
+            "total_files": total_files_scanned,
+            "returned_files": len(paginated_files),
+            "max_files": max_files,
+        }
+        logger.info(f"[recursive_folder_scan] Pagination: returning {len(paginated_files)} of {total_files_scanned} files (max_files={max_files})")
+    elif page_size is not None and page_number is not None:
+        # Page-based pagination
+        start_idx = page_number * page_size
+        end_idx = start_idx + page_size
+        paginated_files = all_files[start_idx:end_idx]
+        total_pages = (total_files_scanned + page_size - 1) // page_size  # Ceiling division
+
+        pagination_info = {
+            "total_files": total_files_scanned,
+            "returned_files": len(paginated_files),
+            "page_size": page_size,
+            "page_number": page_number,
+            "total_pages": total_pages,
+            "has_next_page": page_number < total_pages - 1,
+            "has_previous_page": page_number > 0,
+        }
+        logger.info(f"[recursive_folder_scan] Pagination: returning page {page_number} ({len(paginated_files)} files) of {total_pages} total pages")
+
+    # Build summary
+    summary = {
+        "total_files": total_files_scanned,
+        "total_folders": sum(1 for _ in _count_folders(folder_tree)),
+        "total_size_bytes": total_size_bytes,
+        "scan_depth": max_depth_reached + 1,
+        "scan_time_seconds": round(scan_time, 2),
+    }
+
+    # Add pagination info to summary if applicable
+    if pagination_info:
+        summary["pagination"] = pagination_info
+
+    # Build result based on output format
+    if output_format == "summary":
+        result = {"summary": summary, "stats_by_type": stats_by_type}
+    elif output_format == "tree":
+        result = {"summary": summary, "folder_tree": _format_tree_text(folder_tree)}
+    else:  # full
+        result = {
+            "summary": summary,
+            "stats_by_type": stats_by_type if include_stats else {},
+            "folder_tree": [folder_tree] if (include_metadata and include_tree) else [],
+            "all_files": paginated_files if (include_metadata and include_all_files) else [],
+        }
+
+    # If output_file is specified, write to file instead of returning
+    if output_file:
+        try:
+            output_path = Path(output_file)
+            # Create parent directories if they don't exist
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write JSON to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+
+            file_size_kb = output_path.stat().st_size / 1024
+            confirmation = {
+                "status": "success",
+                "message": f"Scan results written to file: {output_file}",
+                "output_file": str(output_path.absolute()),
+                "file_size_kb": round(file_size_kb, 2),
+                "summary": summary,
+            }
+            logger.info(f"[recursive_folder_scan] Results written to {output_file} ({file_size_kb:.2f} KB)")
+            return confirmation
+
+        except Exception as e:
+            logger.error(f"[recursive_folder_scan] Error writing to file {output_file}: {e}")
+            return {
+                "status": "error",
+                "message": f"Failed to write to file: {str(e)}",
+                "output_file": output_file,
+            }
+
+    # Otherwise, return the result normally
+    return result
+
+
+def _count_folders(tree_node):
+    """Generator to count all folders in the tree."""
+    yield tree_node
+    for subfolder in tree_node.get('subfolders', []):
+        yield from _count_folders(subfolder)
+
+
+def _format_tree_text(tree_node, indent=""):
+    """Format folder tree as text for visualization."""
+    lines = []
+    path = tree_node['path']
+    file_count = tree_node['file_count']
+    folder_count = tree_node['folder_count']
+
+    lines.append(f"{indent}{path} ({file_count} files, {folder_count} folders)")
+
+    for i, subfolder in enumerate(tree_node.get('subfolders', [])):
+        is_last = i == len(tree_node['subfolders']) - 1
+        sub_indent = indent + ("    " if is_last else "│   ")
+        lines.extend(_format_tree_text(subfolder, sub_indent))
+
+    return "\n".join(lines)
+
+
+@server.tool()
+@handle_http_errors("get_folder_statistics", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def get_folder_statistics(
+    service,
+    user_google_email: str,
+    folder_id: str,
+    recursive: bool = True,
+    group_by: str = "type",
+) -> dict:
+    """
+    Quick statistical overview of a folder without returning all file details.
+
+    This tool provides file counts, sizes, and breakdowns by type or folder without
+    loading full file metadata, making it ideal for quick metrics.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        folder_id (str): The ID of the folder to analyze.
+        recursive (bool): Include subfolders (default: True).
+        group_by (str): Group statistics by "type", "category", or "folder" (default: "type").
+
+    Returns:
+        dict: Statistical summary including file counts, sizes, and breakdowns.
+    """
+    logger.info(f"[get_folder_statistics] Getting statistics for folder {folder_id}")
+
+    total_files = 0
+    total_folders = 0
+    total_size = 0
+    breakdown = {}
+    largest_files = []
+
+    mime_to_ext_map = {
+        "application/pdf": "pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+        "application/vnd.google-apps.spreadsheet": "xlsx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "application/vnd.google-apps.document": "docx",
+        "image/jpeg": "jpg",
+        "image/png": "png",
+    }
+
+    async def scan_folder(folder_id: str):
+        """Scan a single folder for statistics."""
+        nonlocal total_files, total_folders, total_size
+
+        query = f"'{folder_id}' in parents and trashed=false"
+        page_token = None
+
+        while True:
+            list_params = {
+                "q": query,
+                "pageSize": 1000,
+                "fields": "nextPageToken, files(id, name, mimeType, size)",
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+                "pageToken": page_token,
+            }
+
+            results = await asyncio.to_thread(
+                service.files().list(**list_params).execute
+            )
+
+            items = results.get('files', [])
+
+            for item in items:
+                mime_type = item.get('mimeType', '')
+
+                if mime_type == 'application/vnd.google-apps.folder':
+                    total_folders += 1
+                    if recursive:
+                        await scan_folder(item['id'])
+                else:
+                    total_files += 1
+                    file_size = int(item.get('size', 0)) if item.get('size') else 0
+                    total_size += file_size
+
+                    # Group by type
+                    if group_by == "type":
+                        file_ext = mime_to_ext_map.get(mime_type, "other")
+                        breakdown[file_ext] = breakdown.get(file_ext, 0) + 1
+
+                    # Track largest files
+                    if file_size > 0:
+                        largest_files.append({
+                            "name": item.get('name', 'Unknown'),
+                            "size_mb": round(file_size / (1024 * 1024), 2)
+                        })
+
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+
+    # Get folder name
+    folder_metadata = await asyncio.to_thread(
+        service.files().get(fileId=folder_id, fields="name", supportsAllDrives=True).execute
+    )
+    folder_name = folder_metadata.get('name', folder_id)
+
+    # Start scan
+    await scan_folder(folder_id)
+
+    # Sort largest files
+    largest_files.sort(key=lambda x: x['size_mb'], reverse=True)
+    largest_files = largest_files[:10]  # Top 10
+
+    return {
+        "folder_name": folder_name,
+        "total_files": total_files,
+        "total_folders": total_folders,
+        "total_size_mb": round(total_size / (1024 * 1024), 2),
+        "breakdown": breakdown,
+        "largest_files": largest_files,
+    }
+
+
+@server.tool()
+@handle_http_errors("get_recent_drive_activity", is_read_only=True, service_type="driveactivity")
+@require_google_service("driveactivity", "drive_activity_read")
+async def get_recent_drive_activity(
+    service,
+    user_google_email: str,
+    folder_id: Optional[str] = None,
+    days_back: int = 7,
+    activity_types: Optional[List[str]] = None,
+    include_subfolders: bool = True,
+) -> dict:
+    """
+    Gets recent file activity (uploads, edits, deletions, moves, renames) in a folder to track
+    all changes since last sync using the Google Drive Activity API.
+
+    This is the primary change tracking mechanism for Drive synchronization. It provides detailed
+    activity information including moves and renames with full context.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        folder_id (Optional[str]): Specific folder ID to filter activities (default: all files).
+        days_back (int): How many days of history to retrieve (default: 7).
+        activity_types (Optional[List[str]]): Filter by activity types: ["create", "edit", "delete", "move", "rename"] (default: all).
+        include_subfolders (bool): Include nested folders (default: True).
+
+    Returns:
+        dict: Activity history with detailed actions, timestamps, and summary statistics.
+    """
+    logger.info(f"[get_recent_drive_activity] Getting activity for last {days_back} days")
+
+    # Calculate time range
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(days=days_back)
+
+    # Build request body
+    request_body = {
+        "pageSize": 100,
+        "filter": f'time >= "{start_time.isoformat()}Z"'
+    }
+
+    if folder_id:
+        request_body["ancestorName"] = f"items/{folder_id}"
+
+    activities = []
+    page_token = None
+
+    while True:
+        if page_token:
+            request_body["pageToken"] = page_token
+
+        # Query Drive Activity API
+        response = await asyncio.to_thread(
+            service.activity().query(body=request_body).execute
+        )
+
+        for activity in response.get('activities', []):
+            # Parse activity
+            timestamp = activity.get('timestamp', '')
+            primary_action_detail = activity.get('primaryActionDetail', {})
+            targets = activity.get('targets', [])
+            actors = activity.get('actors', [])
+
+            # Get actor (user who performed the action)
+            actor_email = "unknown"
+            if actors:
+                actor = actors[0]
+                if 'user' in actor:
+                    actor_email = actor['user'].get('knownUser', {}).get('personName', 'unknown')
+
+            # Process different action types
+            for target in targets:
+                if 'driveItem' not in target:
+                    continue
+
+                drive_item = target['driveItem']
+                file_id = drive_item.get('name', '').replace('items/', '')
+                file_name = drive_item.get('title', 'Unknown')
+
+                # Determine activity type
+                activity_type = None
+                old_path = None
+                new_path = None
+                old_name = None
+                new_name = None
+
+                if 'create' in primary_action_detail:
+                    activity_type = "create"
+                elif 'edit' in primary_action_detail:
+                    activity_type = "edit"
+                elif 'delete' in primary_action_detail:
+                    activity_type = "delete"
+                elif 'move' in primary_action_detail:
+                    activity_type = "move"
+                    move_detail = primary_action_detail['move']
+                    old_path = move_detail.get('addedParents', [{}])[0].get('driveItem', {}).get('title', '')
+                    new_path = move_detail.get('removedParents', [{}])[0].get('driveItem', {}).get('title', '')
+                elif 'rename' in primary_action_detail:
+                    activity_type = "rename"
+                    rename_detail = primary_action_detail['rename']
+                    old_name = rename_detail.get('oldTitle', '')
+                    new_name = rename_detail.get('newTitle', '')
+
+                # Filter by activity types if specified
+                if activity_types and activity_type not in activity_types:
+                    continue
+
+                activity_entry = {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "activity_type": activity_type,
+                    "user": actor_email,
+                    "timestamp": timestamp,
+                }
+
+                if old_path:
+                    activity_entry["old_path"] = old_path
+                if new_path:
+                    activity_entry["new_path"] = new_path
+                if old_name:
+                    activity_entry["old_name"] = old_name
+                if new_name:
+                    activity_entry["new_name"] = new_name
+
+                activities.append(activity_entry)
+
+        page_token = response.get('nextPageToken')
+        if not page_token:
+            break
+
+    # Generate summary
+    summary = {
+        "creates": sum(1 for a in activities if a['activity_type'] == 'create'),
+        "edits": sum(1 for a in activities if a['activity_type'] == 'edit'),
+        "deletes": sum(1 for a in activities if a['activity_type'] == 'delete'),
+        "moves": sum(1 for a in activities if a['activity_type'] == 'move'),
+        "renames": sum(1 for a in activities if a['activity_type'] == 'rename'),
+    }
+
+    return {
+        "period": f"Last {days_back} days",
+        "activities": activities,
+        "summary": summary,
+    }
+
+
+@server.tool()
+@handle_http_errors("get_drive_folder_tree", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def get_drive_folder_tree(
+    service,
+    user_google_email: str,
+    folder_id: str,
+    max_depth: Optional[int] = None,
+    show_file_counts: bool = True,
+    show_sizes: bool = False,
+) -> str:
+    """
+    Gets visual tree structure of folders (no file details) for navigation and understanding hierarchy.
+
+    This tool provides a quick visualization of the Drive folder structure without loading
+    all file details, making it ideal for exploring large folder hierarchies.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        folder_id (str): Root folder ID to visualize.
+        max_depth (Optional[int]): Limit depth of tree (default: unlimited).
+        show_file_counts (bool): Show file count per folder (default: True).
+        show_sizes (bool): Show total size per folder (default: False).
+
+    Returns:
+        str: ASCII tree visualization of folder structure.
+    """
+    logger.info(f"[get_drive_folder_tree] Building tree for folder {folder_id}")
+
+    async def build_tree(folder_id: str, folder_name: str = "", current_depth: int = 0):
+        """Recursively build folder tree."""
+        if max_depth is not None and current_depth >= max_depth:
+            return None
+
+        # Count files and subfolders
+        query = f"'{folder_id}' in parents and trashed=false"
+
+        list_params = {
+            "q": query,
+            "pageSize": 1000,
+            "fields": "files(id, name, mimeType, size)",
+            "supportsAllDrives": True,
+            "includeItemsFromAllDrives": True,
+        }
+
+        results = await asyncio.to_thread(
+            service.files().list(**list_params).execute
+        )
+
+        items = results.get('files', [])
+        file_count = sum(1 for item in items if item.get('mimeType') != 'application/vnd.google-apps.folder')
+        folder_count = sum(1 for item in items if item.get('mimeType') == 'application/vnd.google-apps.folder')
+        total_size = sum(int(item.get('size', 0)) for item in items if item.get('size'))
+
+        # Build children
+        children = []
+        for item in items:
+            if item.get('mimeType') == 'application/vnd.google-apps.folder':
+                child_tree = await build_tree(item['id'], item['name'], current_depth + 1)
+                if child_tree:
+                    children.append(child_tree)
+
+        return {
+            "name": folder_name or folder_id,
+            "file_count": file_count,
+            "folder_count": folder_count,
+            "total_size": total_size,
+            "children": children,
+        }
+
+    # Get folder name
+    folder_metadata = await asyncio.to_thread(
+        service.files().get(fileId=folder_id, fields="name", supportsAllDrives=True).execute
+    )
+    folder_name = folder_metadata.get('name', folder_id)
+
+    # Build tree
+    tree = await build_tree(folder_id, folder_name)
+
+    # Format as ASCII tree
+    def format_tree(node, indent="", is_last=True):
+        """Format tree node as ASCII."""
+        prefix = "└── " if is_last else "├── "
+        line = f"{indent}{prefix}{node['name']}/"
+
+        if show_file_counts:
+            line += f" ({node['file_count']} files"
+            if node['folder_count'] > 0:
+                line += f", {node['folder_count']} folders"
+            line += ")"
+
+        if show_sizes and node['total_size'] > 0:
+            size_mb = round(node['total_size'] / (1024 * 1024), 2)
+            line += f" [{size_mb} MB]"
+
+        lines = [line]
+
+        children = node.get('children', [])
+        for i, child in enumerate(children):
+            is_last_child = i == len(children) - 1
+            child_indent = indent + ("    " if is_last else "│   ")
+            lines.extend(format_tree(child, child_indent, is_last_child))
+
+        return lines
+
+    tree_lines = format_tree(tree)
+    return "\n".join(tree_lines)
+
+
+@server.tool()
+@handle_http_errors("batch_get_file_metadata", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def batch_get_file_metadata(
+    service,
+    user_google_email: str,
+    file_ids: List[str],
+    fields: Optional[List[str]] = None,
+) -> dict:
+    """
+    Gets detailed metadata for multiple files by their IDs in a single batch operation.
+
+    This tool efficiently fetches metadata for known file IDs without iterating through folders,
+    making it ideal for targeted queries when you already know which files you need.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_ids (List[str]): List of file IDs to fetch metadata for.
+        fields (Optional[List[str]]): Specific fields to return (default: all common fields).
+
+    Returns:
+        dict: Dictionary containing file metadata and list of file IDs that were not found.
+    """
+    logger.info(f"[batch_get_file_metadata] Fetching metadata for {len(file_ids)} files")
+
+    # Default fields if not specified
+    if not fields:
+        fields = ["id", "name", "mimeType", "size", "modifiedTime", "createdTime",
+                  "webViewLink", "parents", "owners", "modifiedByMe"]
+
+    fields_str = ", ".join(fields)
+
+    files = []
+    not_found = []
+
+    # Fetch metadata for each file
+    for file_id in file_ids:
+        try:
+            file_metadata = await asyncio.to_thread(
+                service.files().get(
+                    fileId=file_id,
+                    fields=fields_str,
+                    supportsAllDrives=True
+                ).execute
+            )
+            files.append(file_metadata)
+        except Exception as e:
+            logger.warning(f"[batch_get_file_metadata] File {file_id} not found: {e}")
+            not_found.append(file_id)
+
+    return {
+        "files": files,
+        "not_found": not_found,
+    }
