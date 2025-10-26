@@ -311,6 +311,47 @@ async def create_drive_file(
     return confirmation_message
 
 @server.tool()
+@handle_http_errors("create_drive_folder", service_type="drive")
+@require_google_service("drive", "drive_file")
+async def create_drive_folder(
+    service,
+    user_google_email: str,
+    folder_name: str,
+    parent_folder_id: str = 'root',
+) -> str:
+    """
+    Creates a new folder in Google Drive, supporting creation within shared drives.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        folder_name (str): The name for the new folder.
+        parent_folder_id (str): The ID of the parent folder. Defaults to 'root'. For shared drives, this must be a folder ID within the shared drive.
+
+    Returns:
+        str: Confirmation message of the successful folder creation with folder link.
+    """
+    logger.info(f"[create_drive_folder] Invoked. Email: '{user_google_email}', Folder Name: {folder_name}, Parent Folder ID: {parent_folder_id}")
+
+    file_metadata = {
+        'name': folder_name,
+        'parents': [parent_folder_id],
+        'mimeType': 'application/vnd.google-apps.folder'
+    }
+
+    created_folder = await asyncio.to_thread(
+        service.files().create(
+            body=file_metadata,
+            fields='id, name, webViewLink',
+            supportsAllDrives=True
+        ).execute
+    )
+
+    link = created_folder.get('webViewLink', 'No link available')
+    confirmation_message = f"Successfully created folder '{created_folder.get('name', folder_name)}' (ID: {created_folder.get('id', 'N/A')}) in parent folder '{parent_folder_id}' for {user_google_email}. Link: {link}"
+    logger.info(f"Successfully created folder. Link: {link}")
+    return confirmation_message
+
+@server.tool()
 @handle_http_errors("get_drive_file_permissions", is_read_only=True, service_type="drive")
 @require_google_service("drive", "drive_read")
 async def get_drive_file_permissions(
