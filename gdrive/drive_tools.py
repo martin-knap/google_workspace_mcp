@@ -5,7 +5,7 @@ This module provides MCP tools for interacting with Google Drive API.
 """
 import logging
 import asyncio
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 import time
 import json
@@ -350,6 +350,250 @@ async def create_drive_folder(
     confirmation_message = f"Successfully created folder '{created_folder.get('name', folder_name)}' (ID: {created_folder.get('id', 'N/A')}) in parent folder '{parent_folder_id}' for {user_google_email}. Link: {link}"
     logger.info(f"Successfully created folder. Link: {link}")
     return confirmation_message
+
+
+@server.tool()
+@handle_http_errors("move_drive_files", service_type="drive")
+@require_google_service("drive", "drive_file")
+async def move_drive_files(
+    service,
+    user_google_email: str,
+    moves: List[Dict[str, str]],
+    keep_existing_parents: bool = False,
+) -> str:
+    """Move one or more files into a different Drive folder.
+
+    Each move entry must include ``file_id`` and ``destination_folder_id``. An
+    optional ``remove_parent_ids`` list can specify exactly which parents to
+    detach. When ``keep_existing_parents`` is True, the file is simply added to
+    the new folder without removing existing parents.
+    """
+
+    if not moves:
+        raise ValueError("'moves' must contain at least one move request.")
+
+    logger.info(
+        "[move_drive_files] Invoked for %s with %d move requests",
+        user_google_email,
+        len(moves),
+    )
+
+    successes: List[str] = []
+    failures: List[str] = []
+
+    for move in moves:
+        file_id = move.get("file_id")
+        destination_folder_id = move.get("destination_folder_id")
+
+        if not file_id or not destination_folder_id:
+            failures.append(
+                f"Missing file_id or destination_folder_id in move payload: {move}"
+            )
+            continue
+
+        try:
+            file_metadata = await asyncio.to_thread(
+                service.files()
+                .get(
+                    fileId=file_id,
+                    fields="id, name, parents",
+                    supportsAllDrives=True,
+                )
+                .execute
+            )
+
+            current_parents = file_metadata.get("parents", [])
+            remove_parent_ids = move.get("remove_parent_ids")
+
+            if keep_existing_parents:
+                remove_parents_arg = None
+            elif remove_parent_ids:
+                remove_parents_arg = ",".join(remove_parent_ids)
+            else:
+                remove_parents_arg = ",".join(current_parents) if current_parents else None
+
+            await asyncio.to_thread(
+                service.files()
+                .update(
+                    fileId=file_id,
+                    addParents=destination_folder_id,
+                    removeParents=remove_parents_arg,
+                    supportsAllDrives=True,
+                    fields="id, parents",
+                )
+                .execute
+            )
+
+            successes.append(
+                f"Moved '{file_metadata.get('name', file_id)}' ({file_id}) -> {destination_folder_id}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "[move_drive_files] Failed to move file %s to %s", file_id, destination_folder_id
+            )
+            failures.append(
+                f"Failed to move file {file_id} -> {destination_folder_id}: {exc}"
+            )
+
+    response_lines = [
+        f"Processed {len(moves)} move request(s).",
+        f"Successful: {len(successes)}",
+        f"Failed: {len(failures)}",
+    ]
+
+    if successes:
+        response_lines.append("\nSuccesses:")
+        response_lines.extend(f"- {msg}" for msg in successes)
+
+    if failures:
+        response_lines.append("\nFailures:")
+        response_lines.extend(f"- {msg}" for msg in failures)
+
+    return "\n".join(response_lines)
+
+
+@server.tool()
+@handle_http_errors("update_drive_file", service_type="drive")
+@require_google_service("drive", "drive_file")
+async def update_drive_file(
+    service,
+    user_google_email: str,
+    file_id: str,
+    content: str,
+    mime_type: str = "application/json",
+    new_name: str | None = None,
+) -> str:
+    """Replace the contents of an existing Drive file.
+
+    Args:
+        user_google_email: Google Workspace account email.
+        file_id: ID of the Drive file to update.
+        content: New file content.
+        mime_type: MIME type (defaults to application/json).
+        new_name: Optional new name for the file.
+
+    Returns:
+        Confirmation message including file link.
+    """
+
+    file_metadata: dict[str, str] = {}
+    if new_name:
+        file_metadata["name"] = new_name
+
+    media = MediaIoBaseUpload(io.BytesIO(content.encode("utf-8")), mimetype=mime_type, resumable=True)
+
+    updated = await asyncio.to_thread(
+        service.files()
+        .update(
+            fileId=file_id,
+            body=file_metadata or None,
+            media_body=media,
+            fields="id, name, webViewLink",
+            supportsAllDrives=True,
+        )
+        .execute
+    )
+
+    link = updated.get("webViewLink", "No link available")
+    return (
+        f"Successfully updated file '{updated.get('name', file_id)}' (ID: {updated.get('id', file_id)}) "
+        f"for {user_google_email}. Link: {link}"
+    )
+
+
+@server.tool()
+@handle_http_errors("minify_drive_json_files", service_type="drive")
+@require_google_service("drive", "drive_file")
+async def minify_drive_json_files(
+    service,
+    user_google_email: str,
+    file_ids: List[str],
+) -> str:
+    """Compact JSON files so each record sits on a single line.
+
+    This is useful for Airbyte JSONL ingestion, which requires every file to be a
+    single-line JSON object. The tool downloads each Drive file, parses it as JSON,
+    rewrites it without whitespace, and uploads the result in-place.
+
+    Args:
+        user_google_email: Google Workspace account email.
+        file_ids: List of Drive file IDs to minify.
+
+    Returns:
+        Human-readable summary of successes and failures.
+    """
+
+    if not file_ids:
+        return "No file IDs provided."
+
+    successes: list[str] = []
+    failures: list[str] = []
+
+    for file_id in file_ids:
+        try:
+            # Basic metadata for logging / name lookup
+            metadata = await asyncio.to_thread(
+                service.files()
+                .get(fileId=file_id, fields="id, name, mimeType", supportsAllDrives=True)
+                .execute
+            )
+
+            name = metadata.get("name", file_id)
+            mime_type = metadata.get("mimeType", "application/json")
+
+            if not mime_type.endswith("json"):
+                raise ValueError(f"Unsupported mime type '{mime_type}' for {name}")
+
+            download_request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, download_request)
+
+            done = False
+            while not done:
+                _, done = await asyncio.to_thread(downloader.next_chunk)
+
+            fh.seek(0)
+            try:
+                content_str = fh.read().decode("utf-8")
+            except UnicodeDecodeError as exc:  # pragma: no cover - rare encoding issue
+                raise ValueError("File is not valid UTF-8 JSON") from exc
+
+            try:
+                parsed = json.loads(content_str)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"File content is not valid JSON: {exc}") from exc
+
+            minified = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+
+            media = MediaIoBaseUpload(io.BytesIO(minified.encode("utf-8")), mimetype="application/json", resumable=True)
+
+            await asyncio.to_thread(
+                service.files()
+                .update(
+                    fileId=file_id,
+                    media_body=media,
+                    supportsAllDrives=True,
+                    fields="id, name, webViewLink",
+                )
+                .execute
+            )
+
+            successes.append(f"Minified '{name}' ({file_id})")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[minify_drive_json_files] Failed for %s", file_id)
+            failures.append(f"{file_id}: {exc}")
+
+    summary = [f"Processed {len(file_ids)} file(s).", f"Successful: {len(successes)}", f"Failed: {len(failures)}"]
+
+    if successes:
+        summary.append("\nSuccesses:")
+        summary.extend(f"- {msg}" for msg in successes)
+
+    if failures:
+        summary.append("\nFailures:")
+        summary.extend(f"- {msg}" for msg in failures)
+
+    return "\n".join(summary)
 
 @server.tool()
 @handle_http_errors("get_drive_file_permissions", is_read_only=True, service_type="drive")
@@ -1571,3 +1815,586 @@ async def batch_get_file_metadata(
         "files": files,
         "not_found": not_found,
     }
+
+
+@server.tool()
+@handle_http_errors("get_extraction_manifest_status", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def get_extraction_manifest_status(
+    service,
+    user_google_email: str,
+    project_id: str = "03_H83",
+    manifest_folder_id: str = "1ANYWlH575tOYyrCv3UwA6tOGQPi9yK0Z"
+) -> str:
+    """
+    Get current extraction manifest status showing progress and files needing extraction.
+
+    This tool automatically locates the manifest file, reads it, and provides:
+    - Last sync date and total file count
+    - Extraction progress statistics
+    - Files that need extraction (new or modified since last extraction)
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        project_id (str): Project identifier (default: "03_H83")
+        manifest_folder_id (str): Folder ID where manifest is stored
+
+    Returns:
+        str: Formatted status report with statistics and file lists
+    """
+
+    # Step 1: Search for manifest file
+    manifest_filename = f"{project_id}_drive_scan.json"
+    query = f"name='{manifest_filename}' and '{manifest_folder_id}' in parents and trashed=false"
+
+    results = await asyncio.to_thread(
+        service.files().list(
+            q=query,
+            fields="files(id, name, modifiedTime)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute
+    )
+
+    files = results.get('files', [])
+
+    if not files:
+        return f"❌ No manifest found for project {project_id}\n\nRun 'update_extraction_manifest' to create initial manifest."
+
+    manifest_file = files[0]
+
+    # Step 2: Read manifest content
+    request = service.files().get_media(fileId=manifest_file['id'])
+    file_content = io.BytesIO()
+    downloader = MediaIoBaseDownload(file_content, request)
+
+    done = False
+    while not done:
+        status, done = await asyncio.to_thread(downloader.next_chunk)
+
+    file_content.seek(0)
+    manifest = json.loads(file_content.read().decode('utf-8'))
+
+    # Step 3: Calculate statistics
+    files_list = manifest.get('files', [])
+    stats = manifest.get('stats', {})
+
+    pending_files = [f for f in files_list if f.get('extraction_status') == 'pending']
+    extracted_files = [f for f in files_list if f.get('extraction_status') == 'extracted']
+
+    # Step 4: Format output
+    output = []
+    output.append(f"📊 Extraction Status for {manifest.get('project_name', project_id)}")
+    output.append("=" * 60)
+    output.append(f"\n📅 Last Sync: {manifest.get('last_scan_date', 'Unknown')}")
+    output.append(f"📁 Total Files: {manifest.get('total_files', 0)}")
+    output.append(f"   Active: {manifest.get('active_files', 0)}")
+    output.append(f"   Archived: {manifest.get('archived_files', 0)}")
+
+    output.append(f"\n📈 Extraction Progress:")
+    output.append(f"   ✅ Extracted: {stats.get('extracted', 0)}")
+    output.append(f"   ⏳ Pending: {stats.get('pending', 0)}")
+    output.append(f"   ❌ Failed: {stats.get('failed', 0)}")
+    output.append(f"   ⏭️  Skipped: {stats.get('skipped', 0)}")
+
+    progress = manifest.get('extraction_progress', {})
+    completion = progress.get('completion_percentage', 0)
+    output.append(f"   📊 Completion: {completion}%")
+
+    # Show sample of pending files
+    if pending_files:
+        output.append(f"\n⏳ Files Needing Extraction (showing first 10 of {len(pending_files)}):")
+        for i, file in enumerate(pending_files[:10], 1):
+            doc_type = file.get('document_type') or 'unclassified'
+            file_name = file.get('file_name', 'unnamed')
+            folder = file.get('folder_path', '')
+            output.append(f"   {i}. [{doc_type}] {file_name}")
+            output.append(f"      📁 {folder}")
+
+    # Show sample of recently extracted files
+    if extracted_files:
+        recent_extracted = sorted(
+            extracted_files,
+            key=lambda x: x.get('extraction_date', ''),
+            reverse=True
+        )[:5]
+        output.append(f"\n✅ Recently Extracted (last 5):")
+        for i, file in enumerate(recent_extracted, 1):
+            doc_type = file.get('document_type') or 'unclassified'
+            file_name = file.get('file_name', 'unnamed')
+            extraction_date = file.get('extraction_date', 'unknown')
+            output.append(f"   {i}. [{doc_type}] {file_name}")
+            output.append(f"      🕒 {extraction_date}")
+
+    return "\n".join(output)
+
+
+@server.tool()
+@handle_http_errors("update_extraction_manifest", service_type="drive")
+@require_google_service("drive", "drive_file")
+async def update_extraction_manifest(
+    service,
+    user_google_email: str,
+    project_id: str,
+    source_folder_id: str,
+    manifest_folder_id: str,
+    project_name: str
+) -> str:
+    """
+    Update extraction manifest by scanning Drive for new and modified files.
+
+    This tool:
+    1. Scans the entire Drive folder structure recursively
+    2. Identifies new files (not in manifest)
+    3. Detects modified files (modified_date > extraction_date)
+    4. Preserves extraction status for unchanged files
+    5. Marks deleted files as archived
+    6. Updates manifest with statistics
+
+    NOTE: Does NOT classify documents - document_type is set by extraction skill.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        project_id (str): Project identifier
+        source_folder_id (str): Drive folder ID to scan
+        manifest_folder_id (str): Where to store updated manifest
+        project_name (str): Human-readable project name
+
+    Returns:
+        str: Summary of changes (new files, modified files, archived files)
+    """
+
+    # Step 1: Recursively scan for all PDF files in folder tree
+    logger.info(f"[update_extraction_manifest] Scanning for PDFs in project {project_id}")
+
+    all_files = []
+    folders_to_scan = [source_folder_id]
+    scanned_folders = set()
+
+    while folders_to_scan:
+        current_folder = folders_to_scan.pop(0)
+        if current_folder in scanned_folders:
+            continue
+        scanned_folders.add(current_folder)
+
+        # Get all items in current folder
+        page_token = None
+        while True:
+            try:
+                results = await asyncio.to_thread(
+                    service.files().list(
+                        q=f"'{current_folder}' in parents and trashed=false",
+                        fields="files(id, name, size, modifiedTime, webViewLink, mimeType)",
+                        pageSize=100,
+                        pageToken=page_token,
+                        supportsAllDrives=True,
+                        includeItemsFromAllDrives=True
+                    ).execute
+                )
+
+                for item in results.get('files', []):
+                    if item['mimeType'] == 'application/vnd.google-apps.folder':
+                        # Add subfolder to scan queue
+                        folders_to_scan.append(item['id'])
+                    elif item['mimeType'] == 'application/pdf':
+                        # Add PDF file
+                        all_files.append({
+                            "file_id": item['id'],
+                            "file_name": item['name'],
+                            "file_size": int(item.get('size', 0)),
+                            "folder_path": f"/{current_folder}",
+                            "mime_type": item['mimeType'],
+                            "modified_date": item.get('modifiedTime', ''),
+                            "web_link": item.get('webViewLink', '')
+                        })
+
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+            except Exception as e:
+                logger.warning(f"[update_extraction_manifest] Error scanning folder {current_folder}: {e}")
+                break  # Skip this folder and continue with others
+
+    logger.info(f"[update_extraction_manifest] Scan found {len(all_files)} PDF files")
+
+    # Step 2: Deduplicate by file_id (same file in multiple folders)
+    files_by_id = {}
+    for file in all_files:
+        file_id = file['file_id']
+        if file_id not in files_by_id:
+            files_by_id[file_id] = {
+                "file_id": file_id,
+                "file_name": file['file_name'],
+                "file_size_bytes": file.get('file_size', 0),
+                "folder_path": file['folder_path'],
+                "mime_type": file['mime_type'],
+                "modified_date": file['modified_date'],
+                "web_link": file['web_link'],
+                "extraction_status": "pending",  # Default for new files
+                "document_type": None,  # Set by extraction skill
+                "first_seen": datetime.utcnow().isoformat() + "Z"
+            }
+
+    logger.info(f"[update_extraction_manifest] After deduplication: {len(files_by_id)} unique files")
+
+    # Step 3: Load existing manifest (if exists)
+    existing_manifest = None
+    manifest_filename = f"{project_id}_drive_scan.json"
+
+    try:
+        query = f"name='{manifest_filename}' and '{manifest_folder_id}' in parents and trashed=false"
+        results = await asyncio.to_thread(
+            service.files().list(
+                q=query,
+                fields="files(id)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute
+        )
+
+        if results.get('files'):
+            manifest_file_id = results['files'][0]['id']
+            request = service.files().get_media(fileId=manifest_file_id)
+            file_content = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+            done = False
+            while not done:
+                status, done = await asyncio.to_thread(downloader.next_chunk)
+            file_content.seek(0)
+            existing_manifest = json.loads(file_content.read().decode('utf-8'))
+            logger.info(f"[update_extraction_manifest] Loaded existing manifest with {len(existing_manifest.get('files', []))} files")
+    except Exception as e:
+        logger.info(f"[update_extraction_manifest] No existing manifest found: {e}")
+
+    # Step 4: Merge with existing manifest (SMART LOGIC)
+    new_files_count = 0
+    modified_files_count = 0
+    unchanged_extracted_count = 0
+
+    if existing_manifest and 'files' in existing_manifest:
+        existing_by_id = {f['file_id']: f for f in existing_manifest['files']}
+
+        for file_id, file_data in files_by_id.items():
+            if file_id in existing_by_id:
+                existing_file = existing_by_id[file_id]
+
+                # KEY LOGIC: Check if file was modified AFTER extraction
+                file_modified = file_data['modified_date']
+                extraction_date = existing_file.get('extraction_date')
+
+                if existing_file.get('extraction_status') == 'extracted' and extraction_date:
+                    if file_modified > extraction_date:
+                        # File changed after extraction - mark as pending
+                        file_data['extraction_status'] = 'pending'
+                        file_data['document_type'] = existing_file.get('document_type')  # Preserve classification
+                        file_data['previous_extraction_date'] = extraction_date
+                        modified_files_count += 1
+                        logger.info(f"[update_extraction_manifest] File modified after extraction: {file_data['file_name']}")
+                    else:
+                        # File unchanged - preserve extraction status and ALL metadata
+                        file_data['extraction_status'] = 'extracted'
+                        file_data['extraction_date'] = extraction_date
+                        file_data['document_type'] = existing_file.get('document_type')
+                        file_data['extracted_to'] = existing_file.get('extracted_to')
+                        file_data['extracted_file_id'] = existing_file.get('extracted_file_id')
+                        file_data['extraction_quality'] = existing_file.get('extraction_quality')
+                        file_data['pages_extracted'] = existing_file.get('pages_extracted')
+                        file_data['value_czk'] = existing_file.get('value_czk')
+                        unchanged_extracted_count += 1
+                else:
+                    # Preserve whatever status it had (pending, failed, skipped)
+                    file_data['extraction_status'] = existing_file.get('extraction_status', 'pending')
+                    file_data['document_type'] = existing_file.get('document_type')
+                    if existing_file.get('extraction_date'):
+                        file_data['extraction_date'] = existing_file['extraction_date']
+                    if existing_file.get('failure_reason'):
+                        file_data['failure_reason'] = existing_file['failure_reason']
+
+                file_data['first_seen'] = existing_file.get('first_seen', file_data['first_seen'])
+
+                # Check for moved files
+                if file_data['folder_path'] != existing_file.get('folder_path'):
+                    logger.info(f"[update_extraction_manifest] File moved: {file_data['file_name']}")
+                    file_data['previous_folder_path'] = existing_file.get('folder_path')
+            else:
+                # New file
+                new_files_count += 1
+                logger.info(f"[update_extraction_manifest] New file: {file_data['file_name']}")
+    else:
+        # No existing manifest - all files are new
+        new_files_count = len(files_by_id)
+        logger.info(f"[update_extraction_manifest] Creating new manifest with {new_files_count} files")
+
+    # Step 5: Mark archived files
+    archived_files = []
+    if existing_manifest and 'files' in existing_manifest:
+        existing_by_id = {f['file_id']: f for f in existing_manifest['files']}
+        existing_ids = set(f['file_id'] for f in existing_manifest['files'])
+        current_ids = set(files_by_id.keys())
+        deleted_ids = existing_ids - current_ids
+
+        for file_id in deleted_ids:
+            old_file = existing_by_id[file_id]
+            if old_file.get('extraction_status') != 'archived':
+                old_file['extraction_status'] = 'archived'
+                old_file['archived_date'] = datetime.utcnow().isoformat() + "Z"
+                archived_files.append(old_file)
+                logger.info(f"[update_extraction_manifest] File archived: {old_file.get('file_name')}")
+
+    # Step 6: Build updated manifest
+    all_files_list = list(files_by_id.values()) + archived_files
+
+    stats = {
+        "pending": sum(1 for f in all_files_list if f['extraction_status'] == 'pending'),
+        "extracted": sum(1 for f in all_files_list if f['extraction_status'] == 'extracted'),
+        "failed": sum(1 for f in all_files_list if f['extraction_status'] == 'failed'),
+        "skipped": sum(1 for f in all_files_list if f['extraction_status'] == 'skipped'),
+        "archived": sum(1 for f in all_files_list if f['extraction_status'] == 'archived')
+    }
+
+    total_pending_and_extracted = stats['pending'] + stats['extracted']
+    completion_percentage = 0
+    if total_pending_and_extracted > 0:
+        completion_percentage = round((stats['extracted'] / total_pending_and_extracted) * 100, 2)
+
+    updated_manifest = {
+        "project_id": project_id,
+        "project_name": project_name,
+        "source_drive_folder_id": source_folder_id,
+        "last_scan_date": datetime.utcnow().isoformat() + "Z",
+        "last_update_date": datetime.utcnow().isoformat() + "Z",
+        "total_files": len(all_files_list),
+        "active_files": len(files_by_id),
+        "archived_files": len(archived_files),
+        "manifest_version": "2.0",
+        "files": all_files_list,
+        "stats": stats,
+        "extraction_progress": {
+            "total_documents": total_pending_and_extracted,
+            "extracted_documents": stats['extracted'],
+            "completion_percentage": completion_percentage
+        },
+        "scan_metadata": {
+            "scan_type": "full",
+            "files_added": new_files_count,
+            "files_modified": modified_files_count,
+            "files_unchanged_extracted": unchanged_extracted_count,
+            "files_archived": len(archived_files)
+        }
+    }
+
+    # Step 7: Write manifest to Drive
+    manifest_json = json.dumps(updated_manifest, indent=2, ensure_ascii=False)
+    media = MediaIoBaseUpload(
+        io.BytesIO(manifest_json.encode('utf-8')),
+        mimetype='application/json',
+        resumable=True
+    )
+
+    # Check if manifest already exists
+    try:
+        query = f"name='{manifest_filename}' and '{manifest_folder_id}' in parents and trashed=false"
+        results = await asyncio.to_thread(
+            service.files().list(
+                q=query,
+                fields="files(id)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute
+        )
+
+        if results.get('files'):
+            # Update existing
+            manifest_file_id = results['files'][0]['id']
+            await asyncio.to_thread(
+                service.files().update(
+                    fileId=manifest_file_id,
+                    media_body=media,
+                    supportsAllDrives=True
+                ).execute
+            )
+            logger.info(f"[update_extraction_manifest] Updated existing manifest file: {manifest_file_id}")
+        else:
+            # Create new
+            file_metadata = {
+                'name': manifest_filename,
+                'parents': [manifest_folder_id],
+                'mimeType': 'application/json'
+            }
+            result = await asyncio.to_thread(
+                service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id',
+                    supportsAllDrives=True
+                ).execute
+            )
+            logger.info(f"[update_extraction_manifest] Created new manifest file: {result.get('id')}")
+    except Exception as e:
+        logger.error(f"[update_extraction_manifest] Error writing manifest: {e}")
+        return f"❌ Error writing manifest: {e}"
+
+    # Step 8: Format summary
+    output = []
+    output.append(f"✅ Manifest updated for {project_name}")
+    output.append("=" * 60)
+    output.append(f"\n📊 Scan Results:")
+    output.append(f"   Total files: {updated_manifest['total_files']}")
+    output.append(f"   Active: {updated_manifest['active_files']}")
+    output.append(f"   Archived: {updated_manifest['archived_files']}")
+
+    output.append(f"\n📈 Changes:")
+    output.append(f"   🆕 New files: {new_files_count}")
+    output.append(f"   📝 Modified files: {modified_files_count}")
+    output.append(f"   ✅ Unchanged (extracted): {unchanged_extracted_count}")
+    output.append(f"   🗑️  Archived files: {len(archived_files)}")
+
+    output.append(f"\n📊 Extraction Status:")
+    output.append(f"   ✅ Extracted: {stats['extracted']}")
+    output.append(f"   ⏳ Pending: {stats['pending']}")
+    output.append(f"   ❌ Failed: {stats['failed']}")
+    output.append(f"   ⏭️  Skipped: {stats['skipped']}")
+    output.append(f"   Completion: {completion_percentage}%")
+
+    return "\n".join(output)
+
+# ============================================================================
+# MANIFEST TRACKING TOOLS (New - for incremental extraction tracking)
+# ============================================================================
+
+@server.tool()
+async def mark_file_as_extracted(
+    user_google_email: str,
+    project_id: str,
+    source_file_id: str,
+    document_type: str,
+    output_file_path: str,
+    extraction_quality: str = "high",
+    extraction_date: Optional[str] = None,
+    manifest_folder_id: str = "1ANYWlH575tOYyrCv3UwA6tOGQPi9yK0Z",
+    pages_extracted: Optional[int] = None,
+    total_pages: Optional[int] = None,
+    extraction_notes: Optional[str] = None
+) -> str:
+    """
+    Mark a single file as extracted in the manifest.
+
+    This performs an atomic update without requiring a full Drive rescan:
+    1. Reads the manifest
+    2. Updates specific file status
+    3. Recalculates statistics
+    4. Writes manifest back
+
+    Args:
+        user_google_email: Google account email
+        project_id: Project ID (e.g., "03_H83")
+        source_file_id: Drive file ID of source PDF
+        document_type: Document type (invoice, lease, purchase_contract, etc.)
+        output_file_path: Relative path to output JSON
+        extraction_quality: "high", "medium", or "low"
+        extraction_date: ISO timestamp (defaults to now)
+        manifest_folder_id: Folder containing manifest
+        pages_extracted: Number of pages extracted
+        total_pages: Total pages in document
+        extraction_notes: Extraction notes
+
+    Returns:
+        JSON string with update result and statistics
+    """
+    from .manifest_tools import mark_file_as_extracted as _mark_file
+
+    result = await asyncio.to_thread(
+        _mark_file,
+        user_google_email=user_google_email,
+        project_id=project_id,
+        source_file_id=source_file_id,
+        document_type=document_type,
+        output_file_path=output_file_path,
+        extraction_quality=extraction_quality,
+        extraction_date=extraction_date,
+        manifest_folder_id=manifest_folder_id,
+        pages_extracted=pages_extracted,
+        total_pages=total_pages,
+        extraction_notes=extraction_notes
+    )
+
+    # Format result for display
+    stats = result['manifest_stats']
+    output = f"""✅ Marked as extracted: {result['file_name']}
+
+Previous status: {result['previous_status']}
+New status: {result['new_status']}
+Document type: {document_type}
+Output: {output_file_path}
+
+📊 Manifest Statistics:
+   Total files: {stats['total_files']}
+   Extracted: {stats['extracted']}
+   Pending: {stats['pending']}
+   Failed: {stats['failed']}
+   Progress: {stats['completion_pct']}%
+"""
+    return output
+
+
+@server.tool()
+async def mark_files_as_extracted_batch(
+    user_google_email: str,
+    project_id: str,
+    extracted_files: List[dict],
+    manifest_folder_id: str = "1ANYWlH575tOYyrCv3UwA6tOGQPi9yK0Z"
+) -> str:
+    """
+    Mark multiple files as extracted in a single batch operation.
+
+    More efficient than individual updates - reads/writes manifest only once.
+
+    Args:
+        user_google_email: Google account email
+        project_id: Project ID
+        extracted_files: List of dicts with:
+            - source_file_id (required)
+            - document_type (required)
+            - output_file_path (required)
+            - extraction_quality (optional)
+            - extraction_date (optional)
+            - pages_extracted (optional)
+            - total_pages (optional)
+            - extraction_notes (optional)
+        manifest_folder_id: Folder containing manifest
+
+    Returns:
+        JSON string with batch update results
+    """
+    from .manifest_tools import mark_files_as_extracted_batch as _mark_batch
+
+    result = await asyncio.to_thread(
+        _mark_batch,
+        user_google_email=user_google_email,
+        project_id=project_id,
+        extracted_files=extracted_files,
+        manifest_folder_id=manifest_folder_id
+    )
+
+    stats = result['manifest_stats']
+    output = f"""✅ Batch update complete
+
+Files updated: {result['files_updated']}
+Files not found: {len(result['files_not_found'])}
+
+📊 Manifest Statistics:
+   Total files: {stats['total_files']}
+   Extracted: {stats['extracted']}
+   Pending: {stats['pending']}
+   Failed: {stats['failed']}
+   Progress: {stats['completion_pct']}%
+"""
+
+    if result['files_not_found']:
+        output += f"\n⚠️ Files not found in manifest:\n"
+        for file_id in result['files_not_found'][:5]:
+            output += f"   - {file_id}\n"
+        if len(result['files_not_found']) > 5:
+            output += f"   ... and {len(result['files_not_found']) - 5} more\n"
+
+    return output
