@@ -46,6 +46,8 @@ async def list_spreadsheets(
             pageSize=max_results,
             fields="files(id,name,modifiedTime,webViewLink)",
             orderBy="modifiedTime desc",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         )
         .execute
     )

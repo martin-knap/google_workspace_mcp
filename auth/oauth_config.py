@@ -40,6 +40,11 @@ class OAuthConfig:
         self.pkce_required = self.oauth21_enabled  # PKCE is mandatory in OAuth 2.1
         self.supported_code_challenge_methods = ["S256", "plain"] if not self.oauth21_enabled else ["S256"]
 
+        # External OAuth 2.1 provider configuration
+        self.external_oauth21_provider = os.getenv("EXTERNAL_OAUTH21_PROVIDER", "false").lower() == "true"
+        if self.external_oauth21_provider and not self.oauth21_enabled:
+            raise ValueError("EXTERNAL_OAUTH21_PROVIDER requires MCP_ENABLE_OAUTH21=true")
+
         # Stateless mode configuration
         self.stateless_mode = os.getenv("WORKSPACE_MCP_STATELESS_MODE", "false").lower() == "true"
         if self.stateless_mode and not self.oauth21_enabled:
@@ -87,7 +92,11 @@ class OAuthConfig:
             if value and key not in os.environ:
                 os.environ[key] = value
 
-        _set_if_absent("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.google.GoogleProvider" if self.oauth21_enabled else None)
+        # Don't set FASTMCP_SERVER_AUTH if using external OAuth provider
+        # (external OAuth means protocol-level auth is disabled, only tool-level auth)
+        if not self.external_oauth21_provider:
+            _set_if_absent("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.google.GoogleProvider" if self.oauth21_enabled else None)
+
         _set_if_absent("FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_ID", self.client_id)
         _set_if_absent("FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_SECRET", self.client_secret)
         _set_if_absent("FASTMCP_SERVER_AUTH_GOOGLE_BASE_URL", self.get_oauth_base_url())
@@ -190,6 +199,7 @@ class OAuthConfig:
             "redirect_path": self.redirect_path,
             "client_configured": bool(self.client_id),
             "oauth21_enabled": self.oauth21_enabled,
+            "external_oauth21_provider": self.external_oauth21_provider,
             "pkce_required": self.pkce_required,
             "transport_mode": self._transport_mode,
             "total_redirect_uris": len(self.get_redirect_uris()),
@@ -222,6 +232,18 @@ class OAuthConfig:
             True if OAuth 2.1 is enabled
         """
         return self.oauth21_enabled
+
+    def is_external_oauth21_provider(self) -> bool:
+        """
+        Check if external OAuth 2.1 provider mode is enabled.
+
+        When enabled, the server expects external OAuth flow with bearer tokens
+        in Authorization headers for tool calls. Protocol-level auth is disabled.
+
+        Returns:
+            True if external OAuth 2.1 provider is enabled
+        """
+        return self.external_oauth21_provider
 
     def detect_oauth_version(self, request_params: Dict[str, Any]) -> str:
         """
@@ -383,3 +405,8 @@ def get_oauth_redirect_uri() -> str:
 def is_stateless_mode() -> bool:
     """Check if stateless mode is enabled."""
     return get_oauth_config().stateless_mode
+
+
+def is_external_oauth21_provider() -> bool:
+    """Check if external OAuth 2.1 provider mode is enabled."""
+    return get_oauth_config().is_external_oauth21_provider()

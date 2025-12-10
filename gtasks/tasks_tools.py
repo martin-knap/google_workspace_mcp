@@ -4,8 +4,9 @@ Google Tasks MCP Tools
 This module provides MCP tools for interacting with Google Tasks API.
 """
 
-import logging
 import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from googleapiclient.errors import HttpError  # type: ignore
@@ -39,6 +40,28 @@ class StructuredTask:
 
     def __repr__(self) -> str:
         return f"StructuredTask(title={self.title}, {len(self.subtasks)} subtasks)"
+
+
+def _adjust_due_max_for_tasks_api(due_max: str) -> str:
+    """
+    Compensate for the Google Tasks API treating dueMax as an exclusive bound.
+
+    The API stores due dates at day resolution and compares using < dueMax, so to
+    include tasks due on the requested date we bump the bound by one day.
+    """
+    try:
+        parsed = datetime.fromisoformat(due_max.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("[list_tasks] Unable to parse due_max '%s'; sending unmodified value", due_max)
+        return due_max
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    adjusted = parsed + timedelta(days=1)
+    if adjusted.tzinfo == timezone.utc:
+        return adjusted.isoformat().replace("+00:00", "Z")
+    return adjusted.isoformat()
 
 
 @server.tool()  # type: ignore
@@ -344,7 +367,14 @@ async def list_tasks(
         if completed_min:
             params["completedMin"] = completed_min
         if due_max:
-            params["dueMax"] = due_max
+            adjusted_due_max = _adjust_due_max_for_tasks_api(due_max)
+            if adjusted_due_max != due_max:
+                logger.info(
+                    "[list_tasks] Adjusted due_max from '%s' to '%s' to include due date boundary",
+                    due_max,
+                    adjusted_due_max,
+                )
+            params["dueMax"] = adjusted_due_max
         if due_min:
             params["dueMin"] = due_min
         if updated_min:

@@ -9,6 +9,9 @@ from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 import time
 import json
+from tempfile import NamedTemporaryFile
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 from pathlib import Path
 
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -20,15 +23,23 @@ from google.oauth2.credentials import Credentials as GoogleCredentials
 
 from auth.service_decorator import require_google_service
 from auth.google_auth import get_credentials, start_auth_flow
-from auth.oauth_config import get_oauth_config
+from auth.oauth_config import get_oauth_config, is_stateless_mode
 from auth.scopes import CLOUD_VISION_SCOPE
 from core.config import get_transport_mode, get_oauth_redirect_uri
 from core.context import get_fastmcp_session_id
 from core.utils import extract_office_xml_text, handle_http_errors
 from core.server import server
-from gdrive.drive_helpers import DRIVE_QUERY_PATTERNS, build_drive_list_params
+from gdrive.drive_helpers import (
+    DRIVE_QUERY_PATTERNS,
+    build_drive_list_params,
+    resolve_drive_item,
+    resolve_folder_id,
+)
 
 logger = logging.getLogger(__name__)
+
+DOWNLOAD_CHUNK_SIZE_BYTES = 256 * 1024  # 256 KB
+UPLOAD_CHUNK_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB (Google recommended minimum)
 
 @server.tool()
 @handle_http_errors("search_drive_files", is_read_only=True, service_type="drive")
@@ -122,11 +133,12 @@ async def get_drive_file_content(
     """
     logger.info(f"[get_drive_file_content] Invoked. File ID: '{file_id}'")
 
-    file_metadata = await asyncio.to_thread(
-        service.files().get(
-            fileId=file_id, fields="id, name, mimeType, webViewLink", supportsAllDrives=True
-        ).execute
+    resolved_file_id, file_metadata = await resolve_drive_item(
+        service,
+        file_id,
+        extra_fields="name, webViewLink",
     )
+    file_id = resolved_file_id
     mime_type = file_metadata.get("mimeType", "")
     file_name = file_metadata.get("name", "Unknown File")
     export_mime_type = {
@@ -217,7 +229,8 @@ async def list_drive_items(
     """
     logger.info(f"[list_drive_items] Invoked. Email: '{user_google_email}', Folder ID: '{folder_id}'")
 
-    final_query = f"'{folder_id}' in parents and trashed=false"
+    resolved_folder_id = await resolve_folder_id(service, folder_id)
+    final_query = f"'{resolved_folder_id}' in parents and trashed=false"
 
     list_params = build_drive_list_params(
         query=final_query,
@@ -265,7 +278,7 @@ async def create_drive_file(
         content (Optional[str]): If provided, the content to write to the file.
         folder_id (str): The ID of the parent folder. Defaults to 'root'. For shared drives, this must be a folder ID within the shared drive.
         mime_type (str): The MIME type of the file. Defaults to 'text/plain'.
-        fileUrl (Optional[str]): If provided, fetches the file content from this URL.
+        fileUrl (Optional[str]): If provided, fetches the file content from this URL. Supports file://, http://, and https:// protocols.
 
     Returns:
         str: Confirmation message of the successful file creation with file link.
@@ -276,37 +289,158 @@ async def create_drive_file(
         raise Exception("You must provide either 'content' or 'fileUrl'.")
 
     file_data = None
-    # Prefer fileUrl if both are provided
-    if fileUrl:
-        logger.info(f"[create_drive_file] Fetching file from URL: {fileUrl}")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(fileUrl)
-            if resp.status_code != 200:
-                raise Exception(f"Failed to fetch file from URL: {fileUrl} (status {resp.status_code})")
-            file_data = await resp.aread()
-            # Try to get MIME type from Content-Type header
-            content_type = resp.headers.get("Content-Type")
-            if content_type and content_type != "application/octet-stream":
-                mime_type = content_type
-                logger.info(f"[create_drive_file] Using MIME type from Content-Type header: {mime_type}")
-    elif content:
-        file_data = content.encode('utf-8')
+    resolved_folder_id = await resolve_folder_id(service, folder_id)
 
     file_metadata = {
         'name': file_name,
-        'parents': [folder_id],
+        'parents': [resolved_folder_id],
         'mimeType': mime_type
     }
-    media = io.BytesIO(file_data)
 
-    created_file = await asyncio.to_thread(
-        service.files().create(
-            body=file_metadata,
-            media_body=MediaIoBaseUpload(media, mimetype=mime_type, resumable=True),
-            fields='id, name, webViewLink',
-            supportsAllDrives=True
-        ).execute
-    )
+    # Prefer fileUrl if both are provided
+    if fileUrl:
+        logger.info(f"[create_drive_file] Fetching file from URL: {fileUrl}")
+
+        # Check if this is a file:// URL
+        parsed_url = urlparse(fileUrl)
+        if parsed_url.scheme == 'file':
+            # Handle file:// URL - read from local filesystem
+            logger.info("[create_drive_file] Detected file:// URL, reading from local filesystem")
+            transport_mode = get_transport_mode()
+            running_streamable = transport_mode == "streamable-http"
+            if running_streamable:
+                logger.warning("[create_drive_file] file:// URL requested while server runs in streamable-http mode. Ensure the file path is accessible to the server (e.g., Docker volume) or use an HTTP(S) URL.")
+
+            # Convert file:// URL to a cross-platform local path
+            raw_path = parsed_url.path or ""
+            netloc = parsed_url.netloc
+            if netloc and netloc.lower() != "localhost":
+                raw_path = f"//{netloc}{raw_path}"
+            file_path = url2pathname(raw_path)
+
+            # Verify file exists
+            path_obj = Path(file_path)
+            if not path_obj.exists():
+                extra = " The server is running via streamable-http, so file:// URLs must point to files inside the container or remote host." if running_streamable else ""
+                raise Exception(f"Local file does not exist: {file_path}.{extra}")
+            if not path_obj.is_file():
+                extra = " In streamable-http/Docker deployments, mount the file into the container or provide an HTTP(S) URL." if running_streamable else ""
+                raise Exception(f"Path is not a file: {file_path}.{extra}")
+
+            logger.info(f"[create_drive_file] Reading local file: {file_path}")
+
+            # Read file and upload
+            file_data = await asyncio.to_thread(path_obj.read_bytes)
+            total_bytes = len(file_data)
+            logger.info(f"[create_drive_file] Read {total_bytes} bytes from local file")
+
+            media = MediaIoBaseUpload(
+                io.BytesIO(file_data),
+                mimetype=mime_type,
+                resumable=True,
+                chunksize=UPLOAD_CHUNK_SIZE_BYTES
+            )
+
+            logger.info("[create_drive_file] Starting upload to Google Drive...")
+            created_file = await asyncio.to_thread(
+                service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id, name, webViewLink',
+                    supportsAllDrives=True
+                ).execute
+            )
+        # Handle HTTP/HTTPS URLs
+        elif parsed_url.scheme in ('http', 'https'):
+            # when running in stateless mode, deployment may not have access to local file system
+            if is_stateless_mode():
+                async with httpx.AsyncClient(follow_redirects=True) as client:
+                    resp = await client.get(fileUrl)
+                    if resp.status_code != 200:
+                        raise Exception(f"Failed to fetch file from URL: {fileUrl} (status {resp.status_code})")
+                    file_data = await resp.aread()
+                    # Try to get MIME type from Content-Type header
+                    content_type = resp.headers.get("Content-Type")
+                    if content_type and content_type != "application/octet-stream":
+                        mime_type = content_type
+                        file_metadata['mimeType'] = content_type
+                        logger.info(f"[create_drive_file] Using MIME type from Content-Type header: {content_type}")
+
+                media = MediaIoBaseUpload(
+                    io.BytesIO(file_data),
+                    mimetype=mime_type,
+                    resumable=True,
+                    chunksize=UPLOAD_CHUNK_SIZE_BYTES
+                )
+
+                created_file = await asyncio.to_thread(
+                    service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id, name, webViewLink',
+                        supportsAllDrives=True
+                    ).execute
+                )
+            else:
+                # Use NamedTemporaryFile to stream download and upload
+                with NamedTemporaryFile() as temp_file:
+                    total_bytes = 0
+                    # follow redirects
+                    async with httpx.AsyncClient(follow_redirects=True) as client:
+                        async with client.stream('GET', fileUrl) as resp:
+                            if resp.status_code != 200:
+                                raise Exception(f"Failed to fetch file from URL: {fileUrl} (status {resp.status_code})")
+
+                            # Stream download in chunks
+                            async for chunk in resp.aiter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE_BYTES):
+                                await asyncio.to_thread(temp_file.write, chunk)
+                                total_bytes += len(chunk)
+
+                            logger.info(f"[create_drive_file] Downloaded {total_bytes} bytes from URL before upload.")
+
+                            # Try to get MIME type from Content-Type header
+                            content_type = resp.headers.get("Content-Type")
+                            if content_type and content_type != "application/octet-stream":
+                                mime_type = content_type
+                                file_metadata['mimeType'] = mime_type
+                                logger.info(f"[create_drive_file] Using MIME type from Content-Type header: {mime_type}")
+
+                    # Reset file pointer to beginning for upload
+                    temp_file.seek(0)
+
+                    # Upload with chunking
+                    media = MediaIoBaseUpload(
+                        temp_file,
+                        mimetype=mime_type,
+                        resumable=True,
+                        chunksize=UPLOAD_CHUNK_SIZE_BYTES
+                    )
+
+                    logger.info("[create_drive_file] Starting upload to Google Drive...")
+                    created_file = await asyncio.to_thread(
+                        service.files().create(
+                            body=file_metadata,
+                            media_body=media,
+                            fields='id, name, webViewLink',
+                            supportsAllDrives=True
+                        ).execute
+                    )
+        else:
+            if not parsed_url.scheme:
+                raise Exception("fileUrl is missing a URL scheme. Use file://, http://, or https://.")
+            raise Exception(f"Unsupported URL scheme '{parsed_url.scheme}'. Only file://, http://, and https:// are supported.")
+    elif content:
+        file_data = content.encode('utf-8')
+        media = io.BytesIO(file_data)
+
+        created_file = await asyncio.to_thread(
+            service.files().create(
+                body=file_metadata,
+                media_body=MediaIoBaseUpload(media, mimetype=mime_type, resumable=True),
+                fields='id, name, webViewLink',
+                supportsAllDrives=True
+            ).execute
+        )
 
     link = created_file.get('webViewLink', 'No link available')
     confirmation_message = f"Successfully created file '{created_file.get('name', file_name)}' (ID: {created_file.get('id', 'N/A')}) in folder '{folder_id}' for {user_google_email}. Link: {link}"
@@ -456,9 +590,9 @@ async def move_drive_files(
 
 
 @server.tool()
-@handle_http_errors("update_drive_file", service_type="drive")
+@handle_http_errors("update_drive_file_content", service_type="drive")
 @require_google_service("drive", "drive_file")
-async def update_drive_file(
+async def update_drive_file_content(
     service,
     user_google_email: str,
     file_id: str,
@@ -617,7 +751,10 @@ async def get_drive_file_permissions(
         str: Detailed file metadata including sharing status and URLs.
     """
     logger.info(f"[get_drive_file_permissions] Checking file {file_id} for {user_google_email}")
-    
+
+    resolved_file_id, _ = await resolve_drive_item(service, file_id)
+    file_id = resolved_file_id
+
     try:
         # Get comprehensive file metadata including permissions
         file_metadata = await asyncio.to_thread(
@@ -757,6 +894,8 @@ async def check_drive_file_public_access(
     
     # Check permissions for the first file
     file_id = files[0]['id']
+    resolved_file_id, _ = await resolve_drive_item(service, file_id)
+    file_id = resolved_file_id
     
     # Get detailed permissions
     file_metadata = await asyncio.to_thread(
@@ -2438,3 +2577,171 @@ Files not found: {len(result['files_not_found'])}
             output += f"   ... and {len(result['files_not_found']) - 5} more\n"
 
     return output
+
+
+@server.tool()
+@handle_http_errors("update_drive_file", is_read_only=False, service_type="drive")
+@require_google_service("drive", "drive_file")
+async def update_drive_file(
+    service,
+    user_google_email: str,
+    file_id: str,
+    # File metadata updates
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    mime_type: Optional[str] = None,
+
+    # Folder organization
+    add_parents: Optional[str] = None,  # Comma-separated folder IDs to add
+    remove_parents: Optional[str] = None,  # Comma-separated folder IDs to remove
+
+    # File status
+    starred: Optional[bool] = None,
+    trashed: Optional[bool] = None,
+
+    # Sharing and permissions
+    writers_can_share: Optional[bool] = None,
+    copy_requires_writer_permission: Optional[bool] = None,
+
+    # Custom properties
+    properties: Optional[dict] = None,  # User-visible custom properties
+) -> str:
+    """
+    Updates metadata and properties of a Google Drive file.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the file to update. Required.
+        name (Optional[str]): New name for the file.
+        description (Optional[str]): New description for the file.
+        mime_type (Optional[str]): New MIME type (note: changing type may require content upload).
+        add_parents (Optional[str]): Comma-separated folder IDs to add as parents.
+        remove_parents (Optional[str]): Comma-separated folder IDs to remove from parents.
+        starred (Optional[bool]): Whether to star/unstar the file.
+        trashed (Optional[bool]): Whether to move file to/from trash.
+        writers_can_share (Optional[bool]): Whether editors can share the file.
+        copy_requires_writer_permission (Optional[bool]): Whether copying requires writer permission.
+        properties (Optional[dict]): Custom key-value properties for the file.
+
+    Returns:
+        str: Confirmation message with details of the updates applied.
+    """
+    logger.info(f"[update_drive_file] Updating file {file_id} for {user_google_email}")
+
+    current_file_fields = (
+        "name, description, mimeType, parents, starred, trashed, webViewLink, "
+        "writersCanShare, copyRequiresWriterPermission, properties"
+    )
+    resolved_file_id, current_file = await resolve_drive_item(
+        service,
+        file_id,
+        extra_fields=current_file_fields,
+    )
+    file_id = resolved_file_id
+
+    # Build the update body with only specified fields
+    update_body = {}
+    if name is not None:
+        update_body['name'] = name
+    if description is not None:
+        update_body['description'] = description
+    if mime_type is not None:
+        update_body['mimeType'] = mime_type
+    if starred is not None:
+        update_body['starred'] = starred
+    if trashed is not None:
+        update_body['trashed'] = trashed
+    if writers_can_share is not None:
+        update_body['writersCanShare'] = writers_can_share
+    if copy_requires_writer_permission is not None:
+        update_body['copyRequiresWriterPermission'] = copy_requires_writer_permission
+    if properties is not None:
+        update_body['properties'] = properties
+
+    async def _resolve_parent_arguments(parent_arg: Optional[str]) -> Optional[str]:
+        if not parent_arg:
+            return None
+        parent_ids = [part.strip() for part in parent_arg.split(",") if part.strip()]
+        if not parent_ids:
+            return None
+
+        resolved_ids = []
+        for parent in parent_ids:
+            resolved_parent = await resolve_folder_id(service, parent)
+            resolved_ids.append(resolved_parent)
+        return ",".join(resolved_ids)
+
+    resolved_add_parents = await _resolve_parent_arguments(add_parents)
+    resolved_remove_parents = await _resolve_parent_arguments(remove_parents)
+
+    # Build query parameters for parent changes
+    query_params = {
+        'fileId': file_id,
+        'supportsAllDrives': True,
+        'fields': 'id, name, description, mimeType, parents, starred, trashed, webViewLink, writersCanShare, copyRequiresWriterPermission, properties'
+    }
+
+    if resolved_add_parents:
+        query_params['addParents'] = resolved_add_parents
+    if resolved_remove_parents:
+        query_params['removeParents'] = resolved_remove_parents
+
+    # Only include body if there are updates
+    if update_body:
+        query_params['body'] = update_body
+
+    # Perform the update
+    updated_file = await asyncio.to_thread(
+        service.files().update(**query_params).execute
+    )
+
+    # Build response message
+    output_parts = [f"✅ Successfully updated file: {updated_file.get('name', current_file['name'])}"]
+    output_parts.append(f"   File ID: {file_id}")
+
+    # Report what changed
+    changes = []
+    if name is not None and name != current_file.get('name'):
+        changes.append(f"   • Name: '{current_file.get('name')}' → '{name}'")
+    if description is not None:
+        old_desc_value = current_file.get('description')
+        new_desc_value = description
+        should_report_change = (old_desc_value or '') != (new_desc_value or '')
+        if should_report_change:
+            old_desc_display = old_desc_value if old_desc_value not in (None, '') else '(empty)'
+            new_desc_display = new_desc_value if new_desc_value not in (None, '') else '(empty)'
+            changes.append(f"   • Description: {old_desc_display} → {new_desc_display}")
+    if add_parents:
+        changes.append(f"   • Added to folder(s): {add_parents}")
+    if remove_parents:
+        changes.append(f"   • Removed from folder(s): {remove_parents}")
+    current_starred = current_file.get('starred')
+    if starred is not None and starred != current_starred:
+        star_status = "starred" if starred else "unstarred"
+        changes.append(f"   • File {star_status}")
+    current_trashed = current_file.get('trashed')
+    if trashed is not None and trashed != current_trashed:
+        trash_status = "moved to trash" if trashed else "restored from trash"
+        changes.append(f"   • File {trash_status}")
+    current_writers_can_share = current_file.get('writersCanShare')
+    if writers_can_share is not None and writers_can_share != current_writers_can_share:
+        share_status = "can" if writers_can_share else "cannot"
+        changes.append(f"   • Writers {share_status} share the file")
+    current_copy_requires_writer_permission = current_file.get('copyRequiresWriterPermission')
+    if copy_requires_writer_permission is not None and copy_requires_writer_permission != current_copy_requires_writer_permission:
+        copy_status = "requires" if copy_requires_writer_permission else "doesn't require"
+        changes.append(f"   • Copying {copy_status} writer permission")
+    if properties:
+        changes.append(f"   • Updated custom properties: {properties}")
+
+    if changes:
+        output_parts.append("")
+        output_parts.append("Changes applied:")
+        output_parts.extend(changes)
+    else:
+        output_parts.append("   (No changes were made)")
+
+    output_parts.append("")
+    output_parts.append(f"View file: {updated_file.get('webViewLink', '#')}")
+
+    return "\n".join(output_parts)

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/workspace-mcp.svg)](https://pypi.org/project/workspace-mcp/)
-[![PyPI Downloads](https://static.pepy.tech/personalized-badge/workspace-mcp?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=BLUE&left_text=downloads)](https://pepy.tech/projects/workspace-mcp)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/workspace-mcp?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=BLUE&left_text=pip%20downloads)](https://pepy.tech/projects/workspace-mcp)
 [![Website](https://img.shields.io/badge/Website-workspacemcp.com-green.svg)](https://workspacemcp.com)
 
 *Full natural language control over Google Calendar, Drive, Gmail, Docs, Sheets, Slides, Forms, Tasks, and Chat through all MCP clients, AI assistants and developer tools.*
@@ -89,7 +89,6 @@ A production-ready MCP server that integrates all major Google Workspace service
 
 **<span style="color:#72898f">✓</span> Tasks** • **<span style="color:#72898f">◆</span> Custom Search** • **<span style="color:#72898f">↻</span> Transport Support**
 - Full support for all MCP Transports
-- OpenAPI compatibility via `mcpo`
 - Task & task list management with hierarchy
 - Programmable Search Engine (PSE) integration
 
@@ -102,7 +101,7 @@ A production-ready MCP server that integrates all major Google Workspace service
 ## ▶ Quick Start
 
 <details>
-<summary>≡ <b>Quick Reference Card</b> <sub><sup>← Essential commands & configs at a glance</sup></sub></summary>
+<summary>≡ <b>Quick Reference Card</b>← Essential commands & configs at a glance</summary>
 
 <table>
 <tr><td width="33%" valign="top">
@@ -170,6 +169,7 @@ uv run main.py --tools gmail drive
 | `GOOGLE_PSE_API_KEY` | API key for Custom Search |
 | `GOOGLE_PSE_ENGINE_ID` | Search Engine ID for Custom Search |
 | `MCP_ENABLE_OAUTH21` | Set to `true` for OAuth 2.1 support |
+| `EXTERNAL_OAUTH21_PROVIDER` | Set to `true` for external OAuth flow with bearer tokens (requires OAuth 2.1) |
 | `WORKSPACE_MCP_STATELESS_MODE` | Set to `true` for stateless operation (requires OAuth 2.1) |
 
 </td></tr>
@@ -698,8 +698,9 @@ cp .env.oauth21 .env
 |------|------|-------------|
 | `search_drive_files` | **Core** | Search files with query syntax |
 | `get_drive_file_content` | **Core** | Read file content (Office formats) |
-| `list_drive_items` | Extended | List folder contents |
 | `create_drive_file` | **Core** | Create files or fetch from URLs |
+| `list_drive_items` | Extended | List folder contents |
+| `update_drive_file` | Extended | Update file metadata, move between folders |
 
 </td>
 </tr>
@@ -992,7 +993,47 @@ This mode is ideal for:
 
 **MCP Inspector**: No additional configuration needed with desktop OAuth client.
 
-**Claude Code Inspector**: No additional configuration needed with desktop OAuth client.
+**Claude Code**: No additional configuration needed with desktop OAuth client.
+
+### External OAuth 2.1 Provider Mode
+
+The server supports an external OAuth 2.1 provider mode for scenarios where authentication is handled by an external system. In this mode, the MCP server does not manage the OAuth flow itself but expects valid bearer tokens in the Authorization header of tool calls.
+
+**Enabling External OAuth 2.1 Provider Mode:**
+```bash
+# External OAuth provider mode requires OAuth 2.1 to be enabled
+export MCP_ENABLE_OAUTH21=true
+export EXTERNAL_OAUTH21_PROVIDER=true
+uv run main.py --transport streamable-http
+```
+
+**How It Works:**
+- **Protocol-level auth disabled**: MCP handshake (`initialize`) and `tools/list` do not require authentication
+- **Tool-level auth required**: All tool calls must include `Authorization: Bearer <token>` header
+- **External OAuth flow**: Your external system handles the OAuth flow and obtains Google access tokens
+- **Token validation**: Server validates bearer tokens via Google's tokeninfo API
+- **Multi-user support**: Each request is authenticated independently based on its bearer token
+
+**Key Features:**
+- **No local OAuth flow**: Server does not provide OAuth callback endpoints or manage OAuth state
+- **Bearer token only**: All authentication via Authorization headers
+- **Stateless by design**: Works seamlessly with `WORKSPACE_MCP_STATELESS_MODE=true`
+- **External identity providers**: Integrate with your existing authentication infrastructure
+- **Tool discovery**: Clients can list available tools without authentication
+
+**Requirements:**
+- Must be used with `MCP_ENABLE_OAUTH21=true`
+- OAuth credentials still required for token validation (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`)
+- External system must obtain valid Google OAuth access tokens (ya29.*)
+- Each tool call request must include valid bearer token
+
+**Use Cases:**
+- Integrating with existing authentication systems
+- Custom OAuth flows managed by your application
+- API gateways that handle authentication upstream
+- Multi-tenant SaaS applications with centralized auth
+- Mobile or web apps with their own OAuth implementation
+
 
 ### VS Code MCP Client Support
 
@@ -1011,6 +1052,15 @@ This mode is ideal for:
 ```
 </details>
 
+### Claude Code MCP Client Support
+
+<details>
+<summary>🆚 <b>Claude Code Configuration</b> <sub><sup>← Setup for Claude Code MCP support</sup></sub></summary>
+
+```json
+claude mcp add --transport http workspace-mcp http://localhost:8000/mcp
+```
+</details>
 
 #### Reverse Proxy Setup
 
@@ -1214,59 +1264,10 @@ The credential store automatically handles credential serialization, expiry pars
 - **OAuth Callback**: Uses `http://localhost:8000/oauth2callback` for development (requires `OAUTHLIB_INSECURE_TRANSPORT=1`)
 - **Transport-Aware Callbacks**: Stdio mode starts a minimal HTTP server only for OAuth, ensuring callbacks work in all modes
 - **Production**: Use HTTPS & OAuth 2.1 and configure accordingly
-- **Network Exposure**: Consider authentication when using `mcpo` over networks
 - **Scope Minimization**: Tools request only necessary permissions
 
 ---
 
-## <span style="color:#adbcbc">◆ Integration with Open WebUI</span>
-
-<details open>
-<summary>◆ <b>Open WebUI Integration</b> <sub><sup>← Connect to Open WebUI as tool provider</sup></sub></summary>
-
-<table>
-<tr><td width="50%" valign="top">
-
-### ▶ Instant Start (No Config)
-```bash
-# Set credentials & launch in one command
-GOOGLE_OAUTH_CLIENT_ID="your_id" \
-GOOGLE_OAUTH_CLIENT_SECRET="your_secret" \
-uvx mcpo --port 8000 --api-key "secret" \
--- uvx workspace-mcp
-```
-
-</td><td width="50%" valign="top">
-
-### ◆ Manual Configuration
-1. Create `config.json`:
-```json
-{
-  "mcpServers": {
-    "google_workspace": {
-      "type": "streamablehttp",
-      "url": "http://localhost:8000/mcp"
-    }
-  }
-}
-```
-
-2. Start MCPO:
-```bash
-mcpo --port 8001 --config config.json
-```
-
-</td></tr>
-</table>
-
-### ≡ Configure Open WebUI
-1. Navigate to **Settings** → **Connections** → **Tools**
-2. Click **Add Tool** and enter:
-   - **Server URL**: `http://localhost:8001/google_workspace`
-   - **API Key**: Your mcpo `--api-key` (if set)
-3. Save - Google Workspace tools are now available!
-
-</details>
 
 ---
 

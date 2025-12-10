@@ -541,7 +541,7 @@ def get_credentials(
     Args:
         user_google_email: Optional user's Google email.
         required_scopes: List of scopes the credentials must have.
-        client_secrets_path: Path to client secrets, required for refresh if not in creds.
+        client_secrets_path: Optional path to client secrets (legacy; refresh uses embedded client info).
         credentials_base_dir: Base directory for credential files.
         session_id: Optional MCP session ID.
 
@@ -686,19 +686,9 @@ def get_credentials(
         logger.info(
             f"[get_credentials] Credentials expired. Attempting refresh. User: '{user_google_email}', Session: '{session_id}'"
         )
-        # Check if credentials have embedded client_id/secret for refresh
-        if not credentials.client_id or not credentials.client_secret:
-            logger.warning(
-                "[get_credentials] Credentials missing client_id/secret. Need client_secrets_path for refresh."
-            )
-            if not client_secrets_path:
-                logger.error(
-                    "[get_credentials] Client secrets path required for refresh but not provided."
-                )
-                return None
         try:
             logger.debug(
-                f"[get_credentials] Refreshing token (client_secrets_path: {client_secrets_path or 'using embedded credentials'})"
+                "[get_credentials] Refreshing token using embedded client credentials"
             )
             # Refresh using embedded client_id/secret in credentials (preferred)
             # or fall back to loading from client_secrets_path if needed

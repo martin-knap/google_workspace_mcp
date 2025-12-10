@@ -164,6 +164,39 @@ def _format_attendee_details(attendees: List[Dict[str, Any]], indent: str = "  "
     return f"\n{indent}".join(attendee_details_list)
 
 
+def _format_attachment_details(attachments: List[Dict[str, Any]], indent: str = "  ") -> str:
+    """
+    Format attachment details including file information.
+
+
+    Args:
+        attachments: List of attachment dictionaries from Google Calendar API
+        indent: Indentation to use for newline-separated attachments (default: "  ")
+
+    Returns:
+        Formatted string with attachment details, or "None" if no attachments
+    """
+    if not attachments:
+        return "None"
+
+    attachment_details_list = []
+    for att in attachments:
+        title = att.get("title", "Untitled")
+        file_url = att.get("fileUrl", "No URL")
+        file_id = att.get("fileId", "No ID")
+        mime_type = att.get("mimeType", "Unknown")
+
+        attachment_info = (
+            f"{title}\n"
+            f"{indent}File URL: {file_url}\n"
+            f"{indent}File ID: {file_id}\n"
+            f"{indent}MIME Type: {mime_type}"
+        )
+        attachment_details_list.append(attachment_info)
+
+    return f"\n{indent}".join(attachment_details_list)
+
+
 # Helper function to ensure time strings for API calls are correctly formatted
 def _correct_time_format_for_api(
     time_str: Optional[str], param_name: str
@@ -266,6 +299,7 @@ async def get_events(
     max_results: int = 25,
     query: Optional[str] = None,
     detailed: bool = False,
+    include_attachments: bool = False,
 ) -> str:
     """
     Retrieves events from a specified Google Calendar. Can retrieve a single event by ID or multiple events within a time range.
@@ -280,12 +314,13 @@ async def get_events(
         max_results (int): The maximum number of events to return. Defaults to 25. Ignored if event_id is provided.
         query (Optional[str]): A keyword to search for within event fields (summary, description, location). Ignored if event_id is provided.
         detailed (bool): Whether to return detailed event information including description, location, attendees, and attendee details (response status, organizer, optional flags). Defaults to False.
+        include_attachments (bool): Whether to include attachment information in detailed event output. When True, shows attachment details (fileId, fileUrl, mimeType, title) for events that have attachments. Only applies when detailed=True. Set this to True when you need to view or access files that have been attached to calendar events, such as meeting documents, presentations, or other shared files. Defaults to False.
 
     Returns:
         str: A formatted list of events (summary, start and end times, link) within the specified range, or detailed information for a single event if event_id is provided.
     """
     logger.info(
-        f"[get_events] Raw parameters - event_id: '{event_id}', time_min: '{time_min}', time_max: '{time_max}', query: '{query}', detailed: {detailed}"
+        f"[get_events] Raw parameters - event_id: '{event_id}', time_min: '{time_min}', time_max: '{time_max}', query: '{query}', detailed: {detailed}, include_attachments: {include_attachments}"
     )
 
     # Handle single event retrieval
@@ -299,9 +334,11 @@ async def get_events(
         # Handle multiple events retrieval with time filtering
         # Ensure time_min and time_max are correctly formatted for the API
         formatted_time_min = _correct_time_format_for_api(time_min, "time_min")
-        effective_time_min = formatted_time_min or (
-            datetime.datetime.utcnow().isoformat() + "Z"
-        )
+        if formatted_time_min:
+            effective_time_min = formatted_time_min
+        else:
+            utc_now = datetime.datetime.now(datetime.timezone.utc)
+            effective_time_min = utc_now.isoformat().replace("+00:00", "Z")
         if time_min is None:
             logger.info(
                 f"time_min not provided, defaulting to current UTC time: {effective_time_min}"
@@ -368,6 +405,14 @@ async def get_events(
             f'- Location: {location}\n'
             f'- Attendees: {attendee_emails}\n'
             f'- Attendee Details: {attendee_details_str}\n'
+        )
+
+        if include_attachments:
+            attachments = item.get("attachments", [])
+            attachment_details_str = _format_attachment_details(attachments, indent="  ")
+            event_details += f'- Attachments: {attachment_details_str}\n'
+
+        event_details += (
             f'- Event ID: {event_id}\n'
             f'- Link: {link}'
         )
@@ -390,14 +435,22 @@ async def get_events(
             attendees = item.get("attendees", [])
             attendee_emails = ", ".join([a.get("email", "") for a in attendees]) if attendees else "None"
             attendee_details_str = _format_attendee_details(attendees, indent="    ")
-            event_details_list.append(
+
+            event_detail_parts = (
                 f'- "{summary}" (Starts: {start_time}, Ends: {end_time})\n'
                 f'  Description: {description}\n'
                 f'  Location: {location}\n'
                 f'  Attendees: {attendee_emails}\n'
                 f'  Attendee Details: {attendee_details_str}\n'
-                f'  ID: {item_event_id} | Link: {link}'
             )
+
+            if include_attachments:
+                attachments = item.get("attachments", [])
+                attachment_details_str = _format_attachment_details(attachments, indent="    ")
+                event_detail_parts += f'  Attachments: {attachment_details_str}\n'
+
+            event_detail_parts += f'  ID: {item_event_id} | Link: {link}'
+            event_details_list.append(event_detail_parts)
         else:
             # Basic output format
             event_details_list.append(
@@ -550,7 +603,7 @@ async def create_event(
                 if drive_service:
                     try:
                         file_metadata = await asyncio.to_thread(
-                            lambda: drive_service.files().get(fileId=file_id, fields="mimeType,name").execute()
+                            lambda: drive_service.files().get(fileId=file_id, fields="mimeType,name", supportsAllDrives=True).execute()
                         )
                         mime_type = file_metadata.get("mimeType", mime_type)
                         filename = file_metadata.get("name")

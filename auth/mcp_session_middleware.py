@@ -48,7 +48,6 @@ class MCPSessionMiddleware(BaseHTTPMiddleware):
             auth_context = None
             user_email = None
             mcp_session_id = None
-            
             # Check for FastMCP auth context
             if hasattr(request.state, "auth"):
                 auth_context = request.state.auth

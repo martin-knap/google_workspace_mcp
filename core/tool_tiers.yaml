@@ -31,6 +31,7 @@ drive:
     - extract_scanned_pdf_text_ocr
     - get_drive_folder_tree
     - get_folder_statistics
+    - update_drive_file
   complete:
     - get_drive_file_permissions
     - check_drive_file_public_access

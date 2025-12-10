@@ -1,8 +1,7 @@
 # ruff: noqa
 """
-FastMCP CLI entrypoint for Google Workspace MCP Server.
-This file imports all tool modules to register them with the server instance.
-Includes full initialization bootstrap that main.py provides.
+FastMCP Cloud entrypoint for the Google Workspace MCP server.
+Enforces OAuth 2.1 + stateless defaults required by FastMCP-hosted deployments.
 """
 import logging
 import os
@@ -16,9 +15,38 @@ from core.server import server, set_transport_mode, configure_server_for_http
 from core.tool_registry import set_enabled_tools as set_enabled_tool_names, wrap_server_tool_method, filter_server_tools
 from auth.scopes import set_enabled_tools
 
+def enforce_fastmcp_cloud_defaults():
+    """Force FastMCP Cloud-compatible OAuth settings before initializing the server."""
+    enforced = []
+
+    required = {
+        "MCP_ENABLE_OAUTH21": "true",
+        "WORKSPACE_MCP_STATELESS_MODE": "true",
+    }
+    defaults = {
+        "MCP_SINGLE_USER_MODE": "false",
+    }
+
+    for key, target in required.items():
+        current = os.environ.get(key)
+        normalized = (current or "").lower()
+        if normalized != target:
+            os.environ[key] = target
+            enforced.append((key, current, target))
+
+    for key, target in defaults.items():
+        current = os.environ.get(key)
+        if current != target:
+            os.environ[key] = target
+            enforced.append((key, current, target))
+
+    return enforced
+
 # Load environment variables
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 load_dotenv(dotenv_path=dotenv_path)
+
+_fastmcp_cloud_overrides = enforce_fastmcp_cloud_defaults()
 
 # Suppress googleapiclient discovery cache warning
 logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
@@ -32,6 +60,15 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+if _fastmcp_cloud_overrides:
+    for key, previous, new_value in _fastmcp_cloud_overrides:
+        if previous is None:
+            logger.info("FastMCP Cloud: set %s=%s", key, new_value)
+        else:
+            logger.warning("FastMCP Cloud: overriding %s from %s to %s", key, previous, new_value)
+else:
+    logger.info("FastMCP Cloud: OAuth 2.1 stateless defaults already satisfied")
 
 # Configure file logging based on stateless mode
 configure_file_logging()

@@ -13,6 +13,7 @@ import socket
 import uvicorn
 
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -39,6 +40,8 @@ class MinimalOAuthServer:
 
         # Setup the callback route
         self._setup_callback_route()
+        # Setup attachment serving route
+        self._setup_attachment_route()
 
     def _setup_callback_route(self):
         """Setup the OAuth callback route."""
@@ -100,6 +103,35 @@ class MinimalOAuthServer:
                 error_message_detail = f"Error processing OAuth callback (state: {state}): {str(e)}"
                 logger.error(error_message_detail, exc_info=True)
                 return create_server_error_response(str(e))
+
+    def _setup_attachment_route(self):
+        """Setup the attachment serving route."""
+        from core.attachment_storage import get_attachment_storage
+
+        @self.app.get("/attachments/{file_id}")
+        async def serve_attachment(file_id: str, request: Request):
+            """Serve a stored attachment file."""
+            storage = get_attachment_storage()
+            metadata = storage.get_attachment_metadata(file_id)
+            
+            if not metadata:
+                return JSONResponse(
+                    {"error": "Attachment not found or expired"},
+                    status_code=404
+                )
+            
+            file_path = storage.get_attachment_path(file_id)
+            if not file_path:
+                return JSONResponse(
+                    {"error": "Attachment file not found"},
+                    status_code=404
+                )
+            
+            return FileResponse(
+                path=str(file_path),
+                filename=metadata["filename"],
+                media_type=metadata["mime_type"]
+            )
 
     def start(self) -> tuple[bool, str]:
         """

@@ -90,7 +90,46 @@ async def get_presentation(
     for i, slide in enumerate(slides, 1):
         slide_id = slide.get('objectId', 'Unknown')
         page_elements = slide.get('pageElements', [])
-        slides_info.append(f"  Slide {i}: ID {slide_id}, {len(page_elements)} element(s)")
+
+        # Collect text from the slide whose JSON structure is very complicated
+        # https://googleapis.github.io/google-api-python-client/docs/dyn/slides_v1.presentations.html#get
+        slide_text = ""
+        try:
+            texts_from_elements = []
+            for page_element in slide.get('pageElements', []):
+                shape = page_element.get('shape', None)
+                if shape and shape.get('text', None):
+                    text = shape.get('text', None)
+                    if text:
+                        text_elements_in_shape = []
+                        for text_element in text.get('textElements', []):
+                            text_run = text_element.get('textRun', None)
+                            if text_run:
+                                content = text_run.get('content', None)
+                                if content:
+                                    start_index = text_element.get('startIndex', 0)
+                                    text_elements_in_shape.append((start_index, content))
+
+                        if text_elements_in_shape:
+                            # Sort text elements within a single shape
+                            text_elements_in_shape.sort(key=lambda item: item[0])
+                            full_text_from_shape = "".join([item[1] for item in text_elements_in_shape])
+                            texts_from_elements.append(full_text_from_shape)
+
+            # cleanup text we collected
+            slide_text = "\n".join(texts_from_elements)
+            slide_text_rows = slide_text.split("\n")
+            slide_text_rows = [row for row in slide_text_rows if len(row.strip()) > 0]
+            if slide_text_rows:
+                slide_text_rows = ["    > " + row for row in slide_text_rows]
+                slide_text = "\n" + "\n".join(slide_text_rows)
+            else:
+                slide_text = ""
+        except Exception as e:
+            logger.warning(f"Failed to extract text from the slide {slide_id}: {e}")
+            slide_text = f"<failed to extract text: {type(e)}, {e}>"
+
+        slides_info.append(f"  Slide {i}: ID {slide_id}, {len(page_elements)} element(s), text: {slide_text if slide_text else 'empty'}")
 
     confirmation_message = f"""Presentation Details for {user_google_email}:
 - Title: {title}

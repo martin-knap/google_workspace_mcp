@@ -2,7 +2,7 @@ import logging
 from typing import List, Optional
 from importlib import metadata
 
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.middleware import Middleware
@@ -95,16 +95,38 @@ def configure_server_for_http():
 
         try:
             required_scopes: List[str] = sorted(get_current_scopes())
-            provider = GoogleProvider(
-                client_id=config.client_id,
-                client_secret=config.client_secret,
-                base_url=config.get_oauth_base_url(),
-                redirect_path=config.redirect_path,
-                required_scopes=required_scopes,
-            )
-            server.auth = provider
+
+            # Check if external OAuth provider is configured
+            if config.is_external_oauth21_provider():
+                # External OAuth mode: use custom provider that handles ya29.* access tokens
+                from auth.external_oauth_provider import ExternalOAuthProvider
+
+                provider = ExternalOAuthProvider(
+                    client_id=config.client_id,
+                    client_secret=config.client_secret,
+                    base_url=config.get_oauth_base_url(),
+                    redirect_path=config.redirect_path,
+                    required_scopes=required_scopes,
+                )
+                # Disable protocol-level auth, expect bearer tokens in tool calls
+                server.auth = None
+                logger.info("OAuth 2.1 enabled with EXTERNAL provider mode - protocol-level auth disabled")
+                logger.info("Expecting Authorization bearer tokens in tool call headers")
+            else:
+                # Standard OAuth 2.1 mode: use FastMCP's GoogleProvider
+                provider = GoogleProvider(
+                    client_id=config.client_id,
+                    client_secret=config.client_secret,
+                    base_url=config.get_oauth_base_url(),
+                    redirect_path=config.redirect_path,
+                    required_scopes=required_scopes,
+                )
+                # Enable protocol-level auth
+                server.auth = provider
+                logger.info("OAuth 2.1 enabled using FastMCP GoogleProvider with protocol-level auth")
+
+            # Always set auth provider for token validation in middleware
             set_auth_provider(provider)
-            logger.info("OAuth 2.1 enabled using FastMCP GoogleProvider")
             _auth_provider = provider
         except Exception as exc:
             logger.error("Failed to initialize FastMCP GoogleProvider: %s", exc, exc_info=True)
@@ -133,6 +155,33 @@ async def health_check(request: Request):
         "version": version,
         "transport": get_transport_mode()
     })
+
+@server.custom_route("/attachments/{file_id}", methods=["GET"])
+async def serve_attachment(file_id: str, request: Request):
+    """Serve a stored attachment file."""
+    from core.attachment_storage import get_attachment_storage
+    
+    storage = get_attachment_storage()
+    metadata = storage.get_attachment_metadata(file_id)
+    
+    if not metadata:
+        return JSONResponse(
+            {"error": "Attachment not found or expired"},
+            status_code=404
+        )
+    
+    file_path = storage.get_attachment_path(file_id)
+    if not file_path:
+        return JSONResponse(
+            {"error": "Attachment file not found"},
+            status_code=404
+        )
+    
+    return FileResponse(
+        path=str(file_path),
+        filename=metadata["filename"],
+        media_type=metadata["mime_type"]
+    )
 
 async def legacy_oauth2_callback(request: Request) -> HTMLResponse:
     state = request.query_params.get("state")
