@@ -19,8 +19,11 @@ from google.cloud import vision
 from google.oauth2.credentials import Credentials as GoogleCredentials
 
 from auth.service_decorator import require_google_service
-from auth.google_auth import get_credentials
+from auth.google_auth import get_credentials, start_auth_flow
+from auth.oauth_config import get_oauth_config
 from auth.scopes import CLOUD_VISION_SCOPE
+from core.config import get_transport_mode, get_oauth_redirect_uri
+from core.context import get_fastmcp_session_id
 from core.utils import extract_office_xml_text, handle_http_errors
 from core.server import server
 from gdrive.drive_helpers import DRIVE_QUERY_PATTERNS, build_drive_list_params
@@ -995,10 +998,47 @@ async def extract_scanned_pdf_text_ocr(
         return f"No pages found in PDF '{file_name}'."
 
     # Get OAuth credentials for Vision API
+    session_id = None
     try:
-        creds = get_credentials(user_google_email, [CLOUD_VISION_SCOPE])
+        session_id = get_fastmcp_session_id()
+    except Exception as e:
+        logger.debug(f"[extract_scanned_pdf_text_ocr] Unable to get FastMCP session ID: {e}")
+
+    try:
+        creds = get_credentials(
+            user_google_email,
+            [CLOUD_VISION_SCOPE],
+            session_id=session_id,
+        )
         if not creds:
-            return "Error: Could not retrieve credentials for Google Cloud Vision API. Please authenticate first."
+            logger.warning(
+                "[extract_scanned_pdf_text_ocr] Missing Cloud Vision credentials; initiating re-auth flow."
+            )
+            from auth.oauth_callback_server import ensure_oauth_callback_available
+
+            config = get_oauth_config()
+            success, error_msg = ensure_oauth_callback_available(
+                get_transport_mode(),
+                config.port,
+                config.base_uri,
+            )
+            if not success:
+                detail = f" ({error_msg})" if error_msg else ""
+                return (
+                    "Error: Unable to initiate Google authorization required for Cloud Vision OCR."
+                    f" OAuth callback server unavailable{detail}."
+                )
+
+            auth_message = await start_auth_flow(
+                user_google_email=user_google_email,
+                service_name="Google Drive (Vision OCR)",
+                redirect_uri=get_oauth_redirect_uri(),
+            )
+            return (
+                "Additional Google authorization is required to use Cloud Vision OCR.\n\n"
+                f"{auth_message}\n\n"
+                "After completing the authorization flow, rerun this tool."
+            )
 
         # Create Vision API client with OAuth credentials
         vision_creds = GoogleCredentials(

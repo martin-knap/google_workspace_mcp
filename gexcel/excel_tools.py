@@ -71,11 +71,11 @@ async def list_excel_files(
 
 
 @server.tool()
-@handle_http_errors("get_excel_info", is_read_only=True, service_type="excel")
 @require_multiple_services([
     {"service_type": "drive", "scopes": "drive_file", "param_name": "drive_service"},
     {"service_type": "sheets", "scopes": "sheets_read", "param_name": "sheets_service"}
 ])
+@handle_http_errors("get_excel_info", is_read_only=True, service_type="drive")
 async def get_excel_info(
     drive_service,
     sheets_service,
@@ -174,11 +174,11 @@ async def get_excel_info(
 
 
 @server.tool()
-@handle_http_errors("read_excel_values", is_read_only=True, service_type="excel")
 @require_multiple_services([
     {"service_type": "drive", "scopes": "drive_file", "param_name": "drive_service"},
     {"service_type": "sheets", "scopes": "sheets_read", "param_name": "sheets_service"}
 ])
+@handle_http_errors("read_excel_values", is_read_only=True, service_type="drive")
 async def read_excel_values(
     drive_service,
     sheets_service,
