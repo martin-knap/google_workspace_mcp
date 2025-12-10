@@ -341,7 +341,7 @@ def main():
                 "timeout_keep_alive": 0,    # 0 = no timeout, keep connections alive indefinitely
                 "timeout_notify": 30,       # 30 seconds for graceful shutdown
                 "limit_concurrency": 1000,  # High limit for concurrent connections
-                "limit_max_requests": 0,    # No limit on requests per connection
+                # Note: Do NOT set limit_max_requests=0, uvicorn interprets 0 as "restart after 0 requests"
             }
             server.run(
                 transport="streamable-http",
