@@ -335,7 +335,20 @@ def main():
                 safe_print(f"❌ Port {port} is already in use. Cannot start HTTP server.")
                 sys.exit(1)
 
-            server.run(transport="streamable-http", host="0.0.0.0", port=port)
+            # Configure uvicorn for persistent connections (essentially indefinite)
+            # This prevents disconnections during long-running operations or idle periods
+            uvicorn_config = {
+                "timeout_keep_alive": 0,    # 0 = no timeout, keep connections alive indefinitely
+                "timeout_notify": 30,       # 30 seconds for graceful shutdown
+                "limit_concurrency": 1000,  # High limit for concurrent connections
+                "limit_max_requests": 0,    # No limit on requests per connection
+            }
+            server.run(
+                transport="streamable-http",
+                host="0.0.0.0",
+                port=port,
+                uvicorn_config=uvicorn_config
+            )
         else:
             server.run()
     except KeyboardInterrupt:
