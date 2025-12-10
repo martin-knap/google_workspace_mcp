@@ -9,9 +9,10 @@ import logging
 import asyncio
 from datetime import datetime
 
-from auth.service_decorator import require_google_service, require_multiple_services
+from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import handle_http_errors
+from googleapiclient.discovery import build
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -33,7 +34,6 @@ async def list_excel_files(
     Lists Excel (.xlsx) files from Google Drive that the user has access to.
 
     Args:
-        user_google_email (str): The user's Google email address. Required.
         max_results (int): Maximum number of Excel files to return. Defaults to 25.
 
     Returns:
@@ -71,14 +71,10 @@ async def list_excel_files(
 
 
 @server.tool()
-@require_multiple_services([
-    {"service_type": "drive", "scopes": "drive_file", "param_name": "drive_service"},
-    {"service_type": "sheets", "scopes": "sheets_read", "param_name": "sheets_service"}
-])
 @handle_http_errors("get_excel_info", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_file")
 async def get_excel_info(
-    drive_service,
-    sheets_service,
+    service,
     user_google_email: str,
     file_id: str,
 ) -> str:
@@ -89,13 +85,17 @@ async def get_excel_info(
     metadata, then automatically deletes the temporary file.
 
     Args:
-        user_google_email (str): The user's Google email address. Required.
         file_id (str): The ID of the Excel file to get info for. Required.
 
     Returns:
         str: Formatted Excel file information including title and worksheet details.
     """
     logger.info(f"[get_excel_info] Invoked. Email: '{user_google_email}', File ID: {file_id}")
+
+    drive_service = service
+    
+    # Build sheets service using the same credentials
+    sheets_service = build("sheets", "v4", credentials=service._http.credentials)
 
     # First, verify this is an Excel file and get its name
     file_metadata = await asyncio.to_thread(
@@ -170,18 +170,13 @@ async def get_excel_info(
             logger.info("[get_excel_info] Temporary file deleted successfully")
         except Exception as cleanup_error:
             logger.error(f"[get_excel_info] Failed to delete temporary file {temp_file_id}: {cleanup_error}")
-            # Don't raise - cleanup failure shouldn't fail the operation
 
 
 @server.tool()
-@require_multiple_services([
-    {"service_type": "drive", "scopes": "drive_file", "param_name": "drive_service"},
-    {"service_type": "sheets", "scopes": "sheets_read", "param_name": "sheets_service"}
-])
 @handle_http_errors("read_excel_values", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_file")
 async def read_excel_values(
-    drive_service,
-    sheets_service,
+    service,
     user_google_email: str,
     file_id: str,
     range_name: str = "A1:Z1000",
@@ -193,7 +188,6 @@ async def read_excel_values(
     the data, then automatically deletes the temporary file.
 
     Args:
-        user_google_email (str): The user's Google email address. Required.
         file_id (str): The ID of the Excel file. Required.
         range_name (str): The range to read (e.g., "Sheet1!A1:D10", "A1:D10"). Defaults to "A1:Z1000".
 
@@ -201,6 +195,11 @@ async def read_excel_values(
         str: The formatted values from the specified range.
     """
     logger.info(f"[read_excel_values] Invoked. Email: '{user_google_email}', File ID: {file_id}, Range: {range_name}")
+
+    drive_service = service
+    
+    # Build sheets service using the same credentials
+    sheets_service = build("sheets", "v4", credentials=service._http.credentials)
 
     # First, verify this is an Excel file and get its name
     file_metadata = await asyncio.to_thread(
@@ -274,4 +273,3 @@ async def read_excel_values(
             logger.info("[read_excel_values] Temporary file deleted successfully")
         except Exception as cleanup_error:
             logger.error(f"[read_excel_values] Failed to delete temporary file {temp_file_id}: {cleanup_error}")
-            # Don't raise - cleanup failure shouldn't fail the operation
