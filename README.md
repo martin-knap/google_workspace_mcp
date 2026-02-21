@@ -47,7 +47,7 @@
 >
 > As a solo dev building open source tools, comprehensive documentation often wouldn't happen without AI help. Using agentic dev tools like **Roo** & **Claude Code** that understand the entire codebase, AI doesn't just regurgitate generic content - it extracts real implementation details and creates accurate, specific documentation.
 >
-> In this case, Sonnet 4 took a pass & a human (me) verified them 8/16/25.
+> In this case, Sonnet 4 took a pass & a human (me) verified them 2/16/26.
 </details>
 
 ## <span style="color:#adbcbc">Overview</span>
@@ -56,7 +56,6 @@ A production-ready MCP server that integrates all major Google Workspace service
 
 **Simplified Setup**: Now uses Google Desktop OAuth clients - no redirect URIs or port configuration needed!
 
-**Maintainer Docs**: Automated release and registry publishing guide at [`docs/mcp_registry_publishing_guide.md`](docs/mcp_registry_publishing_guide.md).
 
 ## <span style="color:#adbcbc">Features</span>
 
