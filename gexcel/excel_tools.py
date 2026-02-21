@@ -57,7 +57,7 @@ async def list_excel_files(
         return f"No Excel files found for {user_google_email}."
 
     files_list = [
-        f"- \"{file['name']}\" (ID: {file['id']}) | Modified: {file.get('modifiedTime', 'Unknown')} | Link: {file.get('webViewLink', 'No link')}"
+        f'- "{file["name"]}" (ID: {file["id"]}) | Modified: {file.get("modifiedTime", "Unknown")} | Link: {file.get("webViewLink", "No link")}'
         for file in files
     ]
 
@@ -66,7 +66,9 @@ async def list_excel_files(
         + "\n".join(files_list)
     )
 
-    logger.info(f"Successfully listed {len(files)} Excel files for {user_google_email}.")
+    logger.info(
+        f"Successfully listed {len(files)} Excel files for {user_google_email}."
+    )
     return text_output
 
 
@@ -90,19 +92,18 @@ async def get_excel_info(
     Returns:
         str: Formatted Excel file information including title and worksheet details.
     """
-    logger.info(f"[get_excel_info] Invoked. Email: '{user_google_email}', File ID: {file_id}")
+    logger.info(
+        f"[get_excel_info] Invoked. Email: '{user_google_email}', File ID: {file_id}"
+    )
 
     drive_service = service
-    
+
     # Build sheets service using the same credentials
     sheets_service = build("sheets", "v4", credentials=service._http.credentials)
 
     # First, verify this is an Excel file and get its name
     file_metadata = await asyncio.to_thread(
-        drive_service.files().get(
-            fileId=file_id,
-            fields="id, name, mimeType"
-        ).execute
+        drive_service.files().get(fileId=file_id, fields="id, name, mimeType").execute
     )
 
     file_name = file_metadata.get("name", "Unknown")
@@ -118,16 +119,12 @@ async def get_excel_info(
     logger.info(f"[get_excel_info] Creating temporary Sheets copy: {temp_name}")
 
     temp_file = await asyncio.to_thread(
-        drive_service.files().copy(
-            fileId=file_id,
-            body={
-                'name': temp_name,
-                'mimeType': SHEETS_MIME_TYPE
-            }
-        ).execute
+        drive_service.files()
+        .copy(fileId=file_id, body={"name": temp_name, "mimeType": SHEETS_MIME_TYPE})
+        .execute
     )
 
-    temp_file_id = temp_file['id']
+    temp_file_id = temp_file["id"]
     logger.info(f"[get_excel_info] Temporary file created with ID: {temp_file_id}")
 
     try:
@@ -148,16 +145,19 @@ async def get_excel_info(
             cols = grid_props.get("columnCount", "Unknown")
 
             sheets_info.append(
-                f"  - \"{sheet_name}\" (ID: {sheet_id}) | Size: {rows}x{cols}"
+                f'  - "{sheet_name}" (ID: {sheet_id}) | Size: {rows}x{cols}'
             )
 
         text_output = (
-            f"Excel File: \"{file_name}\" (ID: {file_id})\n"
-            f"Worksheets ({len(sheets)}):\n"
-            + "\n".join(sheets_info) if sheets_info else "  No worksheets found"
+            f'Excel File: "{file_name}" (ID: {file_id})\n'
+            f"Worksheets ({len(sheets)}):\n" + "\n".join(sheets_info)
+            if sheets_info
+            else "  No worksheets found"
         )
 
-        logger.info(f"Successfully retrieved info for Excel file {file_id} for {user_google_email}.")
+        logger.info(
+            f"Successfully retrieved info for Excel file {file_id} for {user_google_email}."
+        )
         return text_output
 
     finally:
@@ -169,7 +169,9 @@ async def get_excel_info(
             )
             logger.info("[get_excel_info] Temporary file deleted successfully")
         except Exception as cleanup_error:
-            logger.error(f"[get_excel_info] Failed to delete temporary file {temp_file_id}: {cleanup_error}")
+            logger.error(
+                f"[get_excel_info] Failed to delete temporary file {temp_file_id}: {cleanup_error}"
+            )
 
 
 @server.tool()
@@ -194,19 +196,18 @@ async def read_excel_values(
     Returns:
         str: The formatted values from the specified range.
     """
-    logger.info(f"[read_excel_values] Invoked. Email: '{user_google_email}', File ID: {file_id}, Range: {range_name}")
+    logger.info(
+        f"[read_excel_values] Invoked. Email: '{user_google_email}', File ID: {file_id}, Range: {range_name}"
+    )
 
     drive_service = service
-    
+
     # Build sheets service using the same credentials
     sheets_service = build("sheets", "v4", credentials=service._http.credentials)
 
     # First, verify this is an Excel file and get its name
     file_metadata = await asyncio.to_thread(
-        drive_service.files().get(
-            fileId=file_id,
-            fields="id, name, mimeType"
-        ).execute
+        drive_service.files().get(fileId=file_id, fields="id, name, mimeType").execute
     )
 
     file_name = file_metadata.get("name", "Unknown")
@@ -222,16 +223,12 @@ async def read_excel_values(
     logger.info(f"[read_excel_values] Creating temporary Sheets copy: {temp_name}")
 
     temp_file = await asyncio.to_thread(
-        drive_service.files().copy(
-            fileId=file_id,
-            body={
-                'name': temp_name,
-                'mimeType': SHEETS_MIME_TYPE
-            }
-        ).execute
+        drive_service.files()
+        .copy(fileId=file_id, body={"name": temp_name, "mimeType": SHEETS_MIME_TYPE})
+        .execute
     )
 
-    temp_file_id = temp_file['id']
+    temp_file_id = temp_file["id"]
     logger.info(f"[read_excel_values] Temporary file created with ID: {temp_file_id}")
 
     try:
@@ -245,13 +242,17 @@ async def read_excel_values(
 
         values = result.get("values", [])
         if not values:
-            return f"No data found in range '{range_name}' for Excel file '{file_name}'."
+            return (
+                f"No data found in range '{range_name}' for Excel file '{file_name}'."
+            )
 
         # Format the output as a readable table
         formatted_rows = []
         for i, row in enumerate(values, 1):
             # Pad row with empty strings to show structure
-            padded_row = row + [""] * max(0, len(values[0]) - len(row)) if values else row
+            padded_row = (
+                row + [""] * max(0, len(values[0]) - len(row)) if values else row
+            )
             formatted_rows.append(f"Row {i:2d}: {padded_row}")
 
         text_output = (
@@ -260,7 +261,9 @@ async def read_excel_values(
             + (f"\n... and {len(values) - 50} more rows" if len(values) > 50 else "")
         )
 
-        logger.info(f"Successfully read {len(values)} rows from Excel file for {user_google_email}.")
+        logger.info(
+            f"Successfully read {len(values)} rows from Excel file for {user_google_email}."
+        )
         return text_output
 
     finally:
@@ -272,4 +275,6 @@ async def read_excel_values(
             )
             logger.info("[read_excel_values] Temporary file deleted successfully")
         except Exception as cleanup_error:
-            logger.error(f"[read_excel_values] Failed to delete temporary file {temp_file_id}: {cleanup_error}")
+            logger.error(
+                f"[read_excel_values] Failed to delete temporary file {temp_file_id}: {cleanup_error}"
+            )

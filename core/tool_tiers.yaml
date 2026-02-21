@@ -6,11 +6,15 @@ gmail:
     - send_gmail_message
 
   extended:
+    - get_gmail_attachment_content
     - get_gmail_thread_content
     - modify_gmail_message_labels
     - list_gmail_labels
     - manage_gmail_label
     - draft_gmail_message
+    - list_gmail_filters
+    - create_gmail_filter
+    - delete_gmail_filter
 
   complete:
     - get_gmail_threads_content_batch
@@ -22,8 +26,12 @@ drive:
     - search_drive_files
     - get_drive_file_content
     - extract_drive_pdf_text
+    - get_drive_file_download_url
     - create_drive_file
     - create_drive_folder
+    - import_to_google_doc
+    - share_drive_file
+    - get_drive_shareable_link
     - recursive_folder_scan
     - get_recent_drive_activity
   extended:
@@ -31,7 +39,13 @@ drive:
     - extract_scanned_pdf_text_ocr
     - get_drive_folder_tree
     - get_folder_statistics
+    - copy_drive_file
     - update_drive_file
+    - update_drive_permission
+    - remove_drive_permission
+    - transfer_drive_ownership
+    - batch_share_drive_file
+    - set_drive_file_permissions
   complete:
     - get_drive_file_permissions
     - check_drive_file_public_access
@@ -45,6 +59,7 @@ calendar:
     - modify_event
   extended:
     - delete_event
+    - query_freebusy
   complete: []
 
 docs:
@@ -58,6 +73,8 @@ docs:
     - find_and_replace_doc
     - list_docs_in_folder
     - insert_doc_elements
+    - update_paragraph_style
+    - get_doc_as_markdown
   complete:
     - insert_doc_image
     - update_doc_headers_footers
@@ -78,6 +95,7 @@ sheets:
   extended:
     - list_spreadsheets
     - get_spreadsheet_info
+    - format_sheet_range
   complete:
     - create_sheet
     - read_spreadsheet_comments
@@ -90,8 +108,10 @@ chat:
     - send_message
     - get_messages
     - search_messages
+    - create_reaction
   extended:
     - list_spaces
+    - download_chat_attachment
   complete: []
 
 forms:
@@ -103,6 +123,7 @@ forms:
   complete:
     - set_publish_settings
     - get_form_response
+    - batch_update_form
 
 slides:
   core:
@@ -135,6 +156,26 @@ tasks:
     - move_task
     - clear_completed_tasks
 
+contacts:
+  core:
+    - search_contacts
+    - get_contact
+    - list_contacts
+    - create_contact
+  extended:
+    - update_contact
+    - delete_contact
+    - list_contact_groups
+    - get_contact_group
+  complete:
+    - batch_create_contacts
+    - batch_update_contacts
+    - batch_delete_contacts
+    - create_contact_group
+    - update_contact_group
+    - delete_contact_group
+    - modify_contact_group_members
+
 search:
   core:
     - search_custom
@@ -157,4 +198,26 @@ word:
     - get_word_info
     - read_word_content
   extended: []
+  complete: []
+
+appscript:
+  core:
+    - list_script_projects
+    - get_script_project
+    - get_script_content
+    - create_script_project
+    - update_script_content
+    - run_script_function
+    - generate_trigger_code
+  extended:
+    - create_deployment
+    - list_deployments
+    - update_deployment
+    - delete_deployment
+    - delete_script_project
+    - list_versions
+    - create_version
+    - get_version
+    - list_script_processes
+    - get_script_metrics
   complete: []

@@ -24,7 +24,7 @@ def mark_file_as_extracted(
     manifest_folder_id: str = "1ANYWlH575tOYyrCv3UwA6tOGQPi9yK0Z",
     pages_extracted: Optional[int] = None,
     total_pages: Optional[int] = None,
-    extraction_notes: Optional[str] = None
+    extraction_notes: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Mark a single file as extracted in the manifest.
@@ -76,7 +76,7 @@ def mark_file_as_extracted(
             version="v3",
             tool_name="mark_file_as_extracted",
             user_google_email=user_google_email,
-            required_scopes=DRIVE_SCOPES
+            required_scopes=DRIVE_SCOPES,
         )
     )
 
@@ -84,23 +84,21 @@ def mark_file_as_extracted(
     manifest_filename = f"{project_id}_drive_scan.json"
     query = f"name = '{manifest_filename}' and '{manifest_folder_id}' in parents and trashed = false"
 
-    results = service.files().list(
-        q=query,
-        fields="files(id, name)",
-        pageSize=1
-    ).execute()
+    results = (
+        service.files().list(q=query, fields="files(id, name)", pageSize=1).execute()
+    )
 
-    manifest_files = results.get('files', [])
+    manifest_files = results.get("files", [])
     if not manifest_files:
         raise FileNotFoundError(
             f"Manifest file '{manifest_filename}' not found in folder {manifest_folder_id}"
         )
 
-    manifest_file_id = manifest_files[0]['id']
+    manifest_file_id = manifest_files[0]["id"]
 
     # 2. Read manifest content
     request = service.files().get_media(fileId=manifest_file_id)
-    manifest_content = request.execute().decode('utf-8')
+    manifest_content = request.execute().decode("utf-8")
     manifest = json.loads(manifest_content)
 
     # 3. Find and update specific file
@@ -108,25 +106,27 @@ def mark_file_as_extracted(
     previous_status = None
     file_name = None
 
-    for file_record in manifest.get('files', []):
-        if file_record.get('file_id') == source_file_id:
+    for file_record in manifest.get("files", []):
+        if file_record.get("file_id") == source_file_id:
             file_found = True
-            previous_status = file_record.get('extraction_status', 'pending')
-            file_name = file_record.get('file_name', 'unknown')
+            previous_status = file_record.get("extraction_status", "pending")
+            file_name = file_record.get("file_name", "unknown")
 
             # Update file record
-            file_record['extraction_status'] = 'extracted'
-            file_record['document_type'] = document_type
-            file_record['extracted_to'] = output_file_path
-            file_record['extraction_date'] = extraction_date or datetime.utcnow().isoformat() + 'Z'
-            file_record['extraction_quality'] = extraction_quality
+            file_record["extraction_status"] = "extracted"
+            file_record["document_type"] = document_type
+            file_record["extracted_to"] = output_file_path
+            file_record["extraction_date"] = (
+                extraction_date or datetime.utcnow().isoformat() + "Z"
+            )
+            file_record["extraction_quality"] = extraction_quality
 
             if pages_extracted is not None:
-                file_record['pages_extracted'] = pages_extracted
+                file_record["pages_extracted"] = pages_extracted
             if total_pages is not None:
-                file_record['total_pages'] = total_pages
+                file_record["total_pages"] = total_pages
             if extraction_notes:
-                file_record['extraction_notes'] = extraction_notes
+                file_record["extraction_notes"] = extraction_notes
 
             break
 
@@ -136,20 +136,15 @@ def mark_file_as_extracted(
         )
 
     # 4. Recalculate statistics
-    stats = {
-        "pending": 0,
-        "extracted": 0,
-        "failed": 0,
-        "skipped": 0
-    }
+    stats = {"pending": 0, "extracted": 0, "failed": 0, "skipped": 0}
 
-    for file_record in manifest.get('files', []):
-        status = file_record.get('extraction_status', 'pending')
+    for file_record in manifest.get("files", []):
+        status = file_record.get("extraction_status", "pending")
         if status in stats:
             stats[status] += 1
 
-    manifest['stats'] = stats
-    manifest['last_updated'] = datetime.utcnow().isoformat() + 'Z'
+    manifest["stats"] = stats
+    manifest["last_updated"] = datetime.utcnow().isoformat() + "Z"
 
     # 5. Write manifest back to Drive
     from io import BytesIO
@@ -157,19 +152,18 @@ def mark_file_as_extracted(
 
     manifest_json = json.dumps(manifest, indent=2, ensure_ascii=False)
     media = MediaIoBaseUpload(
-        BytesIO(manifest_json.encode('utf-8')),
-        mimetype='application/json',
-        resumable=True
+        BytesIO(manifest_json.encode("utf-8")),
+        mimetype="application/json",
+        resumable=True,
     )
 
-    service.files().update(
-        fileId=manifest_file_id,
-        media_body=media
-    ).execute()
+    service.files().update(fileId=manifest_file_id, media_body=media).execute()
 
     # 6. Return result
-    total_files = len(manifest.get('files', []))
-    completion_pct = round(100.0 * stats['extracted'] / total_files, 2) if total_files > 0 else 0.0
+    total_files = len(manifest.get("files", []))
+    completion_pct = (
+        round(100.0 * stats["extracted"] / total_files, 2) if total_files > 0 else 0.0
+    )
 
     return {
         "success": True,
@@ -179,12 +173,12 @@ def mark_file_as_extracted(
         "new_status": "extracted",
         "manifest_stats": {
             "total_files": total_files,
-            "extracted": stats['extracted'],
-            "pending": stats['pending'],
-            "failed": stats['failed'],
-            "skipped": stats['skipped'],
-            "completion_pct": completion_pct
-        }
+            "extracted": stats["extracted"],
+            "pending": stats["pending"],
+            "failed": stats["failed"],
+            "skipped": stats["skipped"],
+            "completion_pct": completion_pct,
+        },
     }
 
 
@@ -192,7 +186,7 @@ def mark_files_as_extracted_batch(
     user_google_email: str,
     project_id: str,
     extracted_files: List[Dict[str, Any]],
-    manifest_folder_id: str = "1ANYWlH575tOYyrCv3UwA6tOGQPi9yK0Z"
+    manifest_folder_id: str = "1ANYWlH575tOYyrCv3UwA6tOGQPi9yK0Z",
 ) -> Dict[str, Any]:
     """
     Mark multiple files as extracted in a single batch operation.
@@ -231,7 +225,7 @@ def mark_files_as_extracted_batch(
             version="v3",
             tool_name="mark_files_as_extracted_batch",
             user_google_email=user_google_email,
-            required_scopes=DRIVE_SCOPES
+            required_scopes=DRIVE_SCOPES,
         )
     )
 
@@ -239,27 +233,23 @@ def mark_files_as_extracted_batch(
     manifest_filename = f"{project_id}_drive_scan.json"
     query = f"name = '{manifest_filename}' and '{manifest_folder_id}' in parents and trashed = false"
 
-    results = service.files().list(
-        q=query,
-        fields="files(id, name)",
-        pageSize=1
-    ).execute()
+    results = (
+        service.files().list(q=query, fields="files(id, name)", pageSize=1).execute()
+    )
 
-    manifest_files = results.get('files', [])
+    manifest_files = results.get("files", [])
     if not manifest_files:
         raise FileNotFoundError(f"Manifest file '{manifest_filename}' not found")
 
-    manifest_file_id = manifest_files[0]['id']
+    manifest_file_id = manifest_files[0]["id"]
 
     request = service.files().get_media(fileId=manifest_file_id)
-    manifest_content = request.execute().decode('utf-8')
+    manifest_content = request.execute().decode("utf-8")
     manifest = json.loads(manifest_content)
 
     # 2. Build lookup for fast updates
     file_lookup = {
-        f.get('file_id'): f
-        for f in manifest.get('files', [])
-        if 'file_id' in f
+        f.get("file_id"): f for f in manifest.get("files", []) if "file_id" in f
     }
 
     # 3. Update all files
@@ -267,7 +257,7 @@ def mark_files_as_extracted_batch(
     files_not_found = []
 
     for extracted_file in extracted_files:
-        source_file_id = extracted_file.get('source_file_id')
+        source_file_id = extracted_file.get("source_file_id")
         if not source_file_id:
             continue
 
@@ -277,39 +267,35 @@ def mark_files_as_extracted_batch(
             continue
 
         # Update record
-        file_record['extraction_status'] = 'extracted'
-        file_record['document_type'] = extracted_file.get('document_type', 'unknown')
-        file_record['extracted_to'] = extracted_file.get('output_file_path', '')
-        file_record['extraction_date'] = extracted_file.get(
-            'extraction_date',
-            datetime.utcnow().isoformat() + 'Z'
+        file_record["extraction_status"] = "extracted"
+        file_record["document_type"] = extracted_file.get("document_type", "unknown")
+        file_record["extracted_to"] = extracted_file.get("output_file_path", "")
+        file_record["extraction_date"] = extracted_file.get(
+            "extraction_date", datetime.utcnow().isoformat() + "Z"
         )
-        file_record['extraction_quality'] = extracted_file.get('extraction_quality', 'high')
+        file_record["extraction_quality"] = extracted_file.get(
+            "extraction_quality", "high"
+        )
 
-        if 'pages_extracted' in extracted_file:
-            file_record['pages_extracted'] = extracted_file['pages_extracted']
-        if 'total_pages' in extracted_file:
-            file_record['total_pages'] = extracted_file['total_pages']
-        if 'extraction_notes' in extracted_file:
-            file_record['extraction_notes'] = extracted_file['extraction_notes']
+        if "pages_extracted" in extracted_file:
+            file_record["pages_extracted"] = extracted_file["pages_extracted"]
+        if "total_pages" in extracted_file:
+            file_record["total_pages"] = extracted_file["total_pages"]
+        if "extraction_notes" in extracted_file:
+            file_record["extraction_notes"] = extracted_file["extraction_notes"]
 
         files_updated += 1
 
     # 4. Recalculate statistics
-    stats = {
-        "pending": 0,
-        "extracted": 0,
-        "failed": 0,
-        "skipped": 0
-    }
+    stats = {"pending": 0, "extracted": 0, "failed": 0, "skipped": 0}
 
-    for file_record in manifest.get('files', []):
-        status = file_record.get('extraction_status', 'pending')
+    for file_record in manifest.get("files", []):
+        status = file_record.get("extraction_status", "pending")
         if status in stats:
             stats[status] += 1
 
-    manifest['stats'] = stats
-    manifest['last_updated'] = datetime.utcnow().isoformat() + 'Z'
+    manifest["stats"] = stats
+    manifest["last_updated"] = datetime.utcnow().isoformat() + "Z"
 
     # 5. Write back
     from io import BytesIO
@@ -317,19 +303,18 @@ def mark_files_as_extracted_batch(
 
     manifest_json = json.dumps(manifest, indent=2, ensure_ascii=False)
     media = MediaIoBaseUpload(
-        BytesIO(manifest_json.encode('utf-8')),
-        mimetype='application/json',
-        resumable=True
+        BytesIO(manifest_json.encode("utf-8")),
+        mimetype="application/json",
+        resumable=True,
     )
 
-    service.files().update(
-        fileId=manifest_file_id,
-        media_body=media
-    ).execute()
+    service.files().update(fileId=manifest_file_id, media_body=media).execute()
 
     # 6. Return result
-    total_files = len(manifest.get('files', []))
-    completion_pct = round(100.0 * stats['extracted'] / total_files, 2) if total_files > 0 else 0.0
+    total_files = len(manifest.get("files", []))
+    completion_pct = (
+        round(100.0 * stats["extracted"] / total_files, 2) if total_files > 0 else 0.0
+    )
 
     return {
         "success": True,
@@ -337,10 +322,10 @@ def mark_files_as_extracted_batch(
         "files_not_found": files_not_found,
         "manifest_stats": {
             "total_files": total_files,
-            "extracted": stats['extracted'],
-            "pending": stats['pending'],
-            "failed": stats['failed'],
-            "skipped": stats['skipped'],
-            "completion_pct": completion_pct
-        }
+            "extracted": stats["extracted"],
+            "pending": stats["pending"],
+            "failed": stats["failed"],
+            "skipped": stats["skipped"],
+            "completion_pct": completion_pct,
+        },
     }

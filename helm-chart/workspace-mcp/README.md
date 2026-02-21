@@ -2,6 +2,8 @@
 
 This Helm chart deploys the Google Workspace MCP Server on a Kubernetes cluster. The Google Workspace MCP Server provides comprehensive integration with Google Workspace services including Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks, and Chat.
 
+Disclaimer - this is a user submitted feature and not one that the maintainer uses personally. It may be out of date - use at your own risk! 
+
 ## Prerequisites
 
 - Kubernetes 1.19+

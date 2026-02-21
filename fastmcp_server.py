@@ -3,17 +3,27 @@
 FastMCP Cloud entrypoint for the Google Workspace MCP server.
 Enforces OAuth 2.1 + stateless defaults required by FastMCP-hosted deployments.
 """
+
 import logging
 import os
 import sys
 from dotenv import load_dotenv
 
+# Load environment variables BEFORE any other imports that might read them
+dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(dotenv_path=dotenv_path)
+
 from auth.oauth_config import reload_oauth_config, is_stateless_mode
 from core.log_formatter import EnhancedLogFormatter, configure_file_logging
 from core.utils import check_credentials_directory_permissions
 from core.server import server, set_transport_mode, configure_server_for_http
-from core.tool_registry import set_enabled_tools as set_enabled_tool_names, wrap_server_tool_method, filter_server_tools
+from core.tool_registry import (
+    set_enabled_tools as set_enabled_tool_names,
+    wrap_server_tool_method,
+    filter_server_tools,
+)
 from auth.scopes import set_enabled_tools
+
 
 def enforce_fastmcp_cloud_defaults():
     """Force FastMCP Cloud-compatible OAuth settings before initializing the server."""
@@ -42,22 +52,23 @@ def enforce_fastmcp_cloud_defaults():
 
     return enforced
 
-# Load environment variables
-dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-load_dotenv(dotenv_path=dotenv_path)
 
 _fastmcp_cloud_overrides = enforce_fastmcp_cloud_defaults()
 
 # Suppress googleapiclient discovery cache warning
-logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
+
+# Suppress httpx/httpcore INFO logs that leak access tokens in URLs
+# (e.g. tokeninfo?access_token=ya29.xxx)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Reload OAuth configuration after env vars loaded
 reload_oauth_config()
 
 # Configure basic logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -66,32 +77,45 @@ if _fastmcp_cloud_overrides:
         if previous is None:
             logger.info("FastMCP Cloud: set %s=%s", key, new_value)
         else:
-            logger.warning("FastMCP Cloud: overriding %s from %s to %s", key, previous, new_value)
+            logger.warning(
+                "FastMCP Cloud: overriding %s from %s to %s", key, previous, new_value
+            )
 else:
     logger.info("FastMCP Cloud: OAuth 2.1 stateless defaults already satisfied")
 
 # Configure file logging based on stateless mode
 configure_file_logging()
 
+
 def configure_safe_logging():
     """Configure safe Unicode handling for logging."""
+
     class SafeEnhancedFormatter(EnhancedLogFormatter):
         """Enhanced ASCII formatter with additional Windows safety."""
+
         def format(self, record):
             try:
                 return super().format(record)
             except UnicodeEncodeError:
                 # Fallback to ASCII-safe formatting
                 service_prefix = self._get_ascii_prefix(record.name, record.levelname)
-                safe_msg = str(record.getMessage()).encode('ascii', errors='replace').decode('ascii')
+                safe_msg = (
+                    str(record.getMessage())
+                    .encode("ascii", errors="replace")
+                    .decode("ascii")
+                )
                 return f"{service_prefix} {safe_msg}"
 
     # Replace all console handlers' formatters with safe enhanced ones
     for handler in logging.root.handlers:
         # Only apply to console/stream handlers, keep file handlers as-is
-        if isinstance(handler, logging.StreamHandler) and handler.stream.name in ['<stderr>', '<stdout>']:
+        if isinstance(handler, logging.StreamHandler) and handler.stream.name in [
+            "<stderr>",
+            "<stdout>",
+        ]:
             safe_formatter = SafeEnhancedFormatter(use_colors=True)
             handler.setFormatter(safe_formatter)
+
 
 # Configure safe logging
 configure_safe_logging()
@@ -107,15 +131,28 @@ def parse_enabled_services_from_env():
     Returns:
         List of lowercase service names, or None if not set
     """
-    enabled_services = os.getenv('ENABLED_SERVICES')
+    enabled_services = os.getenv("ENABLED_SERVICES")
     if not enabled_services:
         return None
 
     # Parse comma-separated values, strip whitespace, convert to lowercase
-    services = [s.strip().lower() for s in enabled_services.split(',') if s.strip()]
+    services = [s.strip().lower() for s in enabled_services.split(",") if s.strip()]
 
     # Valid service names
-    valid_services = {'gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search', 'excel', 'word'}
+    valid_services = {
+        "gmail",
+        "drive",
+        "calendar",
+        "docs",
+        "sheets",
+        "chat",
+        "forms",
+        "slides",
+        "tasks",
+        "search",
+        "excel",
+        "word",
+    }
 
     # Filter to only valid services and warn about invalid ones
     valid_parsed = []
@@ -127,7 +164,9 @@ def parse_enabled_services_from_env():
             invalid.append(service)
 
     if invalid:
-        logger.warning(f"Ignoring invalid services from ENABLED_SERVICES: {', '.join(invalid)}")
+        logger.warning(
+            f"Ignoring invalid services from ENABLED_SERVICES: {', '.join(invalid)}"
+        )
 
     if valid_parsed:
         logger.info(f"Loaded services from ENABLED_SERVICES: {', '.join(valid_parsed)}")
@@ -144,13 +183,15 @@ if not is_stateless_mode():
         logger.info("Credentials directory permissions verified")
     except (PermissionError, OSError) as e:
         logger.error(f"Credentials directory permission check failed: {e}")
-        logger.error("   Please ensure the service has write permissions to create/access the credentials directory")
+        logger.error(
+            "   Please ensure the service has write permissions to create/access the credentials directory"
+        )
         sys.exit(1)
 else:
     logger.info("🔍 Skipping credentials directory check (stateless mode)")
 
 # Set transport mode for HTTP (FastMCP CLI defaults to streamable-http)
-set_transport_mode('streamable-http')
+set_transport_mode("streamable-http")
 
 # Parse ENABLED_SERVICES environment variable
 env_services = parse_enabled_services_from_env()
@@ -158,26 +199,41 @@ env_services = parse_enabled_services_from_env()
 # Determine which services to import
 if env_services is not None:
     services_to_import = env_services
-    logger.info(f"Importing services from ENABLED_SERVICES: {', '.join(services_to_import)}")
+    logger.info(
+        f"Importing services from ENABLED_SERVICES: {', '.join(services_to_import)}"
+    )
 else:
     # Default: import all services
-    services_to_import = ['gmail', 'drive', 'calendar', 'docs', 'sheets', 'chat', 'forms', 'slides', 'tasks', 'search', 'excel', 'word']
+    services_to_import = [
+        "gmail",
+        "drive",
+        "calendar",
+        "docs",
+        "sheets",
+        "chat",
+        "forms",
+        "slides",
+        "tasks",
+        "search",
+        "excel",
+        "word",
+    ]
     logger.info("Importing all services (no ENABLED_SERVICES set)")
 
 # Service name to module mapping
 service_modules = {
-    'gmail': 'gmail.gmail_tools',
-    'drive': 'gdrive.drive_tools',
-    'calendar': 'gcalendar.calendar_tools',
-    'docs': 'gdocs.docs_tools',
-    'sheets': 'gsheets.sheets_tools',
-    'chat': 'gchat.chat_tools',
-    'forms': 'gforms.forms_tools',
-    'slides': 'gslides.slides_tools',
-    'tasks': 'gtasks.tasks_tools',
-    'search': 'gsearch.search_tools',
-    'excel': 'gexcel.excel_tools',
-    'word': 'gword.word_tools'
+    "gmail": "gmail.gmail_tools",
+    "drive": "gdrive.drive_tools",
+    "calendar": "gcalendar.calendar_tools",
+    "docs": "gdocs.docs_tools",
+    "sheets": "gsheets.sheets_tools",
+    "chat": "gchat.chat_tools",
+    "forms": "gforms.forms_tools",
+    "slides": "gslides.slides_tools",
+    "tasks": "gtasks.tasks_tools",
+    "search": "gsearch.search_tools",
+    "excel": "gexcel.excel_tools",
+    "word": "gword.word_tools",
 }
 
 # Import selected tool modules to register their @server.tool() decorators
@@ -194,7 +250,9 @@ wrap_server_tool_method(server)
 
 # Enable selected services for scope management
 set_enabled_tools(list(services_to_import))
-set_enabled_tool_names(None)  # Don't filter individual tools - enable all tools for selected services
+set_enabled_tool_names(
+    None
+)  # Don't filter individual tools - enable all tools for selected services
 
 # Filter tools based on configuration
 filter_server_tools(server)

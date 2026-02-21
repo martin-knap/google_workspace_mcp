@@ -79,13 +79,27 @@ class LocalDirectoryCredentialStore(CredentialStore):
 
         Args:
             base_dir: Base directory for credential files. If None, uses the directory
-                     configured by the GOOGLE_MCP_CREDENTIALS_DIR environment variable,
-                     or defaults to ~/.google_workspace_mcp/credentials if the environment
-                     variable is not set.
+                     configured by environment variables in this order:
+                     1. WORKSPACE_MCP_CREDENTIALS_DIR (preferred)
+                     2. GOOGLE_MCP_CREDENTIALS_DIR (backward compatibility)
+                     3. ~/.google_workspace_mcp/credentials (default)
         """
         if base_dir is None:
-            if os.getenv("GOOGLE_MCP_CREDENTIALS_DIR"):
-                base_dir = os.getenv("GOOGLE_MCP_CREDENTIALS_DIR")
+            # Check WORKSPACE_MCP_CREDENTIALS_DIR first (preferred)
+            workspace_creds_dir = os.getenv("WORKSPACE_MCP_CREDENTIALS_DIR")
+            google_creds_dir = os.getenv("GOOGLE_MCP_CREDENTIALS_DIR")
+
+            if workspace_creds_dir:
+                base_dir = os.path.expanduser(workspace_creds_dir)
+                logger.info(
+                    f"Using credentials directory from WORKSPACE_MCP_CREDENTIALS_DIR: {base_dir}"
+                )
+            # Fall back to GOOGLE_MCP_CREDENTIALS_DIR for backward compatibility
+            elif google_creds_dir:
+                base_dir = os.path.expanduser(google_creds_dir)
+                logger.info(
+                    f"Using credentials directory from GOOGLE_MCP_CREDENTIALS_DIR: {base_dir}"
+                )
             else:
                 home_dir = os.path.expanduser("~")
                 if home_dir and home_dir != "~":
@@ -94,9 +108,12 @@ class LocalDirectoryCredentialStore(CredentialStore):
                     )
                 else:
                     base_dir = os.path.join(os.getcwd(), ".credentials")
+                logger.info(f"Using default credentials directory: {base_dir}")
 
         self.base_dir = base_dir
-        logger.info(f"LocalJsonCredentialStore initialized with base_dir: {base_dir}")
+        logger.info(
+            f"LocalDirectoryCredentialStore initialized with base_dir: {base_dir}"
+        )
 
     def _get_credential_path(self, user_email: str) -> str:
         """Get the file path for a user's credentials."""
@@ -198,10 +215,13 @@ class LocalDirectoryCredentialStore(CredentialStore):
             return []
 
         users = []
+        non_credential_files = {"oauth_states"}
         try:
             for filename in os.listdir(self.base_dir):
                 if filename.endswith(".json"):
                     user_email = filename[:-5]  # Remove .json extension
+                    if user_email in non_credential_files or "@" not in user_email:
+                        continue
                     users.append(user_email)
             logger.debug(
                 f"Found {len(users)} users with credentials in {self.base_dir}"
