@@ -1265,6 +1265,387 @@ async def extract_scanned_pdf_text_ocr(
     return header + full_text
 
 
+@server.tool()
+@handle_http_errors("extract_pdf_text_to_file", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def extract_pdf_text_to_file(
+    service,
+    user_google_email: str,
+    file_id: str,
+    output_path: str,
+    output_format: str = "text",
+) -> str:
+    """
+    Extracts text from a text-based PDF and writes the full text to a local file.
+
+    Unlike extract_drive_pdf_text which returns the full text in the response,
+    this tool writes output to a local file and returns only a summary.
+    Uses PyMuPDF (embedded text extraction) — fast and free, no OCR/API costs.
+    For scanned/image PDFs, use ocr_pdf_to_file instead.
+
+    Supports two output formats:
+    - "text": Plain text with page markers (default)
+    - "json": JSON with per-page text, metadata, and file info
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the PDF file in Google Drive.
+        output_path (str): Local filesystem path to write the extracted text.
+            Parent directories will be created if they don't exist.
+        output_format (str): Output format - "text" for plain text, "json" for structured JSON.
+            Defaults to "text".
+
+    Returns:
+        str: Summary with file path, page count, character count, and text preview.
+            If no text is found, suggests using ocr_pdf_to_file for scanned documents.
+    """
+    logger.info(f"[extract_pdf_text_to_file] Extracting PDF text for file ID: '{file_id}' -> '{output_path}'")
+
+    # Get file metadata
+    file_metadata = await asyncio.to_thread(
+        service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType, size, modifiedTime, webViewLink",
+            supportsAllDrives=True
+        ).execute
+    )
+
+    file_name = file_metadata.get("name", "Unknown File")
+    mime_type = file_metadata.get("mimeType", "")
+
+    if mime_type != "application/pdf":
+        return f"Error: File '{file_name}' is not a PDF (MIME type: {mime_type})."
+
+    # Download the PDF binary
+    request_obj = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request_obj)
+    loop = asyncio.get_event_loop()
+    done = False
+
+    while not done:
+        status, done = await loop.run_in_executor(None, downloader.next_chunk)
+
+    pdf_bytes = fh.getvalue()
+
+    # Extract text using PyMuPDF
+    def extract_text(pdf_data: bytes) -> tuple[list[dict], int, int]:
+        doc = fitz.open(stream=pdf_data, filetype="pdf")
+        pages_data = []
+        total_chars = 0
+        total_pages = len(doc)
+
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            page_text = page.get_text()
+            char_count = len(page_text.strip())
+            total_chars += char_count
+            pages_data.append({
+                "page": page_num + 1,
+                "text": page_text,
+                "char_count": char_count,
+            })
+
+        doc.close()
+        return pages_data, total_chars, total_pages
+
+    try:
+        pages_data, total_chars, total_pages = await loop.run_in_executor(None, extract_text, pdf_bytes)
+    except Exception as e:
+        logger.error(f"[extract_pdf_text_to_file] Error extracting PDF text: {e}")
+        return f"Error extracting text from PDF '{file_name}': {str(e)}"
+
+    if total_chars == 0:
+        return (
+            f"No embedded text found in PDF '{file_name}' ({total_pages} pages). "
+            f"This is likely a scanned document. Use ocr_pdf_to_file instead."
+        )
+
+    # Ensure output directory exists
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write to file
+    if output_format == "json":
+        json_output = {
+            "source_file_id": file_id,
+            "source_file_name": file_name,
+            "mime_type": mime_type,
+            "file_size_bytes": int(file_metadata.get("size", 0)),
+            "modified_date": file_metadata.get("modifiedTime", ""),
+            "web_link": file_metadata.get("webViewLink", ""),
+            "extraction_date": datetime.utcnow().isoformat() + "Z",
+            "extraction_method": "pymupdf_text",
+            "total_pages": total_pages,
+            "total_characters": total_chars,
+            "pages": [
+                {"page": p["page"], "text": p["text"], "char_count": p["char_count"]}
+                for p in pages_data
+            ],
+        }
+        output_file.write_text(json.dumps(json_output, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        text_parts = []
+        text_parts.append(f"# Text: {file_name}")
+        text_parts.append(f"# Source: {file_id}")
+        text_parts.append(f"# Pages: {total_pages}")
+        text_parts.append(f"# Characters: {total_chars}")
+        text_parts.append("")
+        for p in pages_data:
+            text_parts.append(f"--- Page {p['page']} ---")
+            text_parts.append(p["text"])
+            text_parts.append("")
+        output_file.write_text("\n".join(text_parts), encoding="utf-8")
+
+    file_size_kb = output_file.stat().st_size / 1024
+
+    # Build summary
+    first_text = next((p["text"][:200] for p in pages_data if p["char_count"] > 0), "")
+
+    summary_parts = [
+        f"Text extracted: {file_name}",
+        f"  Source file ID: {file_id}",
+        f"  Pages: {total_pages}",
+        f"  Total characters: {total_chars:,}",
+        f"  Output: {output_path} ({file_size_kb:.1f} KB, format: {output_format})",
+        f"  Preview: {first_text}..." if first_text else "  Preview: (no text extracted)",
+    ]
+
+    return "\n".join(summary_parts)
+
+
+@server.tool()
+@handle_http_errors("ocr_pdf_to_file", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def ocr_pdf_to_file(
+    service,
+    user_google_email: str,
+    file_id: str,
+    output_path: str,
+    max_pages: Optional[int] = None,
+    output_format: str = "text",
+) -> str:
+    """
+    Extracts text from a scanned PDF using OCR and writes the full text to a local file.
+
+    Unlike extract_scanned_pdf_text_ocr which returns the full text in the response,
+    this tool writes OCR output to a local file and returns only a summary.
+    Ideal for batch processing or when the full text would be too large for the context window.
+
+    Supports two output formats:
+    - "text": Plain text with page markers (default)
+    - "json": JSON with per-page text, metadata, and file info
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the PDF file in Google Drive.
+        output_path (str): Local filesystem path to write the extracted text.
+            Parent directories will be created if they don't exist.
+        max_pages (Optional[int]): Maximum number of pages to process. If None, processes all pages.
+        output_format (str): Output format - "text" for plain text, "json" for structured JSON.
+            Defaults to "text".
+
+    Returns:
+        str: Summary with file path, page count, character count, and text preview.
+    """
+    logger.info(f"[ocr_pdf_to_file] Starting OCR for file ID: '{file_id}' -> '{output_path}'")
+
+    # Get file metadata
+    file_metadata = await asyncio.to_thread(
+        service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType, size, modifiedTime, webViewLink",
+            supportsAllDrives=True
+        ).execute
+    )
+
+    file_name = file_metadata.get("name", "Unknown File")
+    mime_type = file_metadata.get("mimeType", "")
+
+    if mime_type != "application/pdf":
+        return f"Error: File '{file_name}' is not a PDF (MIME type: {mime_type})."
+
+    # Download the PDF binary
+    request_obj = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request_obj)
+    loop = asyncio.get_event_loop()
+    done = False
+
+    while not done:
+        status, done = await loop.run_in_executor(None, downloader.next_chunk)
+
+    pdf_bytes = fh.getvalue()
+
+    # Extract images from PDF pages using PyMuPDF
+    def extract_page_images(pdf_data: bytes, max_pages_limit: Optional[int] = None) -> tuple[list[bytes], int]:
+        doc = fitz.open(stream=pdf_data, filetype="pdf")
+        page_images = []
+        total_pages = len(doc)
+        pages_to_process = min(total_pages, max_pages_limit) if max_pages_limit else total_pages
+
+        for page_num in range(pages_to_process):
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
+            img_bytes = pix.tobytes("png")
+            page_images.append(img_bytes)
+
+        doc.close()
+        return page_images, total_pages
+
+    try:
+        page_images, total_pages = await loop.run_in_executor(
+            None, extract_page_images, pdf_bytes, max_pages
+        )
+    except Exception as e:
+        logger.error(f"[ocr_pdf_to_file] Error extracting page images: {e}")
+        return f"Error extracting pages from PDF '{file_name}': {str(e)}"
+
+    if not page_images:
+        return f"No pages found in PDF '{file_name}'."
+
+    # Get OAuth credentials for Vision API
+    session_id = None
+    try:
+        session_id = get_fastmcp_session_id()
+    except Exception:
+        pass
+
+    try:
+        creds = get_credentials(
+            user_google_email,
+            [CLOUD_VISION_SCOPE],
+            session_id=session_id,
+        )
+        if not creds:
+            from auth.oauth_callback_server import ensure_oauth_callback_available
+
+            config = get_oauth_config()
+            success, error_msg = ensure_oauth_callback_available(
+                get_transport_mode(), config.port, config.base_uri,
+            )
+            if not success:
+                detail = f" ({error_msg})" if error_msg else ""
+                return f"Error: Unable to initiate Google authorization for Cloud Vision OCR. OAuth callback unavailable{detail}."
+
+            auth_message = await start_auth_flow(
+                user_google_email=user_google_email,
+                service_name="Google Drive (Vision OCR)",
+                redirect_uri=get_oauth_redirect_uri(),
+            )
+            return f"Additional Google authorization required for Cloud Vision OCR.\n\n{auth_message}\n\nAfter completing authorization, rerun this tool."
+
+        vision_creds = GoogleCredentials(
+            token=creds.token,
+            refresh_token=creds.refresh_token,
+            token_uri=creds.token_uri,
+            client_id=creds.client_id,
+            client_secret=creds.client_secret,
+            scopes=creds.scopes
+        )
+
+    except Exception as e:
+        logger.error(f"[ocr_pdf_to_file] Error setting up Vision API credentials: {e}")
+        return f"Error setting up Google Cloud Vision API: {str(e)}"
+
+    # Perform OCR on each page
+    async def ocr_page(page_image: bytes, page_number: int) -> tuple[int, str]:
+        def sync_ocr():
+            client = vision.ImageAnnotatorClient(credentials=vision_creds)
+            image = vision.Image(content=page_image)
+            response = client.text_detection(image=image)
+            if response.error.message:
+                raise Exception(f"Vision API error: {response.error.message}")
+            texts = response.text_annotations
+            return texts[0].description if texts else ""
+
+        try:
+            text = await loop.run_in_executor(None, sync_ocr)
+            return page_number, text
+        except Exception as e:
+            logger.error(f"[ocr_pdf_to_file] Error OCR page {page_number + 1}: {e}")
+            return page_number, f"[Error processing page {page_number + 1}: {str(e)}]"
+
+    logger.info(f"[ocr_pdf_to_file] Processing {len(page_images)} pages with Vision API OCR")
+    ocr_tasks = [ocr_page(img, idx) for idx, img in enumerate(page_images)]
+    ocr_results = await asyncio.gather(*ocr_tasks)
+    ocr_results.sort(key=lambda x: x[0])
+
+    # Collect results
+    pages_data = []
+    total_chars = 0
+    for page_num, text in ocr_results:
+        is_error = text.startswith("[Error") if text else False
+        char_count = len(text) if not is_error else 0
+        total_chars += char_count
+        pages_data.append({
+            "page": page_num + 1,
+            "text": text,
+            "char_count": char_count,
+            "error": is_error,
+        })
+
+    # Ensure output directory exists
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write to file
+    pages_processed = len(page_images)
+    if output_format == "json":
+        json_output = {
+            "source_file_id": file_id,
+            "source_file_name": file_name,
+            "mime_type": mime_type,
+            "file_size_bytes": int(file_metadata.get("size", 0)),
+            "modified_date": file_metadata.get("modifiedTime", ""),
+            "web_link": file_metadata.get("webViewLink", ""),
+            "ocr_date": datetime.utcnow().isoformat() + "Z",
+            "pages_processed": pages_processed,
+            "total_pages": total_pages,
+            "total_characters": total_chars,
+            "pages": [
+                {"page": p["page"], "text": p["text"], "char_count": p["char_count"]}
+                for p in pages_data if not p["error"]
+            ],
+            "errors": [
+                {"page": p["page"], "error": p["text"]}
+                for p in pages_data if p["error"]
+            ],
+        }
+        output_file.write_text(json.dumps(json_output, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        text_parts = []
+        text_parts.append(f"# OCR: {file_name}")
+        text_parts.append(f"# Source: {file_id}")
+        text_parts.append(f"# Pages: {pages_processed} of {total_pages}")
+        text_parts.append(f"# Characters: {total_chars}")
+        text_parts.append("")
+        for p in pages_data:
+            text_parts.append(f"--- Page {p['page']} ---")
+            text_parts.append(p["text"])
+            text_parts.append("")
+        output_file.write_text("\n".join(text_parts), encoding="utf-8")
+
+    file_size_kb = output_file.stat().st_size / 1024
+
+    # Build summary (no full text)
+    first_text = next((p["text"][:200] for p in pages_data if p["text"] and not p["error"]), "")
+    errors = [p for p in pages_data if p["error"]]
+
+    summary_parts = [
+        f"OCR completed: {file_name}",
+        f"  Source file ID: {file_id}",
+        f"  Pages processed: {pages_processed} of {total_pages}",
+        f"  Total characters: {total_chars:,}",
+        f"  Output: {output_path} ({file_size_kb:.1f} KB, format: {output_format})",
+        f"  Preview: {first_text}..." if first_text else "  Preview: (no text extracted)",
+    ]
+    if errors:
+        summary_parts.append(f"  Errors: {len(errors)} page(s) failed OCR")
+
+    return "\n".join(summary_parts)
+
+
 # ===== NEW ADVANCED DRIVE TOOLS =====
 
 @server.tool()
