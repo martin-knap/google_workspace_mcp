@@ -20,6 +20,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from auth.oauth_config import set_transport_mode
+from core.tool_registry import get_tool_components
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +37,14 @@ def get_registered_tools(server) -> Dict[str, Any]:
     """
     tools = {}
 
-    if hasattr(server, "_tool_manager") and hasattr(server._tool_manager, "_tools"):
-        tool_registry = server._tool_manager._tools
-        for name, tool in tool_registry.items():
-            tools[name] = {
-                "name": name,
-                "description": getattr(tool, "description", None)
-                or _extract_docstring(tool),
-                "parameters": _extract_parameters(tool),
-                "tool_obj": tool,
-            }
+    for name, tool in get_tool_components(server).items():
+        tools[name] = {
+            "name": name,
+            "description": getattr(tool, "description", None)
+            or _extract_docstring(tool),
+            "parameters": _extract_parameters(tool),
+            "tool_obj": tool,
+        }
 
     return tools
 
