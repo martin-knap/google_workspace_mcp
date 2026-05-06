@@ -24,19 +24,13 @@ drive:
   core:
     - search_drive_files
     - get_drive_file_content
-    - extract_drive_pdf_text
     - get_drive_file_download_url
     - create_drive_file
     - create_drive_folder
     - import_to_google_doc
     - get_drive_shareable_link
-    - recursive_folder_scan
-    - get_recent_drive_activity
   extended:
     - list_drive_items
-    - extract_scanned_pdf_text_ocr
-    - get_drive_folder_tree
-    - get_folder_statistics
     - copy_drive_file
     - update_drive_file
     - manage_drive_access
@@ -44,7 +38,6 @@ drive:
   complete:
     - get_drive_file_permissions
     - check_drive_file_public_access
-    - batch_get_file_metadata
 
 calendar:
   core:
@@ -52,7 +45,10 @@ calendar:
     - get_events
     - manage_event
   extended:
+    - create_calendar
     - query_freebusy
+    - manage_out_of_office
+    - manage_focus_time
   complete: []
 
 docs:
@@ -68,6 +64,8 @@ docs:
     - insert_doc_elements
     - update_paragraph_style
     - get_doc_as_markdown
+    - list_document_comments
+    - manage_document_comment
   complete:
     - insert_doc_image
     - update_doc_headers_footers
@@ -75,8 +73,15 @@ docs:
     - inspect_doc_structure
     - create_table_with_data
     - debug_table_structure
-    - list_document_comments
-    - manage_document_comment
+    - manage_doc_tab
+
+word:
+  core:
+    - list_word_files
+    - get_word_info
+    - read_word_content
+  extended: []
+  complete: []
 
 sheets:
   core:
@@ -87,11 +92,23 @@ sheets:
     - list_spreadsheets
     - get_spreadsheet_info
     - format_sheet_range
+    - list_sheet_tables
   complete:
     - create_sheet
+    - append_table_rows
+    - resize_sheet_dimensions
+    - move_sheet_rows
     - list_spreadsheet_comments
     - manage_spreadsheet_comment
     - manage_conditional_formatting
+
+excel:
+  core:
+    - list_excel_files
+    - get_excel_info
+    - read_excel_values
+  extended: []
+  complete: []
 
 chat:
   core:
@@ -157,22 +174,6 @@ search:
   extended: []
   complete:
     - get_search_engine_info
-
-excel:
-  core:
-    - list_excel_files
-    - get_excel_info
-    - read_excel_values
-  extended: []
-  complete: []
-
-word:
-  core:
-    - list_word_files
-    - get_word_info
-    - read_word_content
-  extended: []
-  complete: []
 
 appscript:
   core:

@@ -16,11 +16,9 @@
 
 ## ⚡ Quick Start
 
-### One-Click Install (Claude Desktop)
+### Claude Desktop
 
-1. Download `google_workspace_mcp.dxt` from [Releases](https://github.com/taylorwilsdon/google_workspace_mcp/releases)
-2. Double-click → Claude Desktop installs automatically
-3. Add your Google OAuth credentials in Settings → Extensions
+Run an instance and connect Claude to it via a **Connector** — see the [Quick Start Guide](https://workspacemcp.com/quick-start) for full instructions.
 
 ### CLI Install
 
@@ -129,6 +127,7 @@ export OAUTHLIB_INSECURE_TRANSPORT=1  # Development only
 | `get_spreadsheet_info` | Extended | Get metadata, sheets, conditional formats |
 | `format_sheet_range` | Extended | Apply colors, number formats, text wrapping, alignment, bold/italic, font size |
 | `create_sheet` | Complete | Add sheets to existing spreadsheets |
+| `move_sheet_rows` | Complete | Move rows between sheets within a spreadsheet |
 | `list_spreadsheet_comments` | Complete | List all spreadsheet comments |
 | `manage_spreadsheet_comment` | Complete | Create, reply to, or resolve comments |
 | `manage_conditional_formatting` | Complete | Add, update, or delete conditional formatting rules |

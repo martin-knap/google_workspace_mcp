@@ -181,10 +181,12 @@ class TestBuildPersonBody:
 
     def test_build_basic_body(self):
         """Test building a basic person body."""
+        from gcontacts.contacts_tools import EmailInput
+
         body = _build_person_body(
             given_name="John",
             family_name="Doe",
-            email="john@example.com",
+            emails=[EmailInput(address="john@example.com")],
         )
 
         assert body["names"][0]["givenName"] == "John"
@@ -193,16 +195,19 @@ class TestBuildPersonBody:
 
     def test_build_body_with_phone(self):
         """Test building a person body with phone."""
-        body = _build_person_body(phone="+1234567890")
+        from gcontacts.contacts_tools import PhoneInput
+
+        body = _build_person_body(phones=[PhoneInput(number="+1234567890")])
 
         assert body["phoneNumbers"][0]["value"] == "+1234567890"
 
     def test_build_body_with_organization(self):
         """Test building a person body with organization."""
+        from gcontacts.contacts_tools import OrganizationInput
+
         body = _build_person_body(
             given_name="Jane",
-            organization="Acme Corp",
-            job_title="Engineer",
+            organizations=[OrganizationInput(name="Acme Corp", title="Engineer")],
         )
 
         assert body["names"][0]["givenName"] == "Jane"
@@ -211,14 +216,18 @@ class TestBuildPersonBody:
 
     def test_build_body_organization_only(self):
         """Test building a person body with only organization name."""
-        body = _build_person_body(organization="Acme Corp")
+        from gcontacts.contacts_tools import OrganizationInput
+
+        body = _build_person_body(organizations=[OrganizationInput(name="Acme Corp")])
 
         assert body["organizations"][0]["name"] == "Acme Corp"
         assert "title" not in body["organizations"][0]
 
     def test_build_body_job_title_only(self):
         """Test building a person body with only job title."""
-        body = _build_person_body(job_title="CEO")
+        from gcontacts.contacts_tools import OrganizationInput
+
+        body = _build_person_body(organizations=[OrganizationInput(title="CEO")])
 
         assert body["organizations"][0]["title"] == "CEO"
         assert "name" not in body["organizations"][0]
@@ -260,13 +269,14 @@ class TestBuildPersonBody:
 
     def test_build_full_body(self):
         """Test building a person body with all fields."""
+        from gcontacts.contacts_tools import EmailInput, PhoneInput, OrganizationInput
+
         body = _build_person_body(
             given_name="John",
             family_name="Doe",
-            email="john@example.com",
-            phone="+1234567890",
-            organization="Acme Corp",
-            job_title="Engineer",
+            emails=[EmailInput(address="john@example.com")],
+            phones=[PhoneInput(number="+1234567890")],
+            organizations=[OrganizationInput(name="Acme Corp", title="Engineer")],
             notes="VIP contact",
             address="123 Main St",
         )

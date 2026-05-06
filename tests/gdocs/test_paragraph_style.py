@@ -28,6 +28,11 @@ class TestBuildParagraphStyle:
         style, _ = build_paragraph_style(heading_level=3)
         assert style["namedStyleType"] == "HEADING_3"
 
+    def test_named_style_type_accepts_title(self):
+        style, fields = build_paragraph_style(named_style_type="TITLE")
+        assert style["namedStyleType"] == "TITLE"
+        assert fields == ["namedStyleType"]
+
     def test_heading_out_of_range_raises(self):
         with pytest.raises(ValueError):
             build_paragraph_style(heading_level=7)
@@ -52,11 +57,24 @@ class TestCreateUpdateParagraphStyleRequest:
     def test_returns_none_when_no_styles(self):
         assert create_update_paragraph_style_request(1, 10) is None
 
+    def test_zero_start_maps_to_first_writable_body_position(self):
+        result = create_update_paragraph_style_request(0, 10, heading_level=1)
+        inner = result["updateParagraphStyle"]
+        assert inner["range"] == {"startIndex": 1, "endIndex": 10}
+
     def test_produces_correct_api_structure(self):
         result = create_update_paragraph_style_request(1, 10, heading_level=1)
         inner = result["updateParagraphStyle"]
         assert inner["range"] == {"startIndex": 1, "endIndex": 10}
         assert inner["paragraphStyle"]["namedStyleType"] == "HEADING_1"
+        assert inner["fields"] == "namedStyleType"
+
+    def test_supports_subtitle_named_style(self):
+        result = create_update_paragraph_style_request(
+            1, 10, named_style_type="SUBTITLE"
+        )
+        inner = result["updateParagraphStyle"]
+        assert inner["paragraphStyle"]["namedStyleType"] == "SUBTITLE"
         assert inner["fields"] == "namedStyleType"
 
 
@@ -82,6 +100,17 @@ class TestValidateParagraphStyleParams:
     def test_negative_indent_first_line_allowed(self, vm):
         """Hanging indent requires negative first-line indent."""
         assert vm.validate_paragraph_style_params(indent_first_line=-18.0)[0]
+
+    def test_named_style_type_accepts_title_and_subtitle(self, vm):
+        assert vm.validate_paragraph_style_params(named_style_type="TITLE")[0]
+        assert vm.validate_paragraph_style_params(named_style_type="SUBTITLE")[0]
+
+    def test_heading_level_and_named_style_type_are_mutually_exclusive(self, vm):
+        is_valid, msg = vm.validate_paragraph_style_params(
+            heading_level=1, named_style_type="TITLE"
+        )
+        assert not is_valid
+        assert "mutually exclusive" in msg
 
     def test_batch_validation_wired_up(self, vm):
         valid_ops = [
@@ -121,6 +150,34 @@ class TestBatchManagerIntegration:
         assert "heading: H2" in desc
         assert "1.5x" in desc
 
+    def test_build_request_and_description_for_named_style_type(self, manager):
+        op = {
+            "type": "update_paragraph_style",
+            "start_index": 1,
+            "end_index": 50,
+            "named_style_type": "TITLE",
+        }
+        request, desc = manager._build_operation_request(op, "update_paragraph_style")
+        assert (
+            request["updateParagraphStyle"]["paragraphStyle"]["namedStyleType"]
+            == "TITLE"
+        )
+        assert "named style: TITLE" in desc
+
+    def test_build_request_normalizes_zero_start_index(self, manager):
+        op = {
+            "type": "update_paragraph_style",
+            "start_index": 0,
+            "end_index": 20,
+            "heading_level": 1,
+        }
+        request, desc = manager._build_operation_request(op, "update_paragraph_style")
+        assert request["updateParagraphStyle"]["range"] == {
+            "startIndex": 1,
+            "endIndex": 20,
+        }
+        assert "paragraph style 0-20" in desc
+
     @pytest.mark.asyncio
     async def test_end_to_end_execute(self, manager):
         manager._execute_batch_requests = AsyncMock(return_value={"replies": [{}]})
@@ -132,6 +189,23 @@ class TestBatchManagerIntegration:
                     "start_index": 1,
                     "end_index": 20,
                     "heading_level": 1,
+                }
+            ],
+        )
+        assert success
+        assert meta["operations_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_execute_with_named_style_type(self, manager):
+        manager._execute_batch_requests = AsyncMock(return_value={"replies": [{}]})
+        success, message, meta = await manager.execute_batch_operations(
+            "doc-123",
+            [
+                {
+                    "type": "update_paragraph_style",
+                    "start_index": 1,
+                    "end_index": 20,
+                    "named_style_type": "SUBTITLE",
                 }
             ],
         )

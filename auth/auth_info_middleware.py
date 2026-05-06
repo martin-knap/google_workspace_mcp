@@ -70,11 +70,12 @@ class AuthInfoMiddleware(Middleware):
         # Try to get the HTTP request to extract Authorization header
         if not authenticated_user:
             try:
-                # Use the new FastMCP method to get HTTP headers
-                headers = get_http_headers()
+                # Capture the full headers for diagnostics, then scope auth parsing to authorization.
+                all_headers = get_http_headers()
                 logger.info(
-                    f"[AuthInfoMiddleware] get_http_headers() returned: {headers is not None}, keys: {list(headers.keys()) if headers else 'None'}"
+                    f"[AuthInfoMiddleware] get_http_headers() returned: {all_headers is not None}, keys: {list(all_headers.keys()) if all_headers else 'None'}"
                 )
+                headers = get_http_headers(include={"authorization"})
                 if headers:
                     logger.debug("Processing HTTP headers for authentication")
 

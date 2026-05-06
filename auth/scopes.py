@@ -24,11 +24,6 @@ CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
-DRIVE_ACTIVITY_READONLY_SCOPE = (
-    "https://www.googleapis.com/auth/drive.activity.readonly"
-)
-
-# Google Cloud Vision API scope (for OCR on scanned PDFs)
 CLOUD_VISION_SCOPE = "https://www.googleapis.com/auth/cloud-vision"
 
 # Google Docs scopes
@@ -86,6 +81,10 @@ SCRIPT_DEPLOYMENTS_READONLY_SCOPE = (
 )
 SCRIPT_PROCESSES_READONLY_SCOPE = "https://www.googleapis.com/auth/script.processes"
 SCRIPT_METRICS_SCOPE = "https://www.googleapis.com/auth/script.metrics"
+SCRIPT_EXTERNAL_REQUEST_SCOPE = (
+    "https://www.googleapis.com/auth/script.external_request"
+)
+SCRIPT_SCRIPTAPP_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"
 
 # Google scope hierarchy: broader scopes that implicitly cover narrower ones.
 # See https://developers.google.com/gmail/api/auth/scopes,
@@ -137,19 +136,21 @@ def has_required_scopes(available_scopes, required_scopes):
 # Base OAuth scopes required for user identification
 BASE_SCOPES = [USERINFO_EMAIL_SCOPE, USERINFO_PROFILE_SCOPE, OPENID_SCOPE]
 
+# Minimal scopes required to accept an MCP bearer token at the protocol layer.
+PROTOCOL_AUTH_SCOPES = [USERINFO_EMAIL_SCOPE, OPENID_SCOPE]
+
 # Service-specific scope groups
 DOCS_SCOPES = [
     DOCS_READONLY_SCOPE,
     DOCS_WRITE_SCOPE,
     DRIVE_READONLY_SCOPE,
     DRIVE_FILE_SCOPE,
-    DRIVE_ACTIVITY_READONLY_SCOPE,
-    CLOUD_VISION_SCOPE,
 ]
 
 CALENDAR_SCOPES = [CALENDAR_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_EVENTS_SCOPE]
 
 DRIVE_SCOPES = [DRIVE_SCOPE, DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]
+DRIVE_OCR_SCOPES = DRIVE_SCOPES + [CLOUD_VISION_SCOPE]
 
 GMAIL_SCOPES = [
     GMAIL_READONLY_SCOPE,
@@ -190,6 +191,8 @@ SCRIPT_SCOPES = [
     SCRIPT_DEPLOYMENTS_READONLY_SCOPE,
     SCRIPT_PROCESSES_READONLY_SCOPE,  # Required for list_script_processes
     SCRIPT_METRICS_SCOPE,  # Required for get_script_metrics
+    SCRIPT_EXTERNAL_REQUEST_SCOPE,  # Required for scripts.run (execution API)
+    SCRIPT_SCRIPTAPP_SCOPE,  # Required for scripts.run (execution API)
     DRIVE_FILE_SCOPE,  # Required for list/delete script projects (uses Drive API)
 ]
 
@@ -197,6 +200,8 @@ SCRIPT_SCOPES = [
 TOOL_SCOPES_MAP = {
     "gmail": GMAIL_SCOPES,
     "drive": DRIVE_SCOPES,
+    "excel": DRIVE_SCOPES + SHEETS_SCOPES,
+    "word": DRIVE_SCOPES + DOCS_SCOPES,
     "calendar": CALENDAR_SCOPES,
     "docs": DOCS_SCOPES,
     "sheets": SHEETS_SCOPES,
@@ -207,14 +212,14 @@ TOOL_SCOPES_MAP = {
     "contacts": CONTACTS_SCOPES,
     "search": CUSTOM_SEARCH_SCOPES,
     "appscript": SCRIPT_SCOPES,
-    "excel": DRIVE_SCOPES + SHEETS_SCOPES,  # Excel uses both Drive and Sheets APIs
-    "word": DRIVE_SCOPES + DOCS_SCOPES,  # Word uses both Drive and Docs APIs
 }
 
 # Tool-to-read-only-scopes mapping
 TOOL_READONLY_SCOPES_MAP = {
     "gmail": [GMAIL_READONLY_SCOPE],
     "drive": [DRIVE_READONLY_SCOPE],
+    "excel": [DRIVE_READONLY_SCOPE, SHEETS_READONLY_SCOPE],
+    "word": [DRIVE_READONLY_SCOPE, DOCS_READONLY_SCOPE],
     "calendar": [CALENDAR_READONLY_SCOPE],
     "docs": [DOCS_READONLY_SCOPE, DRIVE_READONLY_SCOPE],
     "sheets": [SHEETS_READONLY_SCOPE, DRIVE_READONLY_SCOPE],

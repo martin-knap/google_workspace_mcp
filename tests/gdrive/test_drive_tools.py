@@ -14,7 +14,11 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gdrive.drive_helpers import build_drive_list_params
-from gdrive.drive_tools import list_drive_items, search_drive_files
+from gdrive.drive_tools import (
+    import_to_google_doc,
+    list_drive_items,
+    search_drive_files,
+)
 
 
 def _unwrap(tool):
@@ -200,6 +204,128 @@ async def test_list_drive_items_no_next_page_token_when_absent(mock_resolve_fold
     assert "nextPageToken" not in result
 
 
+# ---------------------------------------------------------------------------
+# search_drive_files — order_by
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_order_by_passed_to_api():
+    """order_by is forwarded to the Drive API as orderBy."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [
+            {
+                "id": "f1",
+                "name": "Recent.pdf",
+                "mimeType": "application/pdf",
+                "webViewLink": "https://drive.google.com/file/f1",
+                "modifiedTime": "2024-06-01T00:00:00Z",
+            }
+        ]
+    }
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="test",
+        order_by="modifiedTime desc",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs.get("orderBy") == "modifiedTime desc"
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_order_by_not_set_when_none():
+    """orderBy is not included in API call when order_by is None."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [
+            {
+                "id": "f2",
+                "name": "File.txt",
+                "mimeType": "text/plain",
+                "webViewLink": "https://drive.google.com/file/f2",
+                "modifiedTime": "2024-06-02T00:00:00Z",
+            }
+        ]
+    }
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="test",
+        # order_by not specified (defaults to None)
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert "orderBy" not in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# list_drive_items — order_by
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_folder_id", new_callable=AsyncMock)
+async def test_list_drive_items_order_by_passed_to_api(mock_resolve_folder):
+    """order_by is forwarded to the Drive API as orderBy."""
+    mock_resolve_folder.return_value = "root"
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [
+            {
+                "id": "folder1",
+                "name": "Archive",
+                "mimeType": "application/vnd.google-apps.folder",
+                "webViewLink": "https://drive.google.com/drive/folders/folder1",
+                "modifiedTime": "2024-06-01T00:00:00Z",
+            }
+        ]
+    }
+
+    await _unwrap(list_drive_items)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        folder_id="root",
+        order_by="folder,modifiedTime desc",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs.get("orderBy") == "folder,modifiedTime desc"
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_folder_id", new_callable=AsyncMock)
+async def test_list_drive_items_order_by_not_set_when_none(mock_resolve_folder):
+    """orderBy is not included in API call when order_by is None."""
+    mock_resolve_folder.return_value = "root"
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [
+            {
+                "id": "file1",
+                "name": "Document.docx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "webViewLink": "https://drive.google.com/file/file1",
+                "modifiedTime": "2024-06-02T00:00:00Z",
+            }
+        ]
+    }
+
+    await _unwrap(list_drive_items)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        folder_id="root",
+        # order_by not specified (defaults to None)
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert "orderBy" not in call_kwargs
+
+
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -211,6 +337,7 @@ def _make_file(
     link: str = "http://link",
     modified: str = "2024-01-01T00:00:00Z",
     size: str | None = None,
+    drive_id: str | None = None,
 ) -> dict:
     item = {
         "id": file_id,
@@ -221,6 +348,8 @@ def _make_file(
     }
     if size is not None:
         item["size"] = size
+    if drive_id is not None:
+        item["driveId"] = drive_id
     return item
 
 
@@ -269,19 +398,21 @@ async def test_create_drive_folder():
 
 
 def test_build_params_detailed_true_includes_extra_fields():
-    """detailed=True requests modifiedTime, webViewLink, and size from the API."""
+    """detailed=True requests modifiedTime, webViewLink, size, and driveId from the API."""
     params = build_drive_list_params(query="name='x'", page_size=10, detailed=True)
     assert "modifiedTime" in params["fields"]
     assert "webViewLink" in params["fields"]
     assert "size" in params["fields"]
+    assert "driveId" in params["fields"]
 
 
 def test_build_params_detailed_false_omits_extra_fields():
-    """detailed=False omits modifiedTime, webViewLink, and size from the API request."""
+    """detailed=False omits detailed metadata from the API request."""
     params = build_drive_list_params(query="name='x'", page_size=10, detailed=False)
     assert "modifiedTime" not in params["fields"]
     assert "webViewLink" not in params["fields"]
     assert "size" not in params["fields"]
+    assert "driveId" not in params["fields"]
 
 
 def test_build_params_detailed_false_keeps_core_fields():
@@ -297,6 +428,54 @@ def test_build_params_default_is_detailed():
     params_default = build_drive_list_params(query="q", page_size=5)
     params_true = build_drive_list_params(query="q", page_size=5, detailed=True)
     assert params_default["fields"] == params_true["fields"]
+
+
+def test_build_params_order_by_trims_surrounding_whitespace():
+    """order_by is normalized before being sent to the Drive API."""
+    params = build_drive_list_params(
+        query="q", page_size=5, order_by="  modifiedTime desc  "
+    )
+    assert params["orderBy"] == "modifiedTime desc"
+
+
+def test_build_params_order_by_omits_whitespace_only_values():
+    """Whitespace-only order_by values are omitted to avoid invalid API requests."""
+    params = build_drive_list_params(query="q", page_size=5, order_by="   ")
+    assert "orderBy" not in params
+
+
+# ---------------------------------------------------------------------------
+# import_to_google_doc — upload retries
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_folder_id", new_callable=AsyncMock)
+async def test_import_to_google_doc_upload_uses_google_api_retries(mock_resolve_folder):
+    """Drive uploads use googleapiclient's built-in retry handling."""
+    mock_resolve_folder.return_value = "resolved_root"
+    mock_service = Mock()
+    mock_service.files().create().execute.return_value = {
+        "id": "doc123",
+        "name": "My Doc",
+        "webViewLink": "https://docs.google.com/document/d/doc123",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+
+    result = await _unwrap(import_to_google_doc)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        file_name="My Doc.md",
+        content="# Title",
+        source_format="md",
+        folder_id="root",
+    )
+
+    assert "Successfully imported" in result
+    execute_kwargs = (
+        mock_service.files.return_value.create.return_value.execute.call_args.kwargs
+    )
+    assert execute_kwargs["num_retries"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +718,33 @@ async def test_list_detailed_true_with_size(mock_resolve_folder):
 
 @pytest.mark.asyncio
 @patch("gdrive.drive_tools.resolve_folder_id", new_callable=AsyncMock)
+async def test_list_detailed_true_with_drive_id(mock_resolve_folder):
+    """When item has a driveId field, detailed=True includes it in output."""
+    mock_resolve_folder.return_value = "resolved_root"
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [
+            _make_file(
+                "id3",
+                "Shared File",
+                "application/pdf",
+                drive_id="shared-drive-123",
+            ),
+        ]
+    }
+
+    result = await _unwrap(list_drive_items)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        folder_id="root",
+        detailed=True,
+    )
+
+    assert "Drive ID: shared-drive-123" in result
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_folder_id", new_callable=AsyncMock)
 async def test_list_detailed_true_requests_extra_api_fields(mock_resolve_folder):
     """detailed=True passes full fields string to the Drive API."""
     mock_resolve_folder.return_value = "resolved_root"
@@ -556,6 +762,7 @@ async def test_list_detailed_true_requests_extra_api_fields(mock_resolve_folder)
     assert "modifiedTime" in call_kwargs["fields"]
     assert "webViewLink" in call_kwargs["fields"]
     assert "size" in call_kwargs["fields"]
+    assert "driveId" in call_kwargs["fields"]
 
 
 @pytest.mark.asyncio
@@ -909,6 +1116,126 @@ async def test_list_items_file_type_unknown_raises(mock_resolve_folder):
             folder_id="root",
             file_type="unknowntype",
         )
+
+
+# ---------------------------------------------------------------------------
+# list_drive_items — shared drive containers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_drive_items_can_list_shared_drives():
+    """resource_type='shared_drives' uses the shared drive list endpoint."""
+    mock_service = Mock()
+    mock_service.drives().list().execute.return_value = {
+        "drives": [
+            {
+                "id": "drive1",
+                "name": "Engineering",
+                "createdTime": "2024-01-01T00:00:00Z",
+                "hidden": False,
+                "capabilities": {"canManageMembers": True, "canEdit": True},
+                "restrictions": {"adminManagedRestrictions": False},
+            }
+        ],
+        "nextPageToken": "shared_next",
+    }
+
+    result = await _unwrap(list_drive_items)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        resource_type="shared_drives",
+        page_size=250,
+        page_token="shared_page",
+        query="name contains 'Engineering'",
+    )
+
+    call_kwargs = mock_service.drives.return_value.list.call_args.kwargs
+    assert call_kwargs["pageSize"] == 100
+    assert call_kwargs["pageToken"] == "shared_page"
+    assert call_kwargs["q"] == "name contains 'Engineering'"
+    assert "Found 1 shared drives" in result
+    assert 'Name: "Engineering" (ID: drive1' in result
+    assert result.endswith("nextPageToken: shared_next")
+    mock_service.files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_drive_items_shared_drives_can_include_organizers():
+    """include_organizers adds organizer principals to shared drive output."""
+    mock_service = Mock()
+    mock_service.drives().list().execute.return_value = {
+        "drives": [
+            {
+                "id": "drive1",
+                "name": "Engineering",
+                "capabilities": {},
+                "restrictions": {},
+            }
+        ]
+    }
+    mock_service.permissions.return_value.list.return_value.execute.side_effect = [
+        {
+            "permissions": [
+                {
+                    "emailAddress": "lead@example.com",
+                    "displayName": "Eng Lead",
+                    "role": "organizer",
+                    "type": "user",
+                },
+                {
+                    "emailAddress": "reader@example.com",
+                    "role": "reader",
+                    "type": "user",
+                },
+            ],
+            "nextPageToken": "permission_page_2",
+        },
+        {
+            "permissions": [
+                {
+                    "emailAddress": "second-lead@example.com",
+                    "displayName": "Second Eng Lead",
+                    "role": "organizer",
+                    "type": "user",
+                }
+            ]
+        },
+    ]
+
+    result = await _unwrap(list_drive_items)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        resource_type="shared_drives",
+        include_organizers=True,
+    )
+
+    permissions_calls = mock_service.permissions.return_value.list.call_args_list
+    assert permissions_calls[0].kwargs["fileId"] == "drive1"
+    assert permissions_calls[0].kwargs["supportsAllDrives"] is True
+    assert "nextPageToken" in permissions_calls[0].kwargs["fields"]
+    assert "pageToken" not in permissions_calls[0].kwargs
+    assert "nextPageToken" in permissions_calls[1].kwargs["fields"]
+    assert permissions_calls[1].kwargs["pageToken"] == "permission_page_2"
+    assert "Organizer (user): lead@example.com" in result
+    assert "Organizer (user): second-lead@example.com" in result
+    assert "reader@example.com" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_drive_items_invalid_resource_type_raises():
+    """Unknown resource types are rejected before calling Drive APIs."""
+    mock_service = Mock()
+
+    with pytest.raises(ValueError, match="resource_type"):
+        await _unwrap(list_drive_items)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            resource_type="calendars",
+        )
+
+    mock_service.files.assert_not_called()
+    mock_service.drives.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

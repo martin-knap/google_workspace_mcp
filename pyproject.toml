@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workspace-mcp"
-version = "1.14.1"
+version = "1.20.3"
 description = "Comprehensive, highly performant Google Workspace Streamable HTTP & SSE MCP Server for Calendar, Gmail, Docs, Sheets, Slides & Drive"
 readme = "README.md"
 keywords = [ "mcp", "google", "workspace", "llm", "ai", "claude", "model", "context", "protocol", "server"]
@@ -12,20 +12,22 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
  "fastapi>=0.115.12",
- "fastmcp>=3.0.2",
+ "fastmcp>=3.2.4",
  "google-api-python-client>=2.168.0",
  "google-auth-httplib2>=0.2.0",
  "google-auth-oauthlib>=1.2.2",
- "google-cloud-vision>=3.8.0",
  "httpx>=0.28.1",
  "py-key-value-aio>=0.3.0",
- "pyjwt>=2.10.1",
- "pymupdf>=1.24.0",
+ "pyjwt>=2.12.0",
  "python-dotenv>=1.1.0",
  "pyyaml>=6.0.2",
  "cryptography>=45.0.0",
- "uvicorn>=0.34.3",
  "defusedxml>=0.7.1",
+ "google-cloud-vision>=3.10.2",
+ "pymupdf>=1.26.6",
+ "pypdf>=6.10.2",
+ "pytz>=2026.1.post1",
+ "markdown-it-py>=3.0.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -59,14 +61,22 @@ Changelog = "https://github.com/taylorwilsdon/google_workspace_mcp/releases"
 
 [project.scripts]
 workspace-mcp = "main:main"
+workspace-cli = "core.cli:main"
 
 [project.optional-dependencies]
+gcs = [
+    "google-cloud-storage>=2.18.0",
+]
+disk = [
+    "py-key-value-aio[filetree]>=0.3.0",
+]
 valkey = [
     "py-key-value-aio[valkey]>=0.3.0",
 ]
 test = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
+    "google-cloud-storage>=2.18.0",
     "requests>=2.32.3",
 ]
 release = [
@@ -76,6 +86,7 @@ release = [
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
+    "google-cloud-storage>=2.18.0",
     "requests>=2.32.3",
     "ruff>=0.12.4",
     "tomlkit>=0.13.3",
@@ -83,12 +94,16 @@ dev = [
 ]
 
 [dependency-groups]
+disk = [
+    "py-key-value-aio[filetree]>=0.3.0",
+]
 valkey = [
     "py-key-value-aio[valkey]>=0.3.0",
 ]
 test = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
+    "google-cloud-storage>=2.18.0",
     "requests>=2.32.3",
 ]
 release = [
@@ -98,6 +113,7 @@ release = [
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
+    "google-cloud-storage>=2.18.0",
     "requests>=2.32.3",
     "ruff>=0.12.4",
     "tomlkit>=0.13.3",
@@ -113,6 +129,14 @@ exclude = ["tests*", "docs*", "build", "dist"]
 
 [tool.pytest.ini_options]
 addopts = "--ignore=tests/gappsscript/manual_test.py"
+pythonpath = ["."]
+markers = [
+    "integration: marks tests as requiring real external services (deselect with '-m \"not integration\"')",
+]
+filterwarnings = [
+    "ignore::authlib.deprecate.AuthlibDeprecationWarning",
+    "ignore:PdfWriter.add_object\\(\\) is unavailable:UserWarning",
+]
 
 [tool.setuptools.package-data]
 core = ["tool_tiers.yaml"]

@@ -31,9 +31,6 @@ mcp_server_debug.log
 # ---- Local development files -------------------------------------------
 /.credentials
 /.claude
-/.docs
-
-# ---- Miscellaneous development files -----------------------------------
 .serena/
 Caddyfile
 ecosystem.config.cjs

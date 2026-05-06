@@ -9,11 +9,12 @@ Usage:
     --permissions gmail:organize drive:readonly
 
 Gmail levels: readonly, organize, drafts, send, full
+Tasks levels: readonly, manage, full
 Other services: readonly, full (extensible by adding entries to SERVICE_PERMISSION_LEVELS)
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from auth.scopes import (
     GMAIL_READONLY_SCOPE,
@@ -52,6 +53,8 @@ from auth.scopes import (
     SCRIPT_DEPLOYMENTS_READONLY_SCOPE,
     SCRIPT_PROCESSES_READONLY_SCOPE,
     SCRIPT_METRICS_SCOPE,
+    SCRIPT_EXTERNAL_REQUEST_SCOPE,
+    SCRIPT_SCRIPTAPP_SCOPE,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +86,14 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
         ("readonly", [SHEETS_READONLY_SCOPE, DRIVE_READONLY_SCOPE]),
         ("full", [SHEETS_WRITE_SCOPE, DRIVE_READONLY_SCOPE]),
     ],
+    "excel": [
+        ("readonly", [DRIVE_READONLY_SCOPE, SHEETS_READONLY_SCOPE]),
+        ("full", [DRIVE_SCOPE, DRIVE_FILE_SCOPE, SHEETS_WRITE_SCOPE]),
+    ],
+    "word": [
+        ("readonly", [DRIVE_READONLY_SCOPE, DOCS_READONLY_SCOPE]),
+        ("full", [DRIVE_SCOPE, DRIVE_FILE_SCOPE, DOCS_WRITE_SCOPE]),
+    ],
     "chat": [
         ("readonly", [CHAT_READONLY_SCOPE, CHAT_SPACES_READONLY_SCOPE]),
         ("full", [CHAT_WRITE_SCOPE, CHAT_SPACES_SCOPE]),
@@ -97,7 +108,8 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
     ],
     "tasks": [
         ("readonly", [TASKS_READONLY_SCOPE]),
-        ("full", [TASKS_SCOPE]),
+        ("manage", [TASKS_SCOPE]),
+        ("full", []),
     ],
     "contacts": [
         ("readonly", [CONTACTS_READONLY_SCOPE]),
@@ -125,22 +137,51 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
                 SCRIPT_DEPLOYMENTS_SCOPE,
                 SCRIPT_PROCESSES_READONLY_SCOPE,
                 SCRIPT_METRICS_SCOPE,
+                SCRIPT_EXTERNAL_REQUEST_SCOPE,
+                SCRIPT_SCRIPTAPP_SCOPE,
                 DRIVE_FILE_SCOPE,
             ],
         ),
     ],
 }
 
+# Actions denied at specific permission levels.
+# Maps service -> level -> frozenset of denied action names.
+# Levels not listed here (or services without entries) deny nothing.
+SERVICE_DENIED_ACTIONS: Dict[str, Dict[str, FrozenSet[str]]] = {
+    "tasks": {
+        "manage": frozenset({"delete", "clear_completed"}),
+    },
+}
+
+
+def is_action_denied(service: str, action: str) -> bool:
+    """Check whether *action* is denied for *service* under current permissions.
+
+    Returns ``False`` when granular permissions mode is not active, when the
+    service has no permission entry, or when the configured level does not
+    deny the action.
+    """
+    if _PERMISSIONS is None:
+        return False
+    level = _PERMISSIONS.get(service)
+    if level is None:
+        return False
+    denied = SERVICE_DENIED_ACTIONS.get(service, {}).get(level, frozenset())
+    return action in denied
+
+
 # Module-level state: parsed --permissions config
 # Dict mapping service_name -> level_name, e.g. {"gmail": "organize"}
 _PERMISSIONS: Optional[Dict[str, str]] = None
 
 
-def set_permissions(permissions: Dict[str, str]) -> None:
+def set_permissions(permissions: Optional[Dict[str, str]]) -> None:
     """Set granular permissions from parsed --permissions argument."""
     global _PERMISSIONS
     _PERMISSIONS = permissions
-    logger.info("Granular permissions set: %s", permissions)
+    if permissions is not None:
+        logger.info("Granular permissions set: %s", permissions)
 
 
 def get_permissions() -> Optional[Dict[str, str]]:

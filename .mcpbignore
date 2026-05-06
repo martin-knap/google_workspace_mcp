@@ -1,9 +1,9 @@
 # =============================================================================
-# .dxtignore — defense-in-depth denylist for dxt pack
+# .mcpbignore - defense-in-depth denylist for mcpb pack
 #
-# IMPORTANT: Always use dxt-safe-pack.sh instead of bare `dxt pack`.
+# IMPORTANT: Always use mcpb-safe-pack.sh instead of bare `mcpb pack`.
 # The script guarantees only git-tracked files are packaged.
-# This file exists as a safety net in case someone runs `dxt pack` directly.
+# This file exists as a safety net in case someone runs `mcpb pack` directly.
 # =============================================================================
 
 # ---- Caches ----------------------------------------------------------------
@@ -15,6 +15,7 @@ __pycache__
 .ruff_cache
 
 # ---- Build / packaging -----------------------------------------------------
+.mcpbignore
 *.egg-info
 build/
 dist/
@@ -32,7 +33,7 @@ node_modules/
 # ---- macOS -----------------------------------------------------------------
 .DS_Store
 
-# ---- Secrets & credentials — CRITICAL --------------------------------------
+# ---- Secrets & credentials - CRITICAL --------------------------------------
 client_secret.json
 .credentials
 credentials.json

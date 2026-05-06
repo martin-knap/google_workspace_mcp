@@ -13,6 +13,9 @@ from googleapiclient.errors import HttpError  # type: ignore
 from mcp import Resource
 
 from auth.oauth_config import is_oauth21_enabled, is_external_oauth21_provider
+from auth.permissions import is_action_denied
+from mcp.types import ToolAnnotations
+
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors
@@ -25,24 +28,30 @@ LIST_TASKS_MAX_POSITION = "99999999999999999999"
 
 
 def _format_reauth_message(error: Exception, user_google_email: str) -> str:
-    base = f"API error: {error}. You might need to re-authenticate."
-    if is_oauth21_enabled():
-        if is_external_oauth21_provider():
-            hint = (
-                "LLM: Ask the user to provide a valid OAuth 2.1 bearer token in the "
-                "Authorization header and retry."
-            )
+    base = f"API error: {error}"
+
+    # Only suggest re-authentication for auth-related errors (401, 403)
+    if isinstance(error, HttpError) and error.resp.status in (401, 403):
+        base += ". You might need to re-authenticate."
+        if is_oauth21_enabled():
+            if is_external_oauth21_provider():
+                hint = (
+                    "LLM: Ask the user to provide a valid OAuth 2.1 bearer token in the "
+                    "Authorization header and retry."
+                )
+            else:
+                hint = (
+                    "LLM: Ask the user to authenticate via their MCP client's OAuth 2.1 "
+                    "flow and retry."
+                )
         else:
             hint = (
-                "LLM: Ask the user to authenticate via their MCP client's OAuth 2.1 "
-                "flow and retry."
+                "LLM: Try 'start_google_auth' with the user's email "
+                f"({user_google_email}) and service_name='Google Tasks'."
             )
-    else:
-        hint = (
-            "LLM: Try 'start_google_auth' with the user's email "
-            f"({user_google_email}) and service_name='Google Tasks'."
-        )
-    return f"{base} {hint}"
+        return f"{base} {hint}"
+
+    return base
 
 
 class StructuredTask:
@@ -89,7 +98,30 @@ def _adjust_due_max_for_tasks_api(due_max: str) -> str:
     return adjusted.isoformat()
 
 
-@server.tool()  # type: ignore
+def _validate_rfc3339_date(due: str) -> None:
+    """Validate that due is a full RFC 3339 datetime (date-only strings are rejected by the API)."""
+    error_msg = f"Invalid due date format. Expected RFC 3339 datetime (e.g., '2026-04-25T00:00:00Z'), got '{due}'"
+    if "T" not in due:
+        raise UserInputError(error_msg)
+    try:
+        parsed = datetime.fromisoformat(
+            due[:-1] + "+00:00" if due.endswith("Z") else due
+        )
+    except ValueError:
+        raise UserInputError(error_msg) from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise UserInputError(error_msg)
+
+
+@server.tool(
+    title="List Task Lists",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("tasks", "tasks_read")  # type: ignore
 @handle_http_errors("list_task_lists", service_type="tasks")  # type: ignore
 async def list_task_lists(
@@ -147,7 +179,15 @@ async def list_task_lists(
         raise Exception(message)
 
 
-@server.tool()  # type: ignore
+@server.tool(
+    title="Get Task List",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("tasks", "tasks_read")  # type: ignore
 @handle_http_errors("get_task_list", service_type="tasks")  # type: ignore
 async def get_task_list(
@@ -282,7 +322,15 @@ async def _clear_completed_tasks_impl(
 # --- Consolidated manage_task_list tool ---
 
 
-@server.tool()  # type: ignore
+@server.tool(
+    title="Manage Task List",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("tasks", "tasks")  # type: ignore
 @handle_http_errors("manage_task_list", service_type="tasks")  # type: ignore
 async def manage_task_list(
@@ -312,6 +360,11 @@ async def manage_task_list(
     if action not in valid_actions:
         raise UserInputError(
             f"Invalid action '{action}'. Must be one of: {', '.join(valid_actions)}"
+        )
+
+    if is_action_denied("tasks", action):
+        raise UserInputError(
+            f"The '{action}' action is not allowed under the current permission level."
         )
 
     if action == "create":
@@ -344,7 +397,15 @@ async def manage_task_list(
 # --- Task tools ---
 
 
-@server.tool()  # type: ignore
+@server.tool(
+    title="List Tasks",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("tasks", "tasks_read")  # type: ignore
 @handle_http_errors("list_tasks", service_type="tasks")  # type: ignore
 async def list_tasks(
@@ -588,7 +649,15 @@ This can also occur due to filtering that excludes parent tasks while including 
     return response
 
 
-@server.tool()  # type: ignore
+@server.tool(
+    title="Get Task",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("tasks", "tasks_read")  # type: ignore
 @handle_http_errors("get_task", service_type="tasks")  # type: ignore
 async def get_task(
@@ -831,7 +900,15 @@ async def _move_task_impl(
 # --- Consolidated manage_task tool ---
 
 
-@server.tool()  # type: ignore
+@server.tool(
+    title="Manage Task",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("tasks", "tasks")  # type: ignore
 @handle_http_errors("manage_task", service_type="tasks")  # type: ignore
 async def manage_task(
@@ -875,10 +952,18 @@ async def manage_task(
     if status is not None and status not in allowed_statuses:
         raise UserInputError("invalid status: must be 'needsAction' or 'completed'")
 
+    if due is not None:
+        _validate_rfc3339_date(due)
+
     valid_actions = ("create", "update", "delete", "move")
     if action not in valid_actions:
         raise UserInputError(
             f"Invalid action '{action}'. Must be one of: {', '.join(valid_actions)}"
+        )
+
+    if is_action_denied("tasks", action):
+        raise UserInputError(
+            f"The '{action}' action is not allowed under the current permission level."
         )
 
     if action == "create":

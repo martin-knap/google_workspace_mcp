@@ -1,4 +1,6 @@
+import base64
 import io
+import json
 import logging
 import os
 import zipfile
@@ -7,16 +9,20 @@ import asyncio
 import functools
 
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, Any, List, Optional
 
+from pydantic import BeforeValidator
 from defusedxml import ElementTree as ET
 
+from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 from .api_enablement import get_api_enablement_message
 from auth.google_auth import GoogleAuthenticationError
 from auth.oauth_config import is_oauth21_enabled, is_external_oauth21_provider
 
 logger = logging.getLogger(__name__)
+
+GOOGLE_API_WRITE_RETRIES = 3
 
 
 class TransientNetworkError(Exception):
@@ -31,23 +37,90 @@ class UserInputError(Exception):
     pass
 
 
+def _coerce_json_str_to_type(v: Any, expected_type: type) -> Any:
+    """Coerce a JSON-encoded string to a specific container type."""
+    if not isinstance(v, str):
+        return v
+
+    try:
+        parsed = json.loads(v)
+    except (json.JSONDecodeError, TypeError):
+        return v
+
+    return parsed if isinstance(parsed, expected_type) else v
+
+
+def _coerce_json_str_to_list(v: Any) -> Any:
+    """Coerce a JSON-encoded string to a list.
+
+    Some MCP clients (e.g. Cowork) serialise array parameters as JSON strings
+    rather than native arrays.  This ``BeforeValidator`` transparently converts
+    ``'["a","b"]'`` → ``["a", "b"]`` so Pydantic validation succeeds.
+    """
+    return _coerce_json_str_to_type(v, list)
+
+
+StringList = Annotated[List[str], BeforeValidator(_coerce_json_str_to_list)]
+"""``List[str]`` that also accepts a JSON-encoded string of an array.
+
+Use in tool signatures instead of ``List[str]`` to work around MCP clients
+that send ``'["value"]'`` instead of ``["value"]``.
+"""
+
+
+DictList = Annotated[List[dict[str, Any]], BeforeValidator(_coerce_json_str_to_list)]
+"""``List[dict]`` that also accepts a JSON-encoded string of an array.
+
+Use in tool signatures instead of ``List[dict]`` to work around MCP clients
+that send ``'[{"key":"val"}]'`` instead of ``[{"key":"val"}]``.
+"""
+
+
+def _coerce_json_str_to_dict(v: Any) -> Any:
+    """Coerce a JSON-encoded string to a dict.
+
+    Some MCP clients serialise dict parameters as JSON strings rather than
+    native objects.  This ``BeforeValidator`` transparently converts
+    ``'{"key":"val"}'`` -> ``{"key": "val"}`` so Pydantic validation succeeds.
+    """
+    return _coerce_json_str_to_type(v, dict)
+
+
+JsonDict = Annotated[dict[str, Any], BeforeValidator(_coerce_json_str_to_dict)]
+"""``dict`` that also accepts a JSON-encoded string of an object.
+
+Use in tool signatures instead of ``Dict[str, Any]`` to work around MCP clients
+that send ``'{"key":"val"}'`` instead of ``{"key": "val"}``.
+"""
+
+
 # Directories from which local file reads are allowed.
-# The user's home directory is the default safe base.
+# By default, only the managed attachment storage directory is trusted.
 # Override via ALLOWED_FILE_DIRS env var (os.pathsep-separated paths).
 _ALLOWED_FILE_DIRS_ENV = "ALLOWED_FILE_DIRS"
 
 
 def _get_allowed_file_dirs() -> list[Path]:
     """Return the list of directories from which local file access is permitted."""
+    from core.attachment_storage import STORAGE_DIR
+
+    allowed_dirs: list[Path] = [STORAGE_DIR]
     env_val = os.environ.get(_ALLOWED_FILE_DIRS_ENV)
     if env_val:
-        return [
-            Path(p).expanduser().resolve()
+        allowed_dirs.extend(
+            Path(p_stripped).expanduser().resolve()
             for p in env_val.split(os.pathsep)
-            if p.strip()
-        ]
-    home = Path.home()
-    return [home] if home else []
+            if (p_stripped := p.strip())
+        )
+
+    unique_dirs: list[Path] = []
+    seen: set[Path] = set()
+    for path in allowed_dirs:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_dirs.append(path)
+    return unique_dirs
 
 
 def validate_file_path(file_path: str) -> Path:
@@ -77,8 +150,10 @@ def validate_file_path(file_path: str) -> Path:
     resolved_str = str(resolved)
     file_name = resolved.name.lower()
 
+    path_parts = [part.lower() for part in resolved.parts]
+
     # Block .env files and variants (.env, .env.local, .env.production, etc.)
-    if file_name == ".env" or file_name.startswith(".env."):
+    if any(part == ".env" or part.startswith(".env.") for part in path_parts):
         raise ValueError(
             f"Access to '{resolved_str}' is not allowed: "
             ".env files may contain secrets and cannot be read, uploaded, or attached."
@@ -101,16 +176,20 @@ def validate_file_path(file_path: str) -> Path:
                 "path is in a restricted system location."
             )
 
-    # Block sensitive directories that commonly contain credentials/keys
-    sensitive_dirs = (
-        ".ssh",
-        ".aws",
+    # Block sensitive directories that commonly contain credentials/keys.
+    if ".ssh" in path_parts or ".aws" in path_parts:
+        raise ValueError(
+            f"Access to '{resolved_str}' is not allowed: "
+            "path is in a directory that commonly contains secrets or credentials."
+        )
+
+    home = Path.home()
+    sensitive_home_dirs = (
         ".kube",
         ".gnupg",
         ".config/gcloud",
     )
-    for sensitive_dir in sensitive_dirs:
-        home = Path.home()
+    for sensitive_dir in sensitive_home_dirs:
         blocked = home / sensitive_dir
         if resolved == blocked or str(resolved).startswith(str(blocked) + "/"):
             raise ValueError(
@@ -143,7 +222,8 @@ def validate_file_path(file_path: str) -> Path:
     if not allowed_dirs:
         raise ValueError(
             "No allowed file directories configured. "
-            "Set the ALLOWED_FILE_DIRS environment variable or ensure a home directory exists."
+            "Set the ALLOWED_FILE_DIRS environment variable or configure "
+            "WORKSPACE_ATTACHMENT_DIR."
         )
 
     for allowed in allowed_dirs:
@@ -373,6 +453,62 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
         return None
 
 
+IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "image/svg+xml",
+}
+
+
+def extract_pdf_text(file_bytes: bytes) -> Optional[str]:
+    """
+    Extract text from a PDF using pypdf.
+    Returns plain text with pages separated by double newlines, or None on failure.
+    """
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(file_bytes))
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+        if not pages:
+            return None
+        return "\n\n".join(pages).strip() or None
+    except Exception as e:
+        logger.warning(f"Failed to extract PDF text: {e}")
+        return None
+
+
+def encode_image_content(file_bytes: bytes, mime_type: str) -> str:
+    """
+    Base64-encode image bytes with a mime type metadata prefix.
+
+    Args:
+        file_bytes: The image file content as bytes.
+        mime_type: The MIME type of the image (must start with "image/").
+
+    Returns:
+        str: Base64-encoded image with mime type prefix.
+
+    Raises:
+        ValueError: If mime_type is not an image MIME type.
+    """
+    if not mime_type.startswith("image/"):
+        raise ValueError(
+            f"Expected image/* MIME type, got '{mime_type}'. "
+            "Only image content can be base64-encoded for multimodal clients."
+        )
+    encoded = base64.b64encode(file_bytes).decode("ascii")
+    return f"[base64_image:{mime_type}]{encoded}"
+
+
 def handle_http_errors(
     tool_name: str, is_read_only: bool = False, service_type: Optional[str] = None
 ):
@@ -475,6 +611,9 @@ def handle_http_errors(
                     raise Exception(message) from error
                 except TransientNetworkError:
                     # Re-raise without wrapping to preserve the specific error type
+                    raise
+                except ToolError:
+                    # Re-raise explicit tool errors so FastMCP can surface them directly.
                     raise
                 except GoogleAuthenticationError:
                     # Re-raise authentication errors without wrapping

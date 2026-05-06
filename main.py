@@ -1,28 +1,79 @@
+import io
 import argparse
+import json
 import logging
 import os
 import socket
 import sys
+from functools import partial
 from importlib import metadata, import_module
 from dotenv import load_dotenv
 
-# Check for CLI mode early - before loading oauth_config
-# CLI mode requires OAuth 2.0 since there's no MCP session context
-_CLI_MODE = "--cli" in sys.argv
-if _CLI_MODE:
-    os.environ["MCP_ENABLE_OAUTH21"] = "false"
-    os.environ["WORKSPACE_MCP_STATELESS_MODE"] = "false"
+# Prevent any stray startup output on macOS (e.g. platform identifiers) from
+# corrupting the MCP JSON-RPC handshake on stdout. We capture anything written
+# to stdout during module-level initialisation and replay it to stderr so that
+# diagnostic information is not lost.
+_original_stdout = sys.stdout
+if sys.platform == "darwin":
+    sys.stdout = io.StringIO()
 
-from auth.oauth_config import reload_oauth_config, is_stateless_mode  # noqa: E402
-from core.log_formatter import EnhancedLogFormatter, configure_file_logging  # noqa: E402
-from core.utils import check_credentials_directory_permissions  # noqa: E402
-from core.server import server, set_transport_mode, configure_server_for_http  # noqa: E402
-from core.tool_tier_loader import resolve_tools_from_tier  # noqa: E402
-from core.tool_registry import (  # noqa: E402
-    set_enabled_tools as set_enabled_tool_names,
+
+def _load_startup_dependencies():
+    from auth.credential_store import get_credential_store, get_selected_backend
+    from auth.oauth_config import (
+        get_oauth_config,
+        reload_oauth_config,
+        is_stateless_mode,
+        is_service_account_enabled,
+    )
+    from core.log_formatter import EnhancedLogFormatter, configure_file_logging
+    from core.utils import check_credentials_directory_permissions
+    from core.server import server, set_transport_mode, configure_server_for_http
+    from core.tool_tier_loader import resolve_tools_from_tier
+    from core.tool_registry import (
+        set_enabled_tools as set_enabled_tool_names,
+        wrap_server_tool_method,
+        filter_server_tools,
+    )
+
+    return (
+        get_selected_backend,
+        get_credential_store,
+        get_oauth_config,
+        reload_oauth_config,
+        is_stateless_mode,
+        is_service_account_enabled,
+        EnhancedLogFormatter,
+        configure_file_logging,
+        check_credentials_directory_permissions,
+        server,
+        set_transport_mode,
+        configure_server_for_http,
+        resolve_tools_from_tier,
+        set_enabled_tool_names,
+        wrap_server_tool_method,
+        filter_server_tools,
+    )
+
+
+(
+    get_selected_backend,
+    get_credential_store,
+    get_oauth_config,
+    reload_oauth_config,
+    is_stateless_mode,
+    is_service_account_enabled,
+    EnhancedLogFormatter,
+    configure_file_logging,
+    check_credentials_directory_permissions,
+    server,
+    set_transport_mode,
+    configure_server_for_http,
+    resolve_tools_from_tier,
+    set_enabled_tool_names,
     wrap_server_tool_method,
     filter_server_tools,
-)
+) = _load_startup_dependencies()
 
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=dotenv_path)
@@ -44,68 +95,29 @@ logger = logging.getLogger(__name__)
 
 configure_file_logging()
 
-
-def parse_enabled_services_from_env():
-    """
-    Parse ENABLED_SERVICES environment variable into a list of service names.
-
-    Format: Comma-separated list (case-insensitive)
-    Example: "Drive,Calendar,Docs,Sheets" or "gmail, drive, calendar"
-
-    Returns:
-        List of lowercase service names, or None if not set
-    """
-    enabled_services = os.getenv("ENABLED_SERVICES")
-    if not enabled_services:
-        return None
-
-    # Parse comma-separated values, strip whitespace, convert to lowercase
-    services = [s.strip().lower() for s in enabled_services.split(",") if s.strip()]
-
-    # Valid service names
-    valid_services = {
-        "gmail",
-        "drive",
-        "calendar",
-        "docs",
-        "sheets",
-        "chat",
-        "forms",
-        "slides",
-        "tasks",
-        "contacts",
-        "search",
-        "appscript",
-        "excel",
-        "word",
-    }
-
-    # Filter to only valid services and warn about invalid ones
-    valid_parsed = []
-    invalid = []
-    for service in services:
-        if service in valid_services:
-            valid_parsed.append(service)
-        else:
-            invalid.append(service)
-
-    if invalid:
-        logger.warning(
-            f"Ignoring invalid services from ENABLED_SERVICES: {', '.join(invalid)}"
-        )
-
-    if valid_parsed:
-        logger.info(f"Loaded services from ENABLED_SERVICES: {', '.join(valid_parsed)}")
-        return valid_parsed
-
-    return None
+# Single source of truth: service name -> module path.
+# VALID_SERVICES is derived from this mapping.
+SERVICE_MODULES = {
+    "gmail": "gmail.gmail_tools",
+    "drive": "gdrive.drive_tools",
+    "calendar": "gcalendar.calendar_tools",
+    "docs": "gdocs.docs_tools",
+    "sheets": "gsheets.sheets_tools",
+    "chat": "gchat.chat_tools",
+    "forms": "gforms.forms_tools",
+    "slides": "gslides.slides_tools",
+    "tasks": "gtasks.tasks_tools",
+    "contacts": "gcontacts.contacts_tools",
+    "search": "gsearch.search_tools",
+    "appscript": "gappsscript.apps_script_tools",
+    "excel": "gexcel.excel_tools",
+    "word": "gword.word_tools",
+}
+VALID_SERVICES = frozenset(SERVICE_MODULES)
 
 
 def safe_print(text):
-    # Don't print in CLI mode - we want clean output
-    if _CLI_MODE:
-        return
-
+    """Print to stderr, falling back to debug logging when running as an MCP server."""
     # Don't print to stderr when running as MCP server via uvx to avoid JSON parsing errors
     # Check if we're running as MCP server (no TTY and uvx in process name)
     if not sys.stderr.isatty():
@@ -120,10 +132,13 @@ def safe_print(text):
 
 
 def configure_safe_logging():
+    """Replace console handlers with ASCII-safe formatters for Windows compatibility."""
+
     class SafeEnhancedFormatter(EnhancedLogFormatter):
         """Enhanced ASCII formatter with additional Windows safety."""
 
         def format(self, record):
+            """Format a log record, falling back to ASCII if encoding fails."""
             try:
                 return super().format(record)
             except UnicodeEncodeError:
@@ -173,18 +188,35 @@ def narrow_permissions_to_services(
     }
 
 
+def _restore_stdout() -> None:
+    """Restore the real stdout and replay any captured output to stderr."""
+    captured_stdout = sys.stdout
+
+    # Idempotent: if already restored, nothing to do.
+    if captured_stdout is _original_stdout:
+        return
+
+    captured = ""
+    required_stringio_methods = ("getvalue", "write", "flush")
+    try:
+        if all(
+            callable(getattr(captured_stdout, method_name, None))
+            for method_name in required_stringio_methods
+        ):
+            captured = captured_stdout.getvalue()
+    finally:
+        sys.stdout = _original_stdout
+
+    if captured:
+        print(captured, end="", file=sys.stderr)
+
+
 def main():
     """
     Main entry point for the Google Workspace MCP server.
     Uses FastMCP's native streamable-http transport.
-    Supports CLI mode for direct tool invocation without running the server.
     """
-    # Check if CLI mode is enabled - suppress startup messages
-    if _CLI_MODE:
-        # Suppress logging output in CLI mode for clean output
-        logging.getLogger().setLevel(logging.ERROR)
-        logging.getLogger("auth").setLevel(logging.ERROR)
-        logging.getLogger("core").setLevel(logging.ERROR)
+    _restore_stdout()
 
     # Configure safe logging for Windows Unicode handling
     configure_safe_logging()
@@ -199,22 +231,7 @@ def main():
     parser.add_argument(
         "--tools",
         nargs="*",
-        choices=[
-            "gmail",
-            "drive",
-            "calendar",
-            "docs",
-            "sheets",
-            "chat",
-            "forms",
-            "slides",
-            "tasks",
-            "contacts",
-            "search",
-            "appscript",
-            "excel",
-            "word",
-        ],
+        choices=sorted(VALID_SERVICES),
         help="Specify which tools to register. If not provided, all tools are registered.",
     )
     parser.add_argument(
@@ -225,14 +242,8 @@ def main():
     parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
-        default="stdio",
-        help="Transport mode: stdio (default) or streamable-http",
-    )
-    parser.add_argument(
-        "--cli",
-        nargs=argparse.REMAINDER,
-        metavar="COMMAND",
-        help="Run in CLI mode for direct tool invocation. Use --cli to list tools, --cli <tool_name> to run a tool.",
+        default=None,
+        help="Transport mode: stdio (default; overridable via WORKSPACE_MCP_TRANSPORT) or streamable-http",
     )
     parser.add_argument(
         "--read-only",
@@ -253,22 +264,116 @@ def main():
     )
     args = parser.parse_args()
 
-    # Clean up CLI args - argparse.REMAINDER may include leading dashes from first arg
-    if args.cli is not None:
-        # Filter out empty strings that might appear
-        args.cli = [a for a in args.cli if a]
+    # Env var fallbacks for plugin users who configure via userConfig.
+    # Non-empty but invalid values fail closed to prevent silent access widening.
+    # Skip env fallbacks for mutually exclusive flags that were set on the CLI
+    # to avoid conflicts (e.g. WORKSPACE_MCP_READ_ONLY=true + --permissions).
+    _cli_has_tools = args.tools is not None
+    _cli_has_permissions = args.permissions is not None
+    _cli_has_read_only = args.read_only
 
-    # Validate mutually exclusive flags
+    def _exit_with_env_error(name: str, value: str, expected: str) -> None:
+        print(f"Error: invalid {name} {value!r}; expected {expected}.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.tools is None and not _cli_has_permissions:
+        _env_tools = os.getenv("WORKSPACE_MCP_TOOLS", "").strip()
+        if not _env_tools:
+            _env_tools = os.getenv("ENABLED_SERVICES", "").strip()
+        if _env_tools:
+            _parsed = [t.strip().lower() for t in _env_tools.split(",")]
+            _invalid = [t for t in _parsed if not t or t not in VALID_SERVICES]
+            if _invalid:
+                _exit_with_env_error(
+                    "WORKSPACE_MCP_TOOLS/ENABLED_SERVICES",
+                    _env_tools,
+                    "comma-separated valid service names",
+                )
+            args.tools = _parsed
+    elif _cli_has_permissions and os.getenv("WORKSPACE_MCP_TOOLS", "").strip():
+        logger.info(
+            "WORKSPACE_MCP_TOOLS ignored because --permissions was provided on the CLI"
+        )
+    if args.tool_tier is None:
+        _env_tier = os.getenv("WORKSPACE_MCP_TOOL_TIER", "").strip().lower()
+        if _env_tier:
+            if _env_tier not in {"core", "extended", "complete"}:
+                _exit_with_env_error(
+                    "WORKSPACE_MCP_TOOL_TIER", _env_tier, "core, extended, or complete"
+                )
+            args.tool_tier = _env_tier
+    if not args.read_only and not _cli_has_permissions:
+        _env_ro = os.getenv("WORKSPACE_MCP_READ_ONLY", "").strip().lower()
+        if _env_ro:
+            if _env_ro in {"true", "1", "yes"}:
+                args.read_only = True
+            elif _env_ro not in {"false", "0", "no"}:
+                _exit_with_env_error(
+                    "WORKSPACE_MCP_READ_ONLY", _env_ro, "true/1/yes or false/0/no"
+                )
+    elif _cli_has_permissions and os.getenv("WORKSPACE_MCP_READ_ONLY", "").strip():
+        logger.info(
+            "WORKSPACE_MCP_READ_ONLY ignored because --permissions was provided on the CLI"
+        )
+    if args.permissions is None and not _cli_has_read_only and not _cli_has_tools:
+        _env_perms = os.getenv("WORKSPACE_MCP_PERMISSIONS", "").strip()
+        if _env_perms:
+            args.permissions = [p.lower() for p in _env_perms.split()]
+    elif (_cli_has_read_only or _cli_has_tools) and os.getenv(
+        "WORKSPACE_MCP_PERMISSIONS", ""
+    ).strip():
+        _conflicts = [
+            name
+            for name, present in (
+                ("--read-only", _cli_has_read_only),
+                ("--tools", _cli_has_tools),
+            )
+            if present
+        ]
+        logger.info(
+            "WORKSPACE_MCP_PERMISSIONS ignored because %s was provided on the CLI",
+            " and ".join(_conflicts),
+        )
+    if args.transport is None:
+        _env_transport = os.getenv("WORKSPACE_MCP_TRANSPORT", "").strip().lower()
+        if _env_transport:
+            if _env_transport not in {"stdio", "streamable-http"}:
+                _exit_with_env_error(
+                    "WORKSPACE_MCP_TRANSPORT",
+                    _env_transport,
+                    "stdio or streamable-http",
+                )
+            args.transport = _env_transport
+        else:
+            args.transport = "stdio"
+
+    _env_http_port = os.getenv("WORKSPACE_MCP_HTTP_PORT", "").strip()
+    http_port = None
+    if _env_http_port:
+        try:
+            http_port = int(_env_http_port)
+            if not 1 <= http_port <= 65535:
+                raise ValueError("must be between 1 and 65535")
+        except ValueError as exc:
+            print(
+                f"Error: invalid WORKSPACE_MCP_HTTP_PORT '{_env_http_port}': {exc}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # Validate mutually exclusive flags (settings can come from CLI flags or WORKSPACE_MCP_* env vars).
     if args.permissions and args.read_only:
         print(
-            "Error: --permissions and --read-only are mutually exclusive. "
+            "Error: --permissions and --read-only are mutually exclusive "
+            "(via CLI flag or WORKSPACE_MCP_PERMISSIONS / WORKSPACE_MCP_READ_ONLY env var). "
             "Use service:readonly within --permissions instead.",
             file=sys.stderr,
         )
         sys.exit(1)
     if args.permissions and args.tools is not None:
         print(
-            "Error: --permissions and --tools cannot be combined. "
+            "Error: --permissions and --tools cannot be combined "
+            "(via CLI flag or WORKSPACE_MCP_PERMISSIONS / WORKSPACE_MCP_TOOLS env var). "
             "Select services via --permissions (optionally with --tool-tier).",
             file=sys.stderr,
         )
@@ -341,29 +446,18 @@ def main():
             "OAUTHLIB_INSECURE_TRANSPORT", "false"
         ),
         "GOOGLE_CLIENT_SECRET_PATH": os.getenv("GOOGLE_CLIENT_SECRET_PATH", "Not Set"),
-        "ENABLED_SERVICES": os.getenv("ENABLED_SERVICES", "Not Set"),
+        "GOOGLE_SERVICE_ACCOUNT_KEY_FILE": os.getenv(
+            "GOOGLE_SERVICE_ACCOUNT_KEY_FILE", "Not Set"
+        ),
     }
 
     for key, value in config_vars.items():
         safe_print(f"   - {key}: {value}")
     safe_print("")
 
-    # Import tool modules to register them with the MCP server via decorators
+    # Import tool modules to register them with the MCP server via decorators.
     tool_imports = {
-        "gmail": lambda: import_module("gmail.gmail_tools"),
-        "drive": lambda: import_module("gdrive.drive_tools"),
-        "calendar": lambda: import_module("gcalendar.calendar_tools"),
-        "docs": lambda: import_module("gdocs.docs_tools"),
-        "sheets": lambda: import_module("gsheets.sheets_tools"),
-        "chat": lambda: import_module("gchat.chat_tools"),
-        "forms": lambda: import_module("gforms.forms_tools"),
-        "slides": lambda: import_module("gslides.slides_tools"),
-        "tasks": lambda: import_module("gtasks.tasks_tools"),
-        "contacts": lambda: import_module("gcontacts.contacts_tools"),
-        "search": lambda: import_module("gsearch.search_tools"),
-        "appscript": lambda: import_module("gappsscript.apps_script_tools"),
-        "excel": lambda: import_module("gexcel.excel_tools"),
-        "word": lambda: import_module("gword.word_tools"),
+        svc: partial(import_module, mod) for svc, mod in SERVICE_MODULES.items()
     }
 
     tool_icons = {
@@ -379,14 +473,11 @@ def main():
         "contacts": "👤",
         "search": "🔍",
         "appscript": "📜",
-        "excel": "📈",
-        "word": "📃",
+        "excel": "📊",
+        "word": "📄",
     }
 
-    # Parse ENABLED_SERVICES environment variable
-    env_services = parse_enabled_services_from_env()
-
-    # Determine which tools to import based on arguments and environment
+    # Determine which tools to import based on arguments
     perms = None
     if args.permissions:
         # Granular permissions mode — parse and activate before tool selection
@@ -419,19 +510,13 @@ def main():
     elif args.tool_tier is not None:
         # Use tier-based tool selection, optionally filtered by services
         try:
-            # Determine service filter: CLI args take precedence over env var
-            service_filter = args.tools if args.tools is not None else env_services
             tier_tools, suggested_services = resolve_tools_from_tier(
-                args.tool_tier, service_filter
+                args.tool_tier, args.tools
             )
 
-            # If --tools specified, use those services
-            # Otherwise if ENABLED_SERVICES set, use those
-            # Otherwise use all services that have tier tools
+            # If --tools specified, use those services; otherwise use all services that have tier tools
             if args.tools is not None:
                 tools_to_import = args.tools
-            elif env_services is not None:
-                tools_to_import = env_services
             else:
                 tools_to_import = suggested_services
 
@@ -441,14 +526,9 @@ def main():
             safe_print(f"❌ Error loading tools for tier '{args.tool_tier}': {e}")
             sys.exit(1)
     elif args.tools is not None:
-        # Use explicit tool list from CLI args without tier filtering
+        # Use explicit tool list without tier filtering
         tools_to_import = args.tools
         # Don't filter individual tools when using explicit service list only
-        set_enabled_tool_names(None)
-    elif env_services is not None:
-        # Use services from environment variable
-        tools_to_import = env_services
-        # Don't filter individual tools when using env var service list
         set_enabled_tool_names(None)
     else:
         # Default: import all tools
@@ -471,7 +551,7 @@ def main():
         try:
             tool_imports[tool]()
             safe_print(
-                f"   {tool_icons[tool]} {tool.title()} - Google {tool.title()} API integration"
+                f"   {tool_icons.get(tool, '🔧')} {tool.title()} - Google {tool.title()} API integration"
             )
         except ModuleNotFoundError as exc:
             logger.error("Failed to import tool '%s': %s", tool, exc, exc_info=True)
@@ -485,15 +565,6 @@ def main():
 
     # Filter tools based on tier configuration (if tier-based loading is enabled)
     filter_server_tools(server)
-
-    # Handle CLI mode - execute tool and exit
-    if args.cli is not None:
-        import asyncio
-        from core.cli_handler import handle_cli_mode
-
-        # CLI mode - run tool directly and exit
-        exit_code = asyncio.run(handle_cli_mode(server, args.cli))
-        sys.exit(exit_code)
 
     safe_print("📊 Configuration Summary:")
     safe_print(f"   🔧 Services Loaded: {len(tools_to_import)}/{len(tool_imports)}")
@@ -527,12 +598,71 @@ def main():
             safe_print("❌ Single-user mode is incompatible with stateless mode")
             safe_print("   Stateless mode requires OAuth 2.1 which is multi-user")
             sys.exit(1)
+
+        if is_service_account_enabled():
+            safe_print("❌ Single-user mode is incompatible with service account mode")
+            safe_print(
+                "   Service account mode handles auth via domain-wide delegation"
+            )
+            safe_print(
+                "   Please choose one mode: either --single-user OR GOOGLE_SERVICE_ACCOUNT_KEY_FILE"
+            )
+            sys.exit(1)
+
         os.environ["MCP_SINGLE_USER_MODE"] = "1"
         safe_print("🔐 Single-user mode enabled")
         safe_print("")
 
-    # Check credentials directory permissions before starting (skip in stateless mode)
-    if not is_stateless_mode():
+    # Service account mode startup validation
+    if is_service_account_enabled():
+        user_email = os.getenv("USER_GOOGLE_EMAIL")
+        if not user_email:
+            safe_print("❌ Service account mode requires USER_GOOGLE_EMAIL to be set")
+            safe_print("   Set USER_GOOGLE_EMAIL to the domain user to impersonate")
+            sys.exit(1)
+        # Validate service account key material before advertising readiness
+        sa_config = get_oauth_config()
+        try:
+            if sa_config.service_account_key_file:
+                with open(sa_config.service_account_key_file) as f:
+                    key_data = json.load(f)
+            else:
+                key_data = json.loads(sa_config.service_account_key_json)
+            required_fields = {"type", "project_id", "private_key", "client_email"}
+            missing = required_fields - set(key_data.keys())
+            if missing:
+                safe_print(
+                    f"❌ Service account key missing required fields: "
+                    f"{', '.join(sorted(missing))}"
+                )
+                sys.exit(1)
+            if key_data.get("type") != "service_account":
+                safe_print(
+                    f"❌ Service account key has unexpected type: "
+                    f"{key_data.get('type')!r}"
+                )
+                sys.exit(1)
+        except FileNotFoundError as e:
+            safe_print(f"❌ Service account key file not found: {e}")
+            sys.exit(1)
+        except json.JSONDecodeError as e:
+            safe_print(f"❌ Service account key contains invalid JSON: {e}")
+            sys.exit(1)
+        except (IOError, OSError) as e:
+            safe_print(f"❌ Failed to read service account key: {e}")
+            sys.exit(1)
+        safe_print("🔐 Service account mode enabled (domain-wide delegation)")
+        safe_print(f"   Impersonating: {user_email}")
+        safe_print("")
+
+    backend = get_selected_backend()
+
+    # Check local credentials directory permissions only when using the local backend.
+    if (
+        not is_stateless_mode()
+        and not is_service_account_enabled()
+        and backend != "gcs"
+    ):
         try:
             safe_print("🔍 Checking credentials directory permissions...")
             check_credentials_directory_permissions()
@@ -546,8 +676,41 @@ def main():
             logger.error(f"Failed credentials directory permission check: {e}")
             sys.exit(1)
     else:
-        safe_print("🔍 Skipping credentials directory check (stateless mode)")
+        if is_stateless_mode():
+            skip_reason = "stateless mode"
+        elif is_service_account_enabled():
+            skip_reason = "service account mode"
+        else:
+            skip_reason = "gcs backend"
+        safe_print(f"🔍 Skipping credentials directory check ({skip_reason})")
         safe_print("")
+
+    if (
+        backend == "gcs"
+        and not is_stateless_mode()
+        and not is_service_account_enabled()
+    ):
+        try:
+            from auth.credential_store import GCSCredentialStore
+
+            credential_store = get_credential_store()
+            if not isinstance(credential_store, GCSCredentialStore):
+                raise TypeError(
+                    "Configured credential store backend is 'gcs' but the store instance is not GCSCredentialStore"
+                )
+
+            if credential_store.require_cmek:
+                safe_print("🔍 Verifying GCS credential store configuration...")
+                credential_store.verify_cmek()
+                safe_print("✅ GCS credential store configuration verified")
+            else:
+                safe_print(
+                    "ℹ️ GCS credential store verification skipped (require_cmek=False)"
+                )
+            safe_print("")
+        except Exception as e:
+            safe_print(f"❌ GCS credential store verification failed: {e}")
+            sys.exit(1)
 
     try:
         # Set transport mode for OAuth callback handling
@@ -563,24 +726,31 @@ def main():
         else:
             safe_print("")
             safe_print("🚀 Starting STDIO server")
-            # Start minimal OAuth callback server for stdio mode
-            from auth.oauth_callback_server import ensure_oauth_callback_available
+            # Start minimal OAuth callback server for stdio mode (not needed for service accounts)
+            if not is_service_account_enabled():
+                from auth.oauth_callback_server import ensure_oauth_callback_available
 
-            success, error_msg = ensure_oauth_callback_available(
-                "stdio", port, base_uri
-            )
-            if success:
-                safe_print(
-                    f"   OAuth callback server started on {display_url}/oauth2callback"
+                success, error_msg = ensure_oauth_callback_available(
+                    "stdio", port, base_uri
                 )
-            else:
-                warning_msg = "   ⚠️  Warning: Failed to start OAuth callback server"
-                if error_msg:
-                    warning_msg += f": {error_msg}"
-                safe_print(warning_msg)
+                if success:
+                    safe_print(
+                        f"   OAuth callback server started on {display_url}/oauth2callback"
+                    )
+                else:
+                    warning_msg = "   ⚠️  Warning: Failed to start OAuth callback server"
+                    if error_msg:
+                        warning_msg += f": {error_msg}"
+                    safe_print(warning_msg)
 
         safe_print("✅ Ready for MCP connections")
         safe_print("")
+
+        if args.transport == "streamable-http" and _env_http_port:
+            logger.warning(
+                "WORKSPACE_MCP_HTTP_PORT is ignored when transport is 'streamable-http'; "
+                "the primary server already serves HTTP on WORKSPACE_MCP_PORT/PORT."
+            )
 
         if args.transport == "streamable-http":
             # Check port availability before starting HTTP server
@@ -594,22 +764,70 @@ def main():
                 )
                 sys.exit(1)
 
-            # Configure uvicorn for persistent connections (essentially indefinite)
-            # This prevents disconnections during long-running operations or idle periods
-            uvicorn_config = {
-                "timeout_keep_alive": 0,  # 0 = no timeout, keep connections alive indefinitely
-                "timeout_notify": 30,  # 30 seconds for graceful shutdown
-                "limit_concurrency": 1000,  # High limit for concurrent connections
-                # Note: Do NOT set limit_max_requests=0, uvicorn interprets 0 as "restart after 0 requests"
-            }
             server.run(
                 transport="streamable-http",
                 host=host,
                 port=port,
-                uvicorn_config=uvicorn_config,
+                stateless_http=is_stateless_mode(),
             )
         else:
-            server.run()
+            if http_port is not None:
+                # Dual transport: stdio for MCP client + HTTP for workspace-cli
+                import asyncio
+                import uvicorn
+
+                # Bind sidecar to loopback only — auth provider is not initialized
+                # in stdio mode, so exposing this on 0.0.0.0 would allow unauthenticated access.
+                http_host = "127.0.0.1"
+
+                async def _run_dual() -> None:
+                    """Run stdio and HTTP transports concurrently."""
+                    http_available = True
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            s.bind((http_host, http_port))
+                    except OSError:
+                        logger.warning(
+                            "Port %d in use, workspace-cli HTTP endpoint unavailable",
+                            http_port,
+                        )
+                        http_available = False
+
+                    http_srv = None
+                    http_task = None
+                    if http_available:
+                        app = server.http_app(path="/mcp")
+                        config = uvicorn.Config(
+                            app, host=http_host, port=http_port, log_level="warning"
+                        )
+                        http_srv = uvicorn.Server(config)
+                        http_task = asyncio.create_task(http_srv.serve())
+                        safe_print(
+                            f"   workspace-cli endpoint: http://{http_host}:{http_port}/mcp"
+                        )
+
+                    try:
+                        await server.run_stdio_async()
+                    finally:
+                        if http_srv:
+                            http_srv.should_exit = True
+                        if http_task:
+                            try:
+                                await asyncio.wait_for(http_task, timeout=5.0)
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "HTTP sidecar did not exit within 5s; cancelled"
+                                )
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as exc:
+                                logger.warning(
+                                    "HTTP sidecar ended with exception: %s", exc
+                                )
+
+                asyncio.run(_run_dual())
+            else:
+                server.run()
     except KeyboardInterrupt:
         safe_print("\n👋 Server shutdown requested")
         # Clean up OAuth callback server if running
