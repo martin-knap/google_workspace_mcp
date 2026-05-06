@@ -423,9 +423,7 @@ async def _get_pdf_metadata(service, file_id: str) -> tuple[str, dict[str, Any]]
     mime_type = file_metadata.get("mimeType", "")
     if mime_type != "application/pdf":
         file_name = file_metadata.get("name", "Unknown File")
-        raise ValueError(
-            f"File '{file_name}' is not a PDF (MIME type: {mime_type})."
-        )
+        raise ValueError(f"File '{file_name}' is not a PDF (MIME type: {mime_type}).")
     return resolved_file_id, file_metadata
 
 
@@ -523,9 +521,7 @@ async def extract_scanned_pdf_text_ocr(
     This may incur Google Cloud Vision API costs. For text-based PDFs, use
     extract_drive_pdf_text instead.
     """
-    logger.info(
-        "[extract_scanned_pdf_text_ocr] Starting OCR for file ID: %s", file_id
-    )
+    logger.info("[extract_scanned_pdf_text_ocr] Starting OCR for file ID: %s", file_id)
 
     file_id, file_metadata = await _get_pdf_metadata(service, file_id)
     file_name = file_metadata.get("name", "Unknown File")
@@ -690,7 +686,9 @@ async def extract_pdf_text_to_file(
             f"  Pages: {total_pages}",
             f"  Total characters: {total_chars:,}",
             f"  Output: {output_file} ({output_file.stat().st_size / 1024:.1f} KB, format: {output_format})",
-            f"  Preview: {first_text}..." if first_text else "  Preview: (no text extracted)",
+            f"  Preview: {first_text}..."
+            if first_text
+            else "  Preview: (no text extracted)",
         ]
     )
 
