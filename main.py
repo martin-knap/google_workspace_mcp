@@ -110,6 +110,8 @@ SERVICE_MODULES = {
     "contacts": "gcontacts.contacts_tools",
     "search": "gsearch.search_tools",
     "appscript": "gappsscript.apps_script_tools",
+    "excel": "gexcel.excel_tools",
+    "word": "gword.word_tools",
 }
 VALID_SERVICES = frozenset(SERVICE_MODULES)
 
@@ -276,12 +278,14 @@ def main():
 
     if args.tools is None and not _cli_has_permissions:
         _env_tools = os.getenv("WORKSPACE_MCP_TOOLS", "").strip()
+        if not _env_tools:
+            _env_tools = os.getenv("ENABLED_SERVICES", "").strip()
         if _env_tools:
             _parsed = [t.strip().lower() for t in _env_tools.split(",")]
             _invalid = [t for t in _parsed if not t or t not in VALID_SERVICES]
             if _invalid:
                 _exit_with_env_error(
-                    "WORKSPACE_MCP_TOOLS",
+                    "WORKSPACE_MCP_TOOLS/ENABLED_SERVICES",
                     _env_tools,
                     "comma-separated valid service names",
                 )
@@ -469,6 +473,8 @@ def main():
         "contacts": "👤",
         "search": "🔍",
         "appscript": "📜",
+        "excel": "📊",
+        "word": "📄",
     }
 
     # Determine which tools to import based on arguments

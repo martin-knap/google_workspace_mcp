@@ -24,6 +24,7 @@ CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+CLOUD_VISION_SCOPE = "https://www.googleapis.com/auth/cloud-vision"
 
 # Google Docs scopes
 DOCS_READONLY_SCOPE = "https://www.googleapis.com/auth/documents.readonly"
@@ -149,6 +150,7 @@ DOCS_SCOPES = [
 CALENDAR_SCOPES = [CALENDAR_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_EVENTS_SCOPE]
 
 DRIVE_SCOPES = [DRIVE_SCOPE, DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]
+DRIVE_OCR_SCOPES = DRIVE_SCOPES + [CLOUD_VISION_SCOPE]
 
 GMAIL_SCOPES = [
     GMAIL_READONLY_SCOPE,
@@ -198,6 +200,8 @@ SCRIPT_SCOPES = [
 TOOL_SCOPES_MAP = {
     "gmail": GMAIL_SCOPES,
     "drive": DRIVE_SCOPES,
+    "excel": DRIVE_SCOPES + SHEETS_SCOPES,
+    "word": DRIVE_SCOPES + DOCS_SCOPES,
     "calendar": CALENDAR_SCOPES,
     "docs": DOCS_SCOPES,
     "sheets": SHEETS_SCOPES,
@@ -214,6 +218,8 @@ TOOL_SCOPES_MAP = {
 TOOL_READONLY_SCOPES_MAP = {
     "gmail": [GMAIL_READONLY_SCOPE],
     "drive": [DRIVE_READONLY_SCOPE],
+    "excel": [DRIVE_READONLY_SCOPE, SHEETS_READONLY_SCOPE],
+    "word": [DRIVE_READONLY_SCOPE, DOCS_READONLY_SCOPE],
     "calendar": [CALENDAR_READONLY_SCOPE],
     "docs": [DOCS_READONLY_SCOPE, DRIVE_READONLY_SCOPE],
     "sheets": [SHEETS_READONLY_SCOPE, DRIVE_READONLY_SCOPE],

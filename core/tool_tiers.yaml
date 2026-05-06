@@ -75,6 +75,14 @@ docs:
     - debug_table_structure
     - manage_doc_tab
 
+word:
+  core:
+    - list_word_files
+    - get_word_info
+    - read_word_content
+  extended: []
+  complete: []
+
 sheets:
   core:
     - create_spreadsheet
@@ -93,6 +101,14 @@ sheets:
     - list_spreadsheet_comments
     - manage_spreadsheet_comment
     - manage_conditional_formatting
+
+excel:
+  core:
+    - list_excel_files
+    - get_excel_info
+    - read_excel_values
+  extended: []
+  complete: []
 
 chat:
   core:

@@ -8,7 +8,9 @@ import asyncio
 import logging
 import io
 import base64
+import json
 
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Callable, Awaitable, BinaryIO
 from tempfile import NamedTemporaryFile, SpooledTemporaryFile
 from urllib.parse import urlparse
@@ -16,11 +18,14 @@ from urllib.request import url2pathname
 from pathlib import Path
 
 import httpx
+import fitz
+from google.cloud import vision
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from mcp.types import ToolAnnotations
 
+from auth.scopes import CLOUD_VISION_SCOPE, DRIVE_READONLY_SCOPE
 from auth.service_decorator import require_google_service
 from auth.oauth_config import is_stateless_mode
 from core.attachment_storage import get_attachment_storage, get_attachment_url
@@ -364,6 +369,419 @@ async def get_drive_file_content(
         f"Link: {file_metadata.get('webViewLink', '#')}\n\n--- CONTENT ---\n"
     )
     return header + body_text
+
+
+async def _download_drive_file_bytes(service, file_id: str) -> bytes:
+    request_obj = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request_obj)
+    loop = asyncio.get_event_loop()
+    done = False
+    while not done:
+        _status, done = await loop.run_in_executor(None, downloader.next_chunk)
+    return fh.getvalue()
+
+
+def _extract_pymupdf_pages(pdf_data: bytes) -> tuple[list[dict[str, Any]], int, int]:
+    doc = fitz.open(stream=pdf_data, filetype="pdf")
+    try:
+        pages: list[dict[str, Any]] = []
+        total_chars = 0
+        for page_num in range(len(doc)):
+            text = doc[page_num].get_text()
+            char_count = len(text.strip())
+            total_chars += char_count
+            pages.append({"page": page_num + 1, "text": text, "char_count": char_count})
+        return pages, total_chars, len(doc)
+    finally:
+        doc.close()
+
+
+def _render_pdf_pages_for_ocr(
+    pdf_data: bytes, max_pages: Optional[int] = None
+) -> tuple[list[bytes], int]:
+    doc = fitz.open(stream=pdf_data, filetype="pdf")
+    try:
+        total_pages = len(doc)
+        pages_to_process = min(total_pages, max_pages) if max_pages else total_pages
+        page_images: list[bytes] = []
+        for page_num in range(pages_to_process):
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+            page_images.append(pix.tobytes("png"))
+        return page_images, total_pages
+    finally:
+        doc.close()
+
+
+async def _get_pdf_metadata(service, file_id: str) -> tuple[str, dict[str, Any]]:
+    resolved_file_id, file_metadata = await resolve_drive_item(
+        service,
+        file_id,
+        extra_fields="name, size, modifiedTime, webViewLink",
+    )
+    mime_type = file_metadata.get("mimeType", "")
+    if mime_type != "application/pdf":
+        file_name = file_metadata.get("name", "Unknown File")
+        raise ValueError(
+            f"File '{file_name}' is not a PDF (MIME type: {mime_type})."
+        )
+    return resolved_file_id, file_metadata
+
+
+@server.tool(
+    title="Extract Drive PDF Text",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("extract_drive_pdf_text", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def extract_drive_pdf_text(
+    service,
+    user_google_email: str,
+    file_id: str,
+    include_metadata: bool = True,
+) -> str:
+    """
+    Extracts embedded text from a PDF in Google Drive using PyMuPDF.
+
+    Use extract_scanned_pdf_text_ocr for image-only or scanned PDFs.
+    """
+    logger.info(f"[extract_drive_pdf_text] Extracting PDF text for file ID: {file_id}")
+
+    file_id, file_metadata = await _get_pdf_metadata(service, file_id)
+    file_name = file_metadata.get("name", "Unknown File")
+    pdf_bytes = await _download_drive_file_bytes(service, file_id)
+
+    try:
+        pages, total_chars, total_pages = await asyncio.to_thread(
+            _extract_pymupdf_pages, pdf_bytes
+        )
+    except Exception as exc:
+        logger.error("[extract_drive_pdf_text] PyMuPDF extraction failed: %s", exc)
+        return f"Error extracting text from PDF '{file_name}': {exc}"
+
+    extracted_pages = [
+        f"--- Page {page['page']} ---\n{page['text']}"
+        for page in pages
+        if page["text"].strip()
+    ]
+
+    header = ""
+    if include_metadata:
+        header = "\n".join(
+            [
+                f'File: "{file_name}" (ID: {file_id})',
+                f"Type: {file_metadata.get('mimeType', 'application/pdf')}",
+                f"Size: {file_metadata.get('size', 'N/A')} bytes",
+                f"Modified: {file_metadata.get('modifiedTime', 'N/A')}",
+                f"Link: {file_metadata.get('webViewLink', '#')}",
+                f"Pages: {total_pages}",
+                f"Total characters extracted: {total_chars}",
+                "",
+                "--- EXTRACTED TEXT ---",
+                "",
+            ]
+        )
+
+    if total_chars == 0:
+        return (
+            f"{header}No embedded text found in PDF '{file_name}'. "
+            "This is likely a scanned or image-only PDF. Use extract_scanned_pdf_text_ocr."
+        )
+
+    return header + "\n\n".join(extracted_pages)
+
+
+@server.tool(
+    title="Extract Scanned PDF Text OCR",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors(
+    "extract_scanned_pdf_text_ocr", is_read_only=True, service_type="drive"
+)
+@require_google_service("drive", [DRIVE_READONLY_SCOPE, CLOUD_VISION_SCOPE])
+async def extract_scanned_pdf_text_ocr(
+    service,
+    user_google_email: str,
+    file_id: str,
+    include_metadata: bool = True,
+    max_pages: Optional[int] = None,
+) -> str:
+    """
+    Extracts text from scanned or image-only PDFs using Google Cloud Vision OCR.
+
+    This may incur Google Cloud Vision API costs. For text-based PDFs, use
+    extract_drive_pdf_text instead.
+    """
+    logger.info(
+        "[extract_scanned_pdf_text_ocr] Starting OCR for file ID: %s", file_id
+    )
+
+    file_id, file_metadata = await _get_pdf_metadata(service, file_id)
+    file_name = file_metadata.get("name", "Unknown File")
+    pdf_bytes = await _download_drive_file_bytes(service, file_id)
+
+    try:
+        page_images, total_pages = await asyncio.to_thread(
+            _render_pdf_pages_for_ocr, pdf_bytes, max_pages
+        )
+    except Exception as exc:
+        logger.error("[extract_scanned_pdf_text_ocr] Page rendering failed: %s", exc)
+        return f"Error extracting pages from PDF '{file_name}': {exc}"
+
+    if not page_images:
+        return f"No pages found in PDF '{file_name}'."
+
+    credentials = getattr(getattr(service, "_http", None), "credentials", None)
+    if credentials is None:
+        return "Error setting up Google Cloud Vision API: Drive service credentials are unavailable."
+
+    async def ocr_page(page_image: bytes, page_number: int) -> tuple[int, str]:
+        def sync_ocr() -> str:
+            client = vision.ImageAnnotatorClient(credentials=credentials)
+            image = vision.Image(content=page_image)
+            response = client.text_detection(image=image)
+            if response.error.message:
+                raise RuntimeError(f"Vision API error: {response.error.message}")
+            texts = response.text_annotations
+            return texts[0].description if texts else ""
+
+        try:
+            text = await asyncio.to_thread(sync_ocr)
+            return page_number, text
+        except Exception as exc:
+            logger.error(
+                "[extract_scanned_pdf_text_ocr] OCR failed on page %s: %s",
+                page_number + 1,
+                exc,
+            )
+            return page_number, f"[Error processing page {page_number + 1}: {exc}]"
+
+    ocr_results = await asyncio.gather(
+        *(ocr_page(image, idx) for idx, image in enumerate(page_images))
+    )
+    ocr_results.sort(key=lambda item: item[0])
+
+    extracted_text_parts: list[str] = []
+    total_chars = 0
+    for page_num, text in ocr_results:
+        if text and not text.startswith("[Error"):
+            total_chars += len(text)
+            extracted_text_parts.append(f"--- Page {page_num + 1} ---\n{text}")
+        elif text:
+            extracted_text_parts.append(text)
+
+    header = ""
+    if include_metadata:
+        pages_info = (
+            f"{len(page_images)} of {total_pages}"
+            if max_pages and len(page_images) < total_pages
+            else str(total_pages)
+        )
+        header = "\n".join(
+            [
+                f'File: "{file_name}" (ID: {file_id})',
+                f"Type: {file_metadata.get('mimeType', 'application/pdf')}",
+                f"Size: {file_metadata.get('size', 'N/A')} bytes",
+                f"Modified: {file_metadata.get('modifiedTime', 'N/A')}",
+                f"Link: {file_metadata.get('webViewLink', '#')}",
+                f"Pages processed: {pages_info}",
+                f"Total characters extracted: {total_chars}",
+                "",
+                "--- EXTRACTED TEXT (via OCR) ---",
+                "",
+            ]
+        )
+
+    if total_chars == 0:
+        return (
+            f"{header}No text content extracted via OCR from PDF '{file_name}'. "
+            "This may be a blank document or OCR failed to recognize text."
+        )
+
+    return header + "\n\n".join(extracted_text_parts)
+
+
+@server.tool(
+    title="Extract PDF Text To File",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("extract_pdf_text_to_file", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def extract_pdf_text_to_file(
+    service,
+    user_google_email: str,
+    file_id: str,
+    output_path: str,
+    output_format: str = "text",
+) -> str:
+    """
+    Extracts embedded PDF text with PyMuPDF and writes it to a local file.
+    """
+    file_id, file_metadata = await _get_pdf_metadata(service, file_id)
+    file_name = file_metadata.get("name", "Unknown File")
+    pdf_bytes = await _download_drive_file_bytes(service, file_id)
+    pages, total_chars, total_pages = await asyncio.to_thread(
+        _extract_pymupdf_pages, pdf_bytes
+    )
+    if total_chars == 0:
+        return (
+            f"No embedded text found in PDF '{file_name}' ({total_pages} pages). "
+            "This is likely a scanned document. Use ocr_pdf_to_file instead."
+        )
+
+    output_file = Path(output_path).expanduser()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    extracted_at = datetime.now(timezone.utc).isoformat()
+
+    if output_format == "json":
+        output_file.write_text(
+            json.dumps(
+                {
+                    "source_file_id": file_id,
+                    "source_file_name": file_name,
+                    "mime_type": file_metadata.get("mimeType", "application/pdf"),
+                    "file_size_bytes": int(file_metadata.get("size", 0)),
+                    "modified_date": file_metadata.get("modifiedTime", ""),
+                    "web_link": file_metadata.get("webViewLink", ""),
+                    "extraction_date": extracted_at,
+                    "extraction_method": "pymupdf_text",
+                    "total_pages": total_pages,
+                    "total_characters": total_chars,
+                    "pages": pages,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        text_parts = [
+            f"# Text: {file_name}",
+            f"# Source: {file_id}",
+            f"# Pages: {total_pages}",
+            f"# Characters: {total_chars}",
+            "",
+        ]
+        for page in pages:
+            text_parts.extend([f"--- Page {page['page']} ---", page["text"], ""])
+        output_file.write_text("\n".join(text_parts), encoding="utf-8")
+
+    first_text = next((p["text"][:200] for p in pages if p["char_count"] > 0), "")
+    return "\n".join(
+        [
+            f"Text extracted: {file_name}",
+            f"  Source file ID: {file_id}",
+            f"  Pages: {total_pages}",
+            f"  Total characters: {total_chars:,}",
+            f"  Output: {output_file} ({output_file.stat().st_size / 1024:.1f} KB, format: {output_format})",
+            f"  Preview: {first_text}..." if first_text else "  Preview: (no text extracted)",
+        ]
+    )
+
+
+@server.tool(
+    title="OCR PDF To File",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("ocr_pdf_to_file", is_read_only=True, service_type="drive")
+@require_google_service("drive", [DRIVE_READONLY_SCOPE, CLOUD_VISION_SCOPE])
+async def ocr_pdf_to_file(
+    service,
+    user_google_email: str,
+    file_id: str,
+    output_path: str,
+    max_pages: Optional[int] = None,
+    output_format: str = "text",
+) -> str:
+    """
+    OCRs a scanned PDF with Cloud Vision and writes the output to a local file.
+    """
+    ocr_text = await extract_scanned_pdf_text_ocr(
+        user_google_email=user_google_email,
+        file_id=file_id,
+        include_metadata=False,
+        max_pages=max_pages,
+    )
+    if ocr_text.startswith("Error") or ocr_text.startswith("No "):
+        return ocr_text
+
+    file_id, file_metadata = await _get_pdf_metadata(service, file_id)
+    file_name = file_metadata.get("name", "Unknown File")
+    output_file = Path(output_path).expanduser()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    pages = []
+    for block in ocr_text.split("\n\n--- Page "):
+        page_text = block
+        if block.startswith("--- Page "):
+            page_text = block.split("---\n", 1)[-1]
+        pages.append(page_text)
+    total_chars = sum(len(page) for page in pages)
+
+    if output_format == "json":
+        output_file.write_text(
+            json.dumps(
+                {
+                    "source_file_id": file_id,
+                    "source_file_name": file_name,
+                    "mime_type": file_metadata.get("mimeType", "application/pdf"),
+                    "file_size_bytes": int(file_metadata.get("size", 0)),
+                    "modified_date": file_metadata.get("modifiedTime", ""),
+                    "web_link": file_metadata.get("webViewLink", ""),
+                    "ocr_date": datetime.now(timezone.utc).isoformat(),
+                    "total_characters": total_chars,
+                    "text": ocr_text,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        output_file.write_text(
+            "\n".join(
+                [
+                    f"# OCR: {file_name}",
+                    f"# Source: {file_id}",
+                    f"# Characters: {total_chars}",
+                    "",
+                    ocr_text,
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    preview = ocr_text[:200]
+    return "\n".join(
+        [
+            f"OCR completed: {file_name}",
+            f"  Source file ID: {file_id}",
+            f"  Total characters: {total_chars:,}",
+            f"  Output: {output_file} ({output_file.stat().st_size / 1024:.1f} KB, format: {output_format})",
+            f"  Preview: {preview}..." if preview else "  Preview: (no text extracted)",
+        ]
+    )
 
 
 @server.tool(
