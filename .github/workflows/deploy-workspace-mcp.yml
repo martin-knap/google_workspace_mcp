@@ -62,11 +62,18 @@ jobs:
           git config --global --add safe.directory /opt/google_workspace_mcp
           git fetch origin --prune
           if git show-ref --verify --quiet "refs/remotes/origin/$REF"; then
-            git checkout -B "$REF" "origin/$REF"
             git reset --hard "origin/$REF"
           else
             git checkout --detach "$REF"
           fi
+          git clean -fd \
+            -e .env \
+            -e .env.production \
+            -e credentials \
+            -e credentials/** \
+            -e token.json \
+            -e token.pickle \
+            -e client_secret*.json
           SHA="$(git rev-parse --short HEAD)"
           BRANCH="$(git branch --show-current || true)"
           DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
