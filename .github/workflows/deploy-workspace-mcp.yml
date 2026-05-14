@@ -41,7 +41,7 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "${{ secrets.HETZNER_SSH_KEY }}" > ~/.ssh/hetzner_key
+          printf '%s\n' "${{ secrets.HETZNER_SSH_KEY }}" | sed 's/\\n/\n/g' > ~/.ssh/hetzner_key
           chmod 600 ~/.ssh/hetzner_key
           ssh-keyscan -H 49.13.150.39 >> ~/.ssh/known_hosts 2>/dev/null
 
