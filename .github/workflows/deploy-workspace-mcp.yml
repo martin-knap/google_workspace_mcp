@@ -41,7 +41,12 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "${{ secrets.HETZNER_SSH_KEY }}" | sed 's/\\n/\n/g' > ~/.ssh/hetzner_key
+          KEY='${{ secrets.HETZNER_SSH_KEY }}'
+          if printf '%s' "$KEY" | grep -q 'BEGIN .*PRIVATE KEY'; then
+            printf '%s\n' "$KEY" | sed 's/\\n/\n/g' > ~/.ssh/hetzner_key
+          else
+            printf '%s' "$KEY" | base64 -d > ~/.ssh/hetzner_key
+          fi
           chmod 600 ~/.ssh/hetzner_key
           ssh-keyscan -H 49.13.150.39 >> ~/.ssh/known_hosts 2>/dev/null
 
