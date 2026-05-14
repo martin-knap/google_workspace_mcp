@@ -1,0 +1,127 @@
+name: Deploy Workspace MCP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "auth/**"
+      - "core/**"
+      - "semantic/**"
+      - "service_*/**"
+      - "main.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/deploy-workspace-mcp.yml"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or SHA to deploy. Defaults to the branch the workflow runs on."
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-workspace-mcp
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve ref
+        id: ref
+        run: |
+          if [ -n "${{ inputs.ref }}" ]; then
+            REF="${{ inputs.ref }}"
+          else
+            REF="${GITHUB_REF#refs/heads/}"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.HETZNER_SSH_KEY }}" > ~/.ssh/hetzner_key
+          chmod 600 ~/.ssh/hetzner_key
+          ssh-keyscan -H 49.13.150.39 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull, install, restart workspace MCP
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          ssh -i ~/.ssh/hetzner_key -o BatchMode=yes root@49.13.150.39 \
+              "REF='$REF' GITHUB_RUN_ID='$GITHUB_RUN_ID' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/google_workspace_mcp
+          git config --global --add safe.directory /opt/google_workspace_mcp
+          git fetch origin --prune
+          if git show-ref --verify --quiet "refs/remotes/origin/$REF"; then
+            git checkout -B "$REF" "origin/$REF"
+            git reset --hard "origin/$REF"
+          else
+            git checkout --detach "$REF"
+          fi
+          SHA="$(git rev-parse --short HEAD)"
+          BRANCH="$(git branch --show-current || true)"
+          DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cat > VERSION.json <<JSON
+          {
+            "component": "workspace-mcp",
+            "deployed_at_utc": "$DEPLOYED_AT",
+            "git_ref": "$REF",
+            "git_branch": "${BRANCH:-detached}",
+            "git_sha": "$SHA",
+            "git_dirty": false,
+            "remote_path": "/opt/google_workspace_mcp",
+            "github_run_id": "$GITHUB_RUN_ID",
+            "deployed_by": "github-actions"
+          }
+          JSON
+          /root/.local/bin/uv sync --frozen
+          systemctl restart workspace-mcp.service
+          for attempt in $(seq 1 24); do
+            state="$(systemctl is-active workspace-mcp.service 2>/dev/null || true)"
+            echo "workspace_mcp=$state"
+            [ "$state" = active ] && exit 0
+            sleep 5
+          done
+          journalctl -u workspace-mcp.service -n 120 --no-pager
+          exit 1
+          REMOTE
+
+      - name: Semantic smoke
+        run: |
+          ssh -i ~/.ssh/hetzner_key -o BatchMode=yes root@49.13.150.39 \
+              "bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/google_workspace_mcp
+          set -a
+          . ./.env.production
+          set +a
+          /root/.local/bin/uv run python - <<'PY'
+          import asyncio
+          from semantic.semantic_tools import semantic_search_drive_docs
+
+          async def main():
+              smoke_fn = semantic_search_drive_docs.__wrapped__.__wrapped__
+              text = await smoke_fn(
+                  None,
+                  query="Pobřežní 22 počet bytů jednotek byty Prohlášení vlastníka",
+                  project_code="P22",
+                  limit=3,
+                  require_hard_verify=False,
+                  user_google_email="ai@flatbee.cz",
+              )
+              print(text[:3000])
+              if "289296272011.pdf" not in text:
+                  raise SystemExit("Expected 289296272011.pdf in semantic smoke output")
+
+          asyncio.run(main())
+          PY
+          REMOTE
+
+      - name: Restart Slack agent MCP catalog
+        run: |
+          ssh -i ~/.ssh/hetzner_key -o BatchMode=yes root@49.13.150.39 \
+              'cd /opt/metabase && docker compose restart flatbee-agent && for attempt in $(seq 1 30); do h=$(docker inspect flatbee-agent --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" 2>/dev/null || true); echo flatbee_agent_health=$h; [ "$h" = healthy ] && exit 0; sleep 2; done; docker logs --tail 120 flatbee-agent; exit 1'

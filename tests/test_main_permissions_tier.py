@@ -50,6 +50,15 @@ def test_narrow_permissions_to_services_drops_non_selected_services():
     assert narrowed == {"gmail": "send"}
 
 
+def test_expand_related_tool_imports_loads_semantic_with_drive():
+    assert main.expand_related_tool_imports(["drive"]) == ["drive", "semantic"]
+    assert main.expand_related_tool_imports(["drive", "semantic"]) == [
+        "drive",
+        "semantic",
+    ]
+    assert main.expand_related_tool_imports(["gmail"]) == ["gmail"]
+
+
 def test_permissions_and_tools_flags_are_rejected(monkeypatch, capsys):
     monkeypatch.setattr(main, "configure_safe_logging", lambda: None)
     monkeypatch.setattr(

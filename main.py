@@ -112,6 +112,7 @@ SERVICE_MODULES = {
     "appscript": "gappsscript.apps_script_tools",
     "excel": "gexcel.excel_tools",
     "word": "gword.word_tools",
+    "semantic": "semantic.semantic_tools",
 }
 VALID_SERVICES = frozenset(SERVICE_MODULES)
 
@@ -186,6 +187,14 @@ def narrow_permissions_to_services(
     return {
         service: permissions[service] for service in services if service in permissions
     }
+
+
+def expand_related_tool_imports(services: list[str]) -> list[str]:
+    """Load semantic Drive retrieval with Drive so filtered clients see one surface."""
+    expanded = list(services)
+    if "drive" in expanded and "semantic" not in expanded:
+        expanded.append("semantic")
+    return expanded
 
 
 def _restore_stdout() -> None:
@@ -475,6 +484,7 @@ def main():
         "appscript": "📜",
         "excel": "📊",
         "word": "📄",
+        "semantic": "🔎",
     }
 
     # Determine which tools to import based on arguments
@@ -489,15 +499,16 @@ def main():
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         # Permissions implicitly defines which services to load
-        tools_to_import = list(perms.keys())
+        tools_to_import = expand_related_tool_imports(list(perms.keys()))
         set_enabled_tool_names(None)
 
         if args.tool_tier is not None:
             # Combine with tier filtering within the permission-selected services
             try:
-                tools_to_import, tier_tool_filter = resolve_permissions_mode_selection(
-                    tools_to_import, args.tool_tier
+                resolved_tools_to_import, tier_tool_filter = resolve_permissions_mode_selection(
+                    list(perms.keys()), args.tool_tier
                 )
+                tools_to_import = expand_related_tool_imports(resolved_tools_to_import)
                 set_enabled_tool_names(tier_tool_filter)
                 perms = narrow_permissions_to_services(perms, tools_to_import)
             except Exception as e:
@@ -516,9 +527,9 @@ def main():
 
             # If --tools specified, use those services; otherwise use all services that have tier tools
             if args.tools is not None:
-                tools_to_import = args.tools
+                tools_to_import = expand_related_tool_imports(args.tools)
             else:
-                tools_to_import = suggested_services
+                tools_to_import = expand_related_tool_imports(suggested_services)
 
             # Set the specific tools that should be registered
             set_enabled_tool_names(set(tier_tools))
@@ -527,12 +538,12 @@ def main():
             sys.exit(1)
     elif args.tools is not None:
         # Use explicit tool list without tier filtering
-        tools_to_import = args.tools
+        tools_to_import = expand_related_tool_imports(args.tools)
         # Don't filter individual tools when using explicit service list only
         set_enabled_tool_names(None)
     else:
         # Default: import all tools
-        tools_to_import = tool_imports.keys()
+        tools_to_import = list(tool_imports.keys())
         # Don't filter individual tools when importing all
         set_enabled_tool_names(None)
 

@@ -22,6 +22,7 @@ gmail:
 
 drive:
   core:
+    - semantic_search_drive_docs
     - search_drive_files
     - get_drive_file_content
     - get_drive_file_download_url
@@ -80,6 +81,12 @@ word:
     - list_word_files
     - get_word_info
     - read_word_content
+  extended: []
+  complete: []
+
+semantic:
+  core:
+    - semantic_search_drive_docs
   extended: []
   complete: []
 
