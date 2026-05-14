@@ -97,7 +97,9 @@ async def _embed_query(query: str) -> tuple[str, str, int, int]:
 
     if response.status_code >= 400:
         body = response.text[:1000]
-        raise ToolError(f"OpenAI embeddings request failed: {response.status_code} {body}")
+        raise ToolError(
+            f"OpenAI embeddings request failed: {response.status_code} {body}"
+        )
 
     data = response.json()
     embedding = data.get("data", [{}])[0].get("embedding")
@@ -457,7 +459,10 @@ def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -
     if row.get("drive_web_url"):
         lines.append(f"   source={row['drive_web_url']}")
     metadata = _metadata_dict(row.get("document_metadata"))
-    if metadata.get("current_version") is not None or metadata.get("canonical_document") is not None:
+    if (
+        metadata.get("current_version") is not None
+        or metadata.get("canonical_document") is not None
+    ):
         lines.append(
             "   flags="
             f"canonical={metadata.get('canonical_document', row.get('is_canonical'))} "

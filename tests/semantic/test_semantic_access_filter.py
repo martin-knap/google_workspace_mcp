@@ -3,7 +3,10 @@ from types import SimpleNamespace
 import pytest
 from googleapiclient.errors import HttpError
 
-from semantic.semantic_tools import _filter_rows_by_drive_access, _should_bypass_drive_acl
+from semantic.semantic_tools import (
+    _filter_rows_by_drive_access,
+    _should_bypass_drive_acl,
+)
 
 
 class _FakeExecute:

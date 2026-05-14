@@ -505,8 +505,10 @@ def main():
         if args.tool_tier is not None:
             # Combine with tier filtering within the permission-selected services
             try:
-                resolved_tools_to_import, tier_tool_filter = resolve_permissions_mode_selection(
-                    list(perms.keys()), args.tool_tier
+                resolved_tools_to_import, tier_tool_filter = (
+                    resolve_permissions_mode_selection(
+                        list(perms.keys()), args.tool_tier
+                    )
                 )
                 tools_to_import = expand_related_tool_imports(resolved_tools_to_import)
                 set_enabled_tool_names(tier_tool_filter)
