@@ -438,49 +438,68 @@ async def _filter_rows_by_drive_access(
     return accessible, filtered_count
 
 
+SNIPPET_MAX_CHARS = 400
+VERIFICATION_MAX_CHARS = 200
+VERIFICATION_OVERLAP_DROP_THRESHOLD = 0.7
+
+
+def _trim_snippet(text: str, max_chars: int) -> str:
+    """Collapse whitespace and trim to max_chars, preserving a leading page anchor."""
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    anchor = ""
+    remainder = cleaned
+    if cleaned.startswith("[[page"):
+        end = cleaned.find("]]")
+        if end != -1:
+            anchor = cleaned[: end + 2]
+            remainder = cleaned[end + 2 :].lstrip()
+    budget = max_chars - (len(anchor) + 1 if anchor else 0) - 3
+    if budget <= 0:
+        return (anchor + "..." if anchor else cleaned[: max_chars - 3].rstrip() + "...")
+    trimmed = remainder[:budget].rstrip() + "..."
+    return f"{anchor} {trimmed}" if anchor else trimmed
+
+
+def _verification_overlap(snippet: str, verification: str) -> float:
+    """Return fraction of verification tokens already present in snippet."""
+    snippet_tokens = set((snippet or "").lower().split())
+    verification_tokens = (verification or "").lower().split()
+    if not verification_tokens:
+        return 1.0
+    overlap = sum(1 for tok in verification_tokens if tok in snippet_tokens)
+    return overlap / len(verification_tokens)
+
+
 def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -> str:
-    chunk_text = " ".join((row.get("chunk_text") or "").split())
-    if len(chunk_text) > 1400:
-        chunk_text = chunk_text[:1397].rstrip() + "..."
+    chunk_text = _trim_snippet(row.get("chunk_text") or "", SNIPPET_MAX_CHARS)
 
     metadata = _metadata_dict(row.get("document_metadata"))
-    lines = [
-        f"{index}. {row.get('file_name') or 'Untitled document'}",
-        f"   score={float(row.get('combined_score') or 0):.4f}"
-        f" retrieval={float(row.get('retrieval_score') or 0):.4f}"
-        f" authority={float(row.get('authority_score') or 0):+.4f}"
-        f" vector={float(row.get('vector_score') or 0):.4f}"
-        f" text={float(row.get('text_score') or 0):.4f}",
-        f"   chunk_id={row.get('chunk_id')} document_id={row.get('document_id')} "
-        f"project={row.get('project_code') or metadata.get('project_code') or 'unknown'}",
-    ]
-    if row.get("folder_path"):
-        lines.append(f"   folder={row['folder_path']}")
+    project_code = (
+        row.get("project_code") or metadata.get("project_code") or "unknown"
+    )
+    lines = [f"{index}. {row.get('file_name') or 'Untitled document'}"]
     if row.get("drive_web_url"):
-        lines.append(f"   source={row['drive_web_url']}")
-    metadata = _metadata_dict(row.get("document_metadata"))
+        lines.append(f"   url={row['drive_web_url']}")
+
+    flag_bits = [f"project={project_code}"]
     if (
         metadata.get("current_version") is not None
         or metadata.get("canonical_document") is not None
     ):
-        lines.append(
-            "   flags="
-            f"canonical={metadata.get('canonical_document', row.get('is_canonical'))} "
-            f"current={metadata.get('current_version')} "
-            f"canonical_document_id={row.get('canonical_document_id') or row.get('document_id')}"
+        flag_bits.append(
+            f"canonical={metadata.get('canonical_document', row.get('is_canonical'))}"
         )
-    if row.get("version_group_key") or row.get("current_winner_document_id"):
-        lines.append(
-            "   version_group="
-            f"{row.get('version_group_key') or 'none'} "
-            f"current_winner_document_id={row.get('current_winner_document_id') or 'none'}"
-        )
+        flag_bits.append(f"current={metadata.get('current_version')}")
     page = row.get("page_number") or row.get("page_start")
     if page:
         page_end = row.get("page_end")
         page_text = f"{page}-{page_end}" if page_end and page_end != page else str(page)
-        lines.append(f"   page={page_text}")
-    lines.append(f"   snippet={chunk_text}")
+        flag_bits.append(f"page={page_text}")
+    lines.append("   " + " ".join(flag_bits))
+
+    lines.append(f"   snippet: {chunk_text}")
 
     pages = row.get("verification_pages")
     if require_hard_verify and pages:
@@ -488,12 +507,19 @@ def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -
             pages = json.loads(pages)
         verify_bits = []
         for page_row in pages[:3]:
-            snippet = " ".join((page_row.get("snippet") or "").split())
-            if len(snippet) > 420:
-                snippet = snippet[:417].rstrip() + "..."
+            snippet = _trim_snippet(
+                page_row.get("snippet") or "", VERIFICATION_MAX_CHARS
+            )
+            if not snippet:
+                continue
+            if (
+                _verification_overlap(chunk_text, snippet)
+                >= VERIFICATION_OVERLAP_DROP_THRESHOLD
+            ):
+                continue
             verify_bits.append(f"p.{page_row.get('page_number')}: {snippet}")
         if verify_bits:
-            lines.append("   verification=" + " | ".join(verify_bits))
+            lines.append("   verification: " + " | ".join(verify_bits))
     return "\n".join(lines)
 
 
@@ -517,7 +543,7 @@ async def semantic_search_drive_docs(
     doc_type: Optional[str] = None,
     folder_path: Optional[str] = None,
     relevance: Optional[str] = None,
-    limit: int = 8,
+    limit: int = 3,
     require_hard_verify: bool = False,
     prefer_authoritative: bool = True,
     deduplicate: bool = True,
@@ -533,7 +559,7 @@ async def semantic_search_drive_docs(
         doc_type: Optional document type/source filter.
         folder_path: Optional folder-path substring filter.
         relevance: Optional relevance metadata filter.
-        limit: Number of results to return, capped at 20.
+        limit: Number of results to return (default 3, capped at 20).
         require_hard_verify: Include page-level verification snippets when available.
         prefer_authoritative: Prefer explicit canonical/current metadata written by
             the retrieval index resolver. Disable for raw ranking/debugging.
@@ -587,13 +613,20 @@ async def semantic_search_drive_docs(
         )
         return f"No semantic retrieval results for query={query!r}, filters={active}.{suffix}"
 
-    header = (
-        f"Found {len(rows)} semantic retrieval results for {stripped_query!r} "
-        f"(embedding_model={model}, dimensions={dimensions}, tokens={token_count}, "
-        f"drive_access_checked_for={user_google_email or 'authenticated_user'}, "
-        f"drive_acl_bypassed={acl_bypassed}, "
-        f"hidden_by_drive_acl={filtered_count})."
+    # Embedding model / ACL diagnostics are intentionally omitted from the model-facing
+    # payload to keep token usage low. Surface them via logs only.
+    logger.debug(
+        "semantic_search_drive_docs query=%r embedding_model=%s dimensions=%s tokens=%s "
+        "drive_access_checked_for=%s drive_acl_bypassed=%s hidden_by_drive_acl=%s",
+        stripped_query,
+        model,
+        dimensions,
+        token_count,
+        user_google_email or "authenticated_user",
+        acl_bypassed,
+        filtered_count,
     )
+    header = f"Found {len(rows)} results for {stripped_query!r}."
     return "\n\n".join(
         [header]
         + [
