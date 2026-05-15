@@ -92,7 +92,7 @@ jobs:
             "deployed_by": "github-actions"
           }
           JSON
-          /root/.local/bin/uv sync --frozen
+          /root/.local/bin/uv sync --frozen --extra postgresql
           systemctl restart workspace-mcp.service
           for attempt in $(seq 1 24); do
             state="$(systemctl is-active workspace-mcp.service 2>/dev/null || true)"
