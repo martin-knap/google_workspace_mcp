@@ -73,7 +73,9 @@ jobs:
             -e credentials/** \
             -e token.json \
             -e token.pickle \
-            -e client_secret*.json
+            -e client_secret*.json \
+            -e .fastmcp-oauth-proxy \
+            -e .fastmcp-oauth-proxy/**
           SHA="$(git rev-parse --short HEAD)"
           BRANCH="$(git branch --show-current || true)"
           DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
