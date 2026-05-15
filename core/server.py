@@ -274,8 +274,15 @@ def configure_server_for_http():
             )
             valkey_host = os.getenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST", "").strip()
 
-            # Determine storage backend: valkey, disk, memory (default)
+            postgres_dsn = os.getenv(
+                "WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", ""
+            ).strip()
+
+            # Determine storage backend: valkey, postgres, disk, memory (default)
             use_valkey = storage_backend == "valkey" or bool(valkey_host)
+            use_postgres = storage_backend in ("postgres", "postgresql") or bool(
+                postgres_dsn
+            )
             use_disk = storage_backend == "disk"
 
             if use_valkey:
@@ -417,6 +424,57 @@ def configure_server_for_http():
                         "OAuth 2.1: Invalid Valkey configuration; falling back to default storage (%s).",
                         exc,
                     )
+            elif use_postgres:
+                try:
+                    from key_value.aio.stores.postgresql import PostgreSQLStore
+                except ImportError as exc:
+                    logger.warning(
+                        "OAuth 2.1: postgresql client_storage requested but py-key-value-aio[postgresql] is not installed (%s). "
+                        "Install 'workspace-mcp[postgresql]' (or 'py-key-value-aio[postgresql]', which includes 'asyncpg'). "
+                        "Falling back to FastMCP default (in-memory) storage.",
+                        exc,
+                    )
+                else:
+                    if not postgres_dsn:
+                        logger.warning(
+                            "OAuth 2.1: postgresql client_storage requested but "
+                            "WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN is empty; "
+                            "falling back to FastMCP default (in-memory) storage."
+                        )
+                    else:
+                        postgres_table = (
+                            os.getenv(
+                                "WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_TABLE", ""
+                            ).strip()
+                            or "fastmcp_oauth_kv"
+                        )
+
+                        client_storage = PostgreSQLStore(
+                            url=postgres_dsn,
+                            table_name=postgres_table,
+                            auto_create=True,
+                        )
+
+                        jwt_signing_key = validate_and_derive_jwt_key(
+                            jwt_signing_key_override, config.client_secret
+                        )
+
+                        storage_encryption_key = derive_jwt_key(
+                            high_entropy_material=jwt_signing_key.decode(),
+                            salt="fastmcp-storage-encryption-key",
+                        )
+
+                        client_storage = FernetEncryptionWrapper(
+                            key_value=client_storage,
+                            fernet=Fernet(key=storage_encryption_key),
+                        )
+                        logger.info(
+                            "OAuth 2.1: Using PostgreSQLStore for FastMCP OAuth proxy client_storage (table=%s)",
+                            postgres_table,
+                        )
+                        logger.info(
+                            "OAuth 2.1: Applied Fernet encryption wrapper to PostgreSQL client_storage (key derived from FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY or GOOGLE_OAUTH_CLIENT_SECRET)."
+                        )
             elif use_disk:
                 try:
                     from core.storage import make_sanitized_file_store

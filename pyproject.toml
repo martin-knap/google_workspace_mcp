@@ -74,6 +74,9 @@ disk = [
 valkey = [
     "py-key-value-aio[valkey]>=0.3.0",
 ]
+postgresql = [
+    "py-key-value-aio[postgresql]>=0.3.0",
+]
 test = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
@@ -100,6 +103,9 @@ disk = [
 ]
 valkey = [
     "py-key-value-aio[valkey]>=0.3.0",
+]
+postgresql = [
+    "py-key-value-aio[postgresql]>=0.3.0",
 ]
 test = [
     "pytest>=8.3.0",
