@@ -24,6 +24,9 @@ CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_ACTIVITY_READONLY_SCOPE = (
+    "https://www.googleapis.com/auth/drive.activity.readonly"
+)
 CLOUD_VISION_SCOPE = "https://www.googleapis.com/auth/cloud-vision"
 
 # Google Docs scopes

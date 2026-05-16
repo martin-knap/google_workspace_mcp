@@ -37,6 +37,7 @@ from auth.scopes import (
     DRIVE_SCOPE,
     DRIVE_READONLY_SCOPE,
     DRIVE_FILE_SCOPE,
+    DRIVE_ACTIVITY_READONLY_SCOPE,
     CLOUD_VISION_SCOPE,
     DOCS_READONLY_SCOPE,
     DOCS_WRITE_SCOPE,
@@ -519,6 +520,7 @@ def _remove_user_email_arg_from_docstring(docstring: str) -> str:
 SERVICE_CONFIGS = {
     "gmail": {"service": "gmail", "version": "v1"},
     "drive": {"service": "drive", "version": "v3"},
+    "driveactivity": {"service": "driveactivity", "version": "v2"},
     "calendar": {"service": "calendar", "version": "v3"},
     "docs": {"service": "docs", "version": "v1"},
     "sheets": {"service": "sheets", "version": "v4"},
@@ -545,6 +547,7 @@ SCOPE_GROUPS = {
     "drive": DRIVE_SCOPE,
     "drive_read": DRIVE_READONLY_SCOPE,
     "drive_file": DRIVE_FILE_SCOPE,
+    "drive_activity_read": DRIVE_ACTIVITY_READONLY_SCOPE,
     "cloud_vision": CLOUD_VISION_SCOPE,
     # Docs scopes
     "docs_read": DOCS_READONLY_SCOPE,
