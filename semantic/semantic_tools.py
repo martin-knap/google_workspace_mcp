@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import httpx
@@ -441,6 +442,14 @@ async def _filter_rows_by_drive_access(
 SNIPPET_MAX_CHARS = 400
 VERIFICATION_MAX_CHARS = 200
 VERIFICATION_OVERLAP_DROP_THRESHOLD = 0.7
+UNIT_DECLARATION_TYPE_RE = re.compile(
+    r"\b([a-z][a-z0-9_]*?)\s+\d+/\d+\b",
+    re.IGNORECASE,
+)
+UNIT_DECLARATION_RE = re.compile(
+    r"Units declared:\s*(\d+)\s*:\s*(.*?)(?:\nCommon areas:|\nShare check:|\nSource:|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _trim_snippet(text: str, max_chars: int) -> str:
@@ -472,8 +481,32 @@ def _verification_overlap(snippet: str, verification: str) -> float:
     return overlap / len(verification_tokens)
 
 
+def _unit_declaration_summary(text: str) -> Optional[str]:
+    """Return a compact typed-unit count from structured owner declarations."""
+    match = UNIT_DECLARATION_RE.search(text or "")
+    if not match:
+        return None
+
+    total = int(match.group(1))
+    unit_blob = match.group(2)
+    counts: dict[str, int] = {}
+    for unit_type in UNIT_DECLARATION_TYPE_RE.findall(unit_blob):
+        normalized = unit_type.lower()
+        counts[normalized] = counts.get(normalized, 0) + 1
+
+    if not counts:
+        return f"unit_summary: total={total}"
+
+    typed_total = sum(counts.values())
+    parts = [f"{unit_type}={counts[unit_type]}" for unit_type in sorted(counts)]
+    if typed_total != total:
+        parts.append(f"typed_total={typed_total}")
+    return f"unit_summary: total={total}; " + "; ".join(parts)
+
+
 def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -> str:
-    chunk_text = _trim_snippet(row.get("chunk_text") or "", SNIPPET_MAX_CHARS)
+    raw_chunk_text = row.get("chunk_text") or ""
+    chunk_text = _trim_snippet(raw_chunk_text, SNIPPET_MAX_CHARS)
 
     metadata = _metadata_dict(row.get("document_metadata"))
     project_code = (
@@ -498,6 +531,10 @@ def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -
         page_text = f"{page}-{page_end}" if page_end and page_end != page else str(page)
         flag_bits.append(f"page={page_text}")
     lines.append("   " + " ".join(flag_bits))
+
+    unit_summary = _unit_declaration_summary(raw_chunk_text)
+    if unit_summary:
+        lines.append(f"   {unit_summary}")
 
     lines.append(f"   snippet: {chunk_text}")
 

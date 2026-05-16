@@ -116,6 +116,36 @@ def test_formatted_result_drops_verbose_debug_fields():
     assert "snippet:" in payload
 
 
+def test_owner_declaration_unit_summary_survives_snippet_trimming():
+    row = _mock_row(1)
+    row["file_name"] = "Prohlaseni vlastnika.pdf"
+    row["chunk_text"] = (
+        "Document type: owner_declaration\n"
+        "Project: P22\n"
+        "Building: Pobrezni 285/22\n"
+        "Units declared: 18: "
+        "commercial_nebytova 285/101 (23.8 m2); "
+        "commercial_nebytova 285/102 (38.3 m2); "
+        "commercial_nebytova 285/103 (64.8 m2); "
+        "commercial_nebytova 285/104 (10.0 m2); "
+        + " ".join(
+            f"residential_byt 285/{idx} ({idx}.0 m2);"
+            for idx in range(1, 15)
+        )
+        + "\nCommon areas: 2 parts\n"
+        + ("long trailing text " * 80)
+    )
+
+    payload = _format_result(row, 1, require_hard_verify=False)
+
+    assert (
+        "unit_summary: total=18; commercial_nebytova=4; residential_byt=14"
+        in payload
+    )
+    snippet_line = next(line for line in payload.splitlines() if "snippet:" in line)
+    assert len(snippet_line.split("snippet:", 1)[1].strip()) <= SNIPPET_MAX_CHARS + 1
+
+
 def test_snippet_is_trimmed_with_page_anchor_preserved():
     payload = _format_result(_mock_row(1), 1, require_hard_verify=False)
     snippet_line = next(line for line in payload.splitlines() if "snippet:" in line)
