@@ -256,6 +256,16 @@ scored AS (
               WHEN COALESCE((d.metadata->>'canonical_document')::boolean, d.is_canonical, true) THEN 0.0015
               ELSE -0.0060
             END
+            + CASE
+              WHEN d.metadata->>'extraction_quality' = 'high' THEN 0.0030
+              WHEN d.metadata->>'extraction_quality' = 'medium' THEN -0.0030
+              WHEN d.metadata->>'extraction_quality' = 'low' THEN -0.0060
+              ELSE 0
+            END
+            + CASE
+              WHEN d.file_name ~* '\\mdraft\\M' THEN -0.0060
+              ELSE 0
+            END
           )
           ELSE 0
         END AS authority_score
@@ -443,12 +453,16 @@ SNIPPET_MAX_CHARS = 400
 VERIFICATION_MAX_CHARS = 200
 VERIFICATION_OVERLAP_DROP_THRESHOLD = 0.7
 UNIT_DECLARATION_TYPE_RE = re.compile(
-    r"\b([a-z][a-z0-9_]*?)\s+\d+/\d+\b",
+    r"\b(residential_byt|commercial_nebytova|other)\s+\d+/\d+\b",
     re.IGNORECASE,
 )
 UNIT_DECLARATION_RE = re.compile(
     r"Units declared:\s*(\d+)\s*:\s*(.*?)(?:\nCommon areas:|\nShare check:|\nSource:|$)",
     re.IGNORECASE | re.DOTALL,
+)
+UNIT_DECLARATION_HIDDEN_TAIL_RE = re.compile(
+    r"(?:\.{3}|…)\s*\+\s*(\d+)\s+(?:ďalších|dalších|dalsich|additional)\b",
+    re.IGNORECASE,
 )
 
 
@@ -490,15 +504,25 @@ def _unit_declaration_summary(text: str) -> Optional[str]:
     total = int(match.group(1))
     unit_blob = match.group(2)
     counts: dict[str, int] = {}
+    last_type: Optional[str] = None
     for unit_type in UNIT_DECLARATION_TYPE_RE.findall(unit_blob):
         normalized = unit_type.lower()
         counts[normalized] = counts.get(normalized, 0) + 1
+        last_type = normalized
+
+    hidden_match = UNIT_DECLARATION_HIDDEN_TAIL_RE.search(unit_blob)
+    inferred_hidden = 0
+    if hidden_match and last_type:
+        inferred_hidden = int(hidden_match.group(1))
+        counts[last_type] = counts.get(last_type, 0) + inferred_hidden
 
     if not counts:
         return f"unit_summary: total={total}"
 
     typed_total = sum(counts.values())
     parts = [f"{unit_type}={counts[unit_type]}" for unit_type in sorted(counts)]
+    if inferred_hidden:
+        parts.append(f"inferred_from_truncated_tail={inferred_hidden}")
     if typed_total != total:
         parts.append(f"typed_total={typed_total}")
     return f"unit_summary: total={total}; " + "; ".join(parts)

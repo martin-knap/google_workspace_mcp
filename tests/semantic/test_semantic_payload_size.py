@@ -146,6 +146,34 @@ def test_owner_declaration_unit_summary_survives_snippet_trimming():
     assert len(snippet_line.split("snippet:", 1)[1].strip()) <= SNIPPET_MAX_CHARS + 1
 
 
+def test_owner_declaration_unit_summary_uses_truncated_tail_marker():
+    row = _mock_row(1)
+    row["chunk_text"] = (
+        "Document type: owner_declaration\n"
+        "Units declared: 18: "
+        "commercial_nebytova 285/101 (23.8 m2); "
+        "commercial_nebytova 285/102 (38.3 m2); "
+        "commercial_nebytova 285/103 (64.8 m2); "
+        "residential_byt 285/1 (28.0 m2); "
+        "commercial_nebytova 285/104 (72.2 m2); "
+        "residential_byt 285/2 (34.9 m2); "
+        "residential_byt 285/3 (71.3 m2); "
+        "residential_byt 285/4 (66.3 m2); "
+        "residential_byt 285/5 (35.5 m2); "
+        "residential_byt 285/6 (70.4 m2) ... +8 dalsich\n"
+        "Common areas: 9 parts\n"
+    )
+
+    payload = _format_result(row, 1, require_hard_verify=False)
+
+    assert (
+        "unit_summary: total=18; commercial_nebytova=4; "
+        "residential_byt=14; inferred_from_truncated_tail=8"
+        in payload
+    )
+    assert "typed_total=" not in payload
+
+
 def test_snippet_is_trimmed_with_page_anchor_preserved():
     payload = _format_result(_mock_row(1), 1, require_hard_verify=False)
     snippet_line = next(line for line in payload.splitlines() if "snippet:" in line)
