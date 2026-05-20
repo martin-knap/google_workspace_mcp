@@ -633,6 +633,52 @@ async def health_check(request: Request):
     )
 
 
+@server.custom_route("/admin/import-user-session", methods=["POST"])
+async def admin_import_user_session(request: Request):
+    """Inject a Google OAuth 2.1 session for a user that authorized
+    via the flatbee-gog-auth bridge. Allows a single Slack Connect button
+    to populate both the gog keyring and the Workspace MCP session store.
+
+    Authentication: shared bearer secret in env WORKSPACE_MCP_ADMIN_BEARER.
+    Body: {"email": "...", "refresh_token": "...", "client_id"?, "client_secret"?,
+           "access_token"?, "scopes"?: ["..."]}
+    """
+    expected_secret = os.getenv("WORKSPACE_MCP_ADMIN_BEARER", "").strip()
+    if not expected_secret:
+        return JSONResponse({"error": "admin endpoint disabled"}, status_code=503)
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header != f"Bearer {expected_secret}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    email = str(body.get("email", "")).strip().lower()
+    refresh_token = body.get("refresh_token")
+    if not email.endswith("@flatbee.cz") or not refresh_token:
+        return JSONResponse(
+            {"error": "email (@flatbee.cz) and refresh_token are required"},
+            status_code=400,
+        )
+
+    store = get_oauth21_session_store()
+    store.store_session(
+        user_email=email,
+        access_token=body.get("access_token", ""),
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=body.get("client_id"),
+        client_secret=body.get("client_secret"),
+        scopes=body.get("scopes") or [],
+        expiry=None,
+    )
+    logger.info("admin imported OAuth 2.1 session for %s", email)
+    return JSONResponse({"ok": True, "user_email": email})
+
+
 @server.custom_route("/attachments/{file_id}", methods=["GET"])
 async def serve_attachment(request: Request):
     """Serve a stored attachment file."""
