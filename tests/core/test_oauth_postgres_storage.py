@@ -31,9 +31,7 @@ def _install_fake_postgres_module(monkeypatch):
 
     _FakePostgreSQLStore.instances = []
     fake_module = SimpleNamespace(PostgreSQLStore=_FakePostgreSQLStore)
-    monkeypatch.setitem(
-        sys.modules, "key_value.aio.stores.postgresql", fake_module
-    )
+    monkeypatch.setitem(sys.modules, "key_value.aio.stores.postgresql", fake_module)
     return _FakePostgreSQLStore
 
 
@@ -86,9 +84,7 @@ def test_postgres_storage_backend_wraps_fake_store_with_fernet(monkeypatch):
     _common_monkeypatches(monkeypatch, captured)
 
     monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "postgres")
-    monkeypatch.setenv(
-        "WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", "postgresql://test/x"
-    )
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", "postgresql://test/x")
     monkeypatch.delenv("WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_TABLE", raising=False)
     monkeypatch.delenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST", raising=False)
 
@@ -122,12 +118,8 @@ def test_postgres_storage_backend_respects_custom_table(monkeypatch):
     _common_monkeypatches(monkeypatch, captured)
 
     monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "postgresql")
-    monkeypatch.setenv(
-        "WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", "postgresql://test/x"
-    )
-    monkeypatch.setenv(
-        "WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_TABLE", "custom_oauth_kv"
-    )
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", "postgresql://test/x")
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_TABLE", "custom_oauth_kv")
     monkeypatch.delenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST", raising=False)
 
     server_module.configure_server_for_http()
@@ -174,9 +166,7 @@ def test_postgres_storage_backend_missing_dependency_falls_back(monkeypatch, cap
     monkeypatch.setitem(sys.modules, "key_value.aio.stores.postgresql", None)
 
     monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND", "postgres")
-    monkeypatch.setenv(
-        "WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", "postgresql://test/x"
-    )
+    monkeypatch.setenv("WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", "postgresql://test/x")
     monkeypatch.delenv("WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST", raising=False)
 
     with caplog.at_level("WARNING", logger=server_module.logger.name):

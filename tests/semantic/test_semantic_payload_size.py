@@ -128,10 +128,7 @@ def test_owner_declaration_unit_summary_survives_snippet_trimming():
         "commercial_nebytova 285/102 (38.3 m2); "
         "commercial_nebytova 285/103 (64.8 m2); "
         "commercial_nebytova 285/104 (10.0 m2); "
-        + " ".join(
-            f"residential_byt 285/{idx} ({idx}.0 m2);"
-            for idx in range(1, 15)
-        )
+        + " ".join(f"residential_byt 285/{idx} ({idx}.0 m2);" for idx in range(1, 15))
         + "\nCommon areas: 2 parts\n"
         + ("long trailing text " * 80)
     )
@@ -139,8 +136,7 @@ def test_owner_declaration_unit_summary_survives_snippet_trimming():
     payload = _format_result(row, 1, require_hard_verify=False)
 
     assert (
-        "unit_summary: total=18; commercial_nebytova=4; residential_byt=14"
-        in payload
+        "unit_summary: total=18; commercial_nebytova=4; residential_byt=14" in payload
     )
     snippet_line = next(line for line in payload.splitlines() if "snippet:" in line)
     assert len(snippet_line.split("snippet:", 1)[1].strip()) <= SNIPPET_MAX_CHARS + 1
@@ -168,8 +164,7 @@ def test_owner_declaration_unit_summary_uses_truncated_tail_marker():
 
     assert (
         "unit_summary: total=18; commercial_nebytova=4; "
-        "residential_byt=14; inferred_from_truncated_tail=8"
-        in payload
+        "residential_byt=14; inferred_from_truncated_tail=8" in payload
     )
     assert "typed_total=" not in payload
 
@@ -180,7 +175,9 @@ def test_snippet_is_trimmed_with_page_anchor_preserved():
     snippet_body = snippet_line.split("snippet:", 1)[1].strip()
     assert snippet_body.startswith("[[page 4]]")
     assert snippet_body.endswith("...")
-    assert len(snippet_body) <= SNIPPET_MAX_CHARS + 1  # +1 for leading space after anchor
+    assert (
+        len(snippet_body) <= SNIPPET_MAX_CHARS + 1
+    )  # +1 for leading space after anchor
 
 
 def test_duplicate_verification_block_is_dropped():
@@ -204,7 +201,9 @@ def test_distinct_verification_block_is_kept_and_trimmed():
     ]
     payload = _format_result(row, 1, require_hard_verify=True)
     verification_lines = [
-        line for line in payload.splitlines() if line.strip().startswith("verification:")
+        line
+        for line in payload.splitlines()
+        if line.strip().startswith("verification:")
     ]
     assert verification_lines, "Distinct verification snippet should remain"
     verification_body = verification_lines[0].split("verification:", 1)[1].strip()

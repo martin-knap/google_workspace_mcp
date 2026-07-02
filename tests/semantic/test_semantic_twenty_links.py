@@ -108,9 +108,7 @@ def test_format_result_omits_twenty_line_when_feature_disabled(monkeypatch):
 async def test_lookup_returns_empty_when_twenty_base_url_unset(monkeypatch):
     monkeypatch.delenv("TWENTY_BASE_URL", raising=False)
 
-    with patch(
-        "semantic.semantic_tools._lookup_twenty_document_ids_sql"
-    ) as mock_sql:
+    with patch("semantic.semantic_tools._lookup_twenty_document_ids_sql") as mock_sql:
         result = await _lookup_twenty_document_ids(["file-1", "file-2"])
 
     assert result == {}
@@ -121,13 +119,16 @@ async def test_lookup_returns_empty_when_twenty_base_url_unset(monkeypatch):
 async def test_lookup_uses_sql_mapping_when_available(monkeypatch):
     monkeypatch.setenv("TWENTY_BASE_URL", "https://twenty.example.com")
 
-    with patch(
-        "semantic.semantic_tools._lookup_twenty_document_ids_sql",
-        return_value={"file-1": "rec-1"},
-    ) as mock_sql, patch(
-        "semantic.semantic_tools._lookup_twenty_document_ids_rest",
-        new_callable=AsyncMock,
-    ) as mock_rest:
+    with (
+        patch(
+            "semantic.semantic_tools._lookup_twenty_document_ids_sql",
+            return_value={"file-1": "rec-1"},
+        ) as mock_sql,
+        patch(
+            "semantic.semantic_tools._lookup_twenty_document_ids_rest",
+            new_callable=AsyncMock,
+        ) as mock_rest,
+    ):
         result = await _lookup_twenty_document_ids(["file-1", "file-2", ""])
 
     assert result == {"file-1": "rec-1"}
@@ -139,14 +140,17 @@ async def test_lookup_uses_sql_mapping_when_available(monkeypatch):
 async def test_lookup_falls_back_to_rest_when_sql_table_missing(monkeypatch):
     monkeypatch.setenv("TWENTY_BASE_URL", "https://twenty.example.com")
 
-    with patch(
-        "semantic.semantic_tools._lookup_twenty_document_ids_sql",
-        side_effect=psycopg.errors.UndefinedTable("relation does not exist"),
-    ), patch(
-        "semantic.semantic_tools._lookup_twenty_document_ids_rest",
-        new_callable=AsyncMock,
-        return_value={"file-1": "rec-1"},
-    ) as mock_rest:
+    with (
+        patch(
+            "semantic.semantic_tools._lookup_twenty_document_ids_sql",
+            side_effect=psycopg.errors.UndefinedTable("relation does not exist"),
+        ),
+        patch(
+            "semantic.semantic_tools._lookup_twenty_document_ids_rest",
+            new_callable=AsyncMock,
+            return_value={"file-1": "rec-1"},
+        ) as mock_rest,
+    ):
         result = await _lookup_twenty_document_ids(["file-1"])
 
     assert result == {"file-1": "rec-1"}
@@ -184,9 +188,7 @@ async def test_rest_lookup_parses_documents_payload(monkeypatch):
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch(
-        "semantic.semantic_tools.httpx.AsyncClient", return_value=mock_client
-    ):
+    with patch("semantic.semantic_tools.httpx.AsyncClient", return_value=mock_client):
         result = await _lookup_twenty_document_ids_rest(["file-1", "file-2"])
 
     assert result == {"file-1": "rec-1", "file-2": "rec-2"}
@@ -206,9 +208,7 @@ async def test_rest_lookup_returns_empty_on_http_error(monkeypatch):
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch(
-        "semantic.semantic_tools.httpx.AsyncClient", return_value=mock_client
-    ):
+    with patch("semantic.semantic_tools.httpx.AsyncClient", return_value=mock_client):
         result = await _lookup_twenty_document_ids_rest(["file-1"])
 
     assert result == {}

@@ -583,7 +583,7 @@ def _trim_snippet(text: str, max_chars: int) -> str:
             remainder = cleaned[end + 2 :].lstrip()
     budget = max_chars - (len(anchor) + 1 if anchor else 0) - 3
     if budget <= 0:
-        return (anchor + "..." if anchor else cleaned[: max_chars - 3].rstrip() + "...")
+        return anchor + "..." if anchor else cleaned[: max_chars - 3].rstrip() + "..."
     trimmed = remainder[:budget].rstrip() + "..."
     return f"{anchor} {trimmed}" if anchor else trimmed
 
@@ -636,9 +636,7 @@ def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -
     chunk_text = _trim_snippet(raw_chunk_text, SNIPPET_MAX_CHARS)
 
     metadata = _metadata_dict(row.get("document_metadata"))
-    project_code = (
-        row.get("project_code") or metadata.get("project_code") or "unknown"
-    )
+    project_code = row.get("project_code") or metadata.get("project_code") or "unknown"
     lines = [f"{index}. {row.get('file_name') or 'Untitled document'}"]
     if row.get("drive_web_url"):
         lines.append(f"   url={row['drive_web_url']}")
