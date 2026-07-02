@@ -9,8 +9,6 @@ from types import SimpleNamespace
 
 import sys
 
-import pytest
-
 import core.server as server_module
 
 
