@@ -32,6 +32,7 @@ DEFAULT_ACL_BYPASS_EMAILS = {
     "michal.kniha@flatbee.cz",
     "dusan.kniha@flatbee.cz",
 }
+DEFAULT_TWENTY_RECORD_URL_TEMPLATE = "{base}/object/document/{id}"
 
 
 def _database_url() -> str:
@@ -134,6 +135,108 @@ def _acl_bypass_emails() -> set[str]:
 
 def _should_bypass_drive_acl(user_google_email: str) -> bool:
     return user_google_email.strip().lower() in _acl_bypass_emails()
+
+
+def _twenty_base_url() -> Optional[str]:
+    base = os.getenv("TWENTY_BASE_URL", "").strip()
+    return base.rstrip("/") or None
+
+
+def _twenty_api_key() -> Optional[str]:
+    api_key = os.getenv("TWENTY_API_KEY", "").strip()
+    return api_key or None
+
+
+def _twenty_record_url(record_id: Optional[str]) -> Optional[str]:
+    """Build a Twenty CRM record URL for a document, or None if Twenty
+    linking is not configured (TWENTY_BASE_URL unset) or there is no
+    known record id for this result."""
+    base = _twenty_base_url()
+    if not base or not record_id:
+        return None
+    template = os.getenv(
+        "TWENTY_RECORD_URL_TEMPLATE", DEFAULT_TWENTY_RECORD_URL_TEMPLATE
+    )
+    return template.format(base=base, id=record_id)
+
+
+def _lookup_twenty_document_ids_sql(drive_file_ids: list[str]) -> dict[str, str]:
+    """Map drive_file_id -> Twenty document record id via the
+    registry.twenty_document snapshot table, which sonar/stages/twenty_sync.py
+    upserts keyed on the same file id it writes to Twenty as sourceFileId."""
+    if not drive_file_ids:
+        return {}
+    sql = (
+        "SELECT source_file_id, twenty_document_id "
+        "FROM registry.twenty_document "
+        "WHERE source_file_id = ANY(%s)"
+    )
+    with psycopg.connect(_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, [drive_file_ids])
+            return {
+                row["source_file_id"]: row["twenty_document_id"]
+                for row in cur.fetchall()
+                if row.get("source_file_id") and row.get("twenty_document_id")
+            }
+
+
+async def _lookup_twenty_document_ids_rest(drive_file_ids: list[str]) -> dict[str, str]:
+    """Fallback batch lookup via the Twenty REST API, used only when the
+    registry.twenty_document snapshot table is unavailable. Requires both
+    TWENTY_BASE_URL and TWENTY_API_KEY."""
+    base = _twenty_base_url()
+    api_key = _twenty_api_key()
+    if not base or not api_key or not drive_file_ids:
+        return {}
+
+    params = {
+        "filter": f"sourceFileId[in]:{','.join(drive_file_ids)}",
+        "limit": len(drive_file_ids),
+        "depth": 0,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{base}/rest/documents",
+                params=params,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Twenty REST document lookup failed: %s", exc)
+        return {}
+
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    records = data.get("documents", data) if isinstance(data, dict) else data
+    if not isinstance(records, list):
+        return {}
+    return {
+        record["sourceFileId"]: record["id"]
+        for record in records
+        if isinstance(record, dict) and record.get("sourceFileId") and record.get("id")
+    }
+
+
+async def _lookup_twenty_document_ids(drive_file_ids: list[str]) -> dict[str, str]:
+    """Resolve Twenty document record ids for a batch of drive_file_ids.
+    Silently returns {} (no Twenty links surfaced) when TWENTY_BASE_URL is
+    not configured, so the tool behaves exactly as before by default."""
+    unique_ids = sorted({file_id for file_id in drive_file_ids if file_id})
+    if not unique_ids or not _twenty_base_url():
+        return {}
+    try:
+        return await asyncio.to_thread(_lookup_twenty_document_ids_sql, unique_ids)
+    except psycopg.Error as exc:
+        logger.info(
+            "registry.twenty_document lookup failed (%s); falling back to Twenty REST",
+            exc,
+        )
+        return await _lookup_twenty_document_ids_rest(unique_ids)
 
 
 def _add_filter(
@@ -539,6 +642,9 @@ def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -
     lines = [f"{index}. {row.get('file_name') or 'Untitled document'}"]
     if row.get("drive_web_url"):
         lines.append(f"   url={row['drive_web_url']}")
+    twenty_url = _twenty_record_url(row.get("twenty_document_id"))
+    if twenty_url:
+        lines.append(f"   twenty={twenty_url}")
 
     flag_bits = [f"project={project_code}"]
     if (
@@ -673,6 +779,12 @@ async def semantic_search_drive_docs(
             else ""
         )
         return f"No semantic retrieval results for query={query!r}, filters={active}.{suffix}"
+
+    twenty_ids = await _lookup_twenty_document_ids(
+        [row.get("drive_file_id") for row in rows]
+    )
+    for row in rows:
+        row["twenty_document_id"] = twenty_ids.get(row.get("drive_file_id") or "")
 
     # Embedding model / ACL diagnostics are intentionally omitted from the model-facing
     # payload to keep token usage low. Surface them via logs only.
