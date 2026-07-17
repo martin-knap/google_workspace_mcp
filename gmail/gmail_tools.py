@@ -1522,9 +1522,9 @@ async def get_gmail_message_content(
 @server.tool(
     title="Get Gmail Message Full",
     annotations=ToolAnnotations(
-        readOnlyHint=True,
+        readOnlyHint=False,
         destructiveHint=False,
-        idempotentHint=True,
+        idempotentHint=False,
         openWorldHint=True,
     ),
 )
@@ -1557,6 +1557,12 @@ async def get_gmail_message_full(
     (HTTP transport) or file path (stdio transport), so large emails can be fetched and
     processed out-of-band.
 
+    For byte-exact fidelity prefer deliver_as="eml": it is the raw message as Gmail stores
+    it. The "html"/"txt" formats decode the body as UTF-8 and drop undecodable bytes, so
+    they may not be byte-identical for messages in other charsets.
+
+    This tool writes to disk and is therefore unavailable in stateless mode.
+
     Args:
         message_id (str): The unique ID of the Gmail message to retrieve.
         user_google_email (str): The user's Google email address. Required.
@@ -1568,6 +1574,7 @@ async def get_gmail_message_full(
         str: A summary (subject, sender, recipients, size) plus the download URL or file
             path for the saved file. The message body itself is NOT included in the response.
     """
+    from auth.oauth_config import is_stateless_mode
     from core.attachment_storage import get_attachment_storage, get_attachment_url
     from core.config import get_transport_mode
 
@@ -1575,6 +1582,16 @@ async def get_gmail_message_full(
         f"[get_gmail_message_full] Invoked. Message ID: '{message_id}', "
         f"Email: '{user_google_email}', deliver_as='{deliver_as}'"
     )
+
+    # This tool exists to write the full message to disk; stateless deployments
+    # have no persistent storage (and the callback-served URL is per-process), so
+    # there is nothing sensible to return. Steer callers to the inline tool.
+    if is_stateless_mode():
+        return (
+            "Error: get_gmail_message_full is unavailable in stateless mode "
+            "(no persistent file storage). Use get_gmail_message_content instead "
+            "(note it truncates bodies at 20,000 characters)."
+        )
 
     # Fetch headers first for the summary.
     message_metadata = await asyncio.to_thread(
@@ -1592,6 +1609,8 @@ async def get_gmail_message_full(
         message_metadata.get("payload", {}), GMAIL_METADATA_HEADERS
     )
     subject = headers.get("Subject", "message") or "message"
+
+    notes: List[str] = []
 
     if deliver_as == "eml":
         message_raw = await asyncio.to_thread(
@@ -1618,16 +1637,24 @@ async def get_gmail_message_full(
             .execute
         )
         bodies = _extract_message_bodies(message_full.get("payload", {}))
-        text_body = bodies.get("text", "")
-        html_body = bodies.get("html", "")
+        text_stripped = bodies.get("text", "").strip()
+        html_stripped = bodies.get("html", "").strip()
 
         if deliver_as == "html":
-            content_str = html_body.strip() or text_body.strip()
-            mime_type = "text/html"
-            extension = ".html"
+            if html_stripped:
+                content_str = html_stripped
+                mime_type = "text/html"
+                extension = ".html"
+            else:
+                # No HTML part; fall back to plaintext and label it honestly.
+                content_str = text_stripped
+                mime_type = "text/plain"
+                extension = ".txt"
+                if content_str:
+                    notes.append(
+                        "No HTML body present; exported the plaintext body instead."
+                    )
         else:  # txt
-            text_stripped = text_body.strip()
-            html_stripped = html_body.strip()
             if text_stripped:
                 content_str = text_stripped
             elif html_stripped:
@@ -1641,13 +1668,19 @@ async def get_gmail_message_full(
             return "Error: message has no readable body content to export."
         content_bytes = content_str.encode("utf-8")
 
-    # Save via the shared attachment storage (which expects urlsafe base64).
+    # Save via the shared attachment storage (which expects urlsafe base64). Cap the
+    # sender-controlled subject so a pathologically long Subject can't overflow the
+    # filesystem's filename limit, and surface a clean error if the write still fails.
     storage = get_attachment_storage()
-    saved = storage.save_attachment(
-        base64_data=base64.urlsafe_b64encode(content_bytes).decode("ascii"),
-        filename=f"{subject}{extension}",
-        mime_type=mime_type,
-    )
+    try:
+        saved = storage.save_attachment(
+            base64_data=base64.urlsafe_b64encode(content_bytes).decode("ascii"),
+            filename=f"{subject[:80]}{extension}",
+            mime_type=mime_type,
+        )
+    except OSError as exc:
+        logger.error(f"[get_gmail_message_full] Failed to save message: {exc}")
+        return f"Error: failed to save message to storage: {exc}"
     size_bytes = len(content_bytes)
     size_kb = size_bytes / 1024
 
@@ -1656,6 +1689,8 @@ async def get_gmail_message_full(
     result_lines.append(f"Format: {deliver_as}")
     result_lines.append(f"Size: {size_kb:.1f} KB ({size_bytes} bytes)")
     result_lines.append(f"Saved filename: {Path(saved.path).name}")
+    for note in notes:
+        result_lines.append(f"Note: {note}")
 
     if get_transport_mode() == "stdio":
         result_lines.append(f"\n📎 Saved to: {saved.path}")

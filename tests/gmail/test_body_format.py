@@ -1,6 +1,7 @@
 """Tests for Gmail body_format support across helper and public tool APIs."""
 
 import base64
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -515,6 +516,7 @@ def stdio_storage(monkeypatch, tmp_path):
     monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
     monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
     monkeypatch.setattr("core.config.get_transport_mode", lambda: "stdio")
+    monkeypatch.setattr("auth.oauth_config.is_stateless_mode", lambda: False)
     return tmp_path
 
 
@@ -525,13 +527,19 @@ def _saved_path(result: str) -> str:
     return line.split(marker, 1)[1].strip()
 
 
+def _unpadded(text: str) -> str:
+    """base64url without padding, exactly as the Gmail API returns raw content."""
+    return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+
 @pytest.mark.asyncio
 async def test_get_gmail_message_full_eml_saves_complete_raw(stdio_storage):
-    raw_mime = "From: sender@example.com\r\n\r\nComplete raw MIME body"
+    # Use unpadded base64url (as Gmail actually returns) to exercise padding repair.
+    raw_mime = "From: sender@example.com\r\n\r\nComplete raw MIME body!"
     service = _build_service(
         message_responses={
             ("msg-1", "metadata"): _metadata_response("msg-1"),
-            ("msg-1", "raw"): {"raw": _encode(raw_mime)},
+            ("msg-1", "raw"): {"raw": _unpadded(raw_mime)},
         }
     )
 
@@ -632,6 +640,7 @@ async def test_get_gmail_message_full_http_returns_url(monkeypatch, tmp_path):
     monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
     monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
     monkeypatch.setattr("core.config.get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr("auth.oauth_config.is_stateless_mode", lambda: False)
     monkeypatch.setattr(
         attachment_storage,
         "get_attachment_url",
@@ -654,3 +663,155 @@ async def test_get_gmail_message_full_http_returns_url(monkeypatch, tmp_path):
 
     assert "https://example.test/attachments/" in result
     assert "raw body" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_blocked_in_stateless_mode(monkeypatch):
+    monkeypatch.setattr("auth.oauth_config.is_stateless_mode", lambda: True)
+    service = _build_service(
+        message_responses={("msg-6", "metadata"): _metadata_response("msg-6")}
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-6",
+        user_google_email="user@example.com",
+        deliver_as="eml",
+    )
+
+    assert "stateless mode" in result.lower()
+    assert "get_gmail_message_content" in result
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_empty_raw_errors(stdio_storage):
+    service = _build_service(
+        message_responses={
+            ("msg-7", "metadata"): _metadata_response("msg-7"),
+            ("msg-7", "raw"): {"raw": ""},
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-7",
+        user_google_email="user@example.com",
+        deliver_as="eml",
+    )
+
+    assert result.startswith("Error:")
+    assert "no raw content" in result
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_no_body_errors(stdio_storage):
+    service = _build_service(
+        message_responses={
+            ("msg-8", "metadata"): _metadata_response("msg-8"),
+            ("msg-8", "full"): _message_response("msg-8", text="", html=""),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-8",
+        user_google_email="user@example.com",
+        deliver_as="txt",
+    )
+
+    assert result.startswith("Error:")
+    assert "no readable body" in result
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_txt_converts_html_when_no_plaintext(stdio_storage):
+    service = _build_service(
+        message_responses={
+            ("msg-9", "metadata"): _metadata_response("msg-9"),
+            ("msg-9", "full"): _message_response(
+                "msg-9", text="", html="<p>Converted body</p>"
+            ),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-9",
+        user_google_email="user@example.com",
+        deliver_as="txt",
+    )
+
+    with open(_saved_path(result), "rb") as fh:
+        assert fh.read().decode() == "Converted body"
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_html_falls_back_to_text_and_labels_it(
+    stdio_storage,
+):
+    service = _build_service(
+        message_responses={
+            ("msg-10", "metadata"): _metadata_response("msg-10"),
+            ("msg-10", "full"): _message_response(
+                "msg-10", text="Only plaintext here", html=""
+            ),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-10",
+        user_google_email="user@example.com",
+        deliver_as="html",
+    )
+
+    assert "No HTML body present" in result
+    saved_path = _saved_path(result)
+    assert saved_path.endswith(".txt")
+    with open(saved_path, "rb") as fh:
+        assert fh.read().decode() == "Only plaintext here"
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_sanitizes_subject_filename(stdio_storage):
+    headers = _headers(Subject="../../etc/passwd")
+    service = _build_service(
+        message_responses={
+            ("msg-11", "metadata"): _metadata_response("msg-11", headers=headers),
+            ("msg-11", "raw"): {"raw": _encode("raw body")},
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-11",
+        user_google_email="user@example.com",
+        deliver_as="eml",
+    )
+
+    saved_path = _saved_path(result)
+    # No path traversal escapes the storage dir.
+    assert Path(saved_path).parent == Path(stdio_storage)
+    assert "/" not in Path(saved_path).name.replace(str(stdio_storage), "")
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_long_subject_does_not_crash(stdio_storage):
+    headers = _headers(Subject="X" * 900)
+    service = _build_service(
+        message_responses={
+            ("msg-12", "metadata"): _metadata_response("msg-12", headers=headers),
+            ("msg-12", "raw"): {"raw": _encode("raw body")},
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-12",
+        user_google_email="user@example.com",
+        deliver_as="eml",
+    )
+
+    saved_path = _saved_path(result)
+    assert Path(saved_path).exists()
+    assert len(Path(saved_path).name) < 255
