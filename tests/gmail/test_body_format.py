@@ -12,6 +12,7 @@ from gmail.gmail_tools import (
     _format_body_content,
     _html_to_text,
     get_gmail_message_content,
+    get_gmail_message_full,
     get_gmail_messages_content_batch,
     get_gmail_thread_content,
     get_gmail_threads_content_batch,
@@ -504,3 +505,152 @@ async def test_get_gmail_message_content_preserves_html_format():
     assert "To: recipient@example.com" in result
     assert "Cc: cc@example.com" in result
     assert "From:    " not in result
+
+
+@pytest.fixture
+def stdio_storage(monkeypatch, tmp_path):
+    """Route attachment storage to a temp dir and force stdio (file-path) delivery."""
+    import core.attachment_storage as attachment_storage
+
+    monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
+    monkeypatch.setattr("core.config.get_transport_mode", lambda: "stdio")
+    return tmp_path
+
+
+def _saved_path(result: str) -> str:
+    """Pull the on-disk path out of a stdio-mode get_gmail_message_full response."""
+    marker = "📎 Saved to: "
+    line = next(ln for ln in result.splitlines() if marker in ln)
+    return line.split(marker, 1)[1].strip()
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_eml_saves_complete_raw(stdio_storage):
+    raw_mime = "From: sender@example.com\r\n\r\nComplete raw MIME body"
+    service = _build_service(
+        message_responses={
+            ("msg-1", "metadata"): _metadata_response("msg-1"),
+            ("msg-1", "raw"): {"raw": _encode(raw_mime)},
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-1",
+        user_google_email="user@example.com",
+        deliver_as="eml",
+    )
+
+    # Body content must NOT be inlined in the response.
+    assert "Complete raw MIME body" not in result
+    assert "--- FULL MESSAGE EXPORT ---" in result
+    assert "Format: eml" in result
+    assert "Subject: Example subject" in result
+
+    # The saved file must hold the complete, decoded message.
+    with open(_saved_path(result), "rb") as fh:
+        assert fh.read().decode() == raw_mime
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_txt_uses_plaintext(stdio_storage):
+    service = _build_service(
+        message_responses={
+            ("msg-2", "metadata"): _metadata_response("msg-2"),
+            ("msg-2", "full"): _message_response(
+                "msg-2", text="Plain body", html="<b>Plain body</b>"
+            ),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-2",
+        user_google_email="user@example.com",
+        deliver_as="txt",
+    )
+
+    assert "Plain body" not in result
+    assert "Format: txt" in result
+    with open(_saved_path(result), "rb") as fh:
+        assert fh.read().decode() == "Plain body"
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_html_saves_raw_html(stdio_storage):
+    service = _build_service(
+        message_responses={
+            ("msg-3", "metadata"): _metadata_response("msg-3"),
+            ("msg-3", "full"): _message_response(
+                "msg-3", text="fallback", html="<p><b>Rich HTML</b></p>"
+            ),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-3",
+        user_google_email="user@example.com",
+        deliver_as="html",
+    )
+
+    assert "Rich HTML" not in result
+    with open(_saved_path(result), "rb") as fh:
+        assert fh.read().decode() == "<p><b>Rich HTML</b></p>"
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_does_not_truncate(stdio_storage):
+    """The whole point: full-body export never applies the 20,000-char cap."""
+    long_html = "<p>" + ("A" * 50000) + "</p>"
+    service = _build_service(
+        message_responses={
+            ("msg-4", "metadata"): _metadata_response("msg-4"),
+            ("msg-4", "full"): _message_response("msg-4", text="", html=long_html),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-4",
+        user_google_email="user@example.com",
+        deliver_as="html",
+    )
+
+    assert "[Content truncated...]" not in result
+    with open(_saved_path(result), "rb") as fh:
+        saved = fh.read().decode()
+    assert saved == long_html
+    assert len(saved) > 20000
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_full_http_returns_url(monkeypatch, tmp_path):
+    import core.attachment_storage as attachment_storage
+
+    monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
+    monkeypatch.setattr("core.config.get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr(
+        attachment_storage,
+        "get_attachment_url",
+        lambda file_id: f"https://example.test/attachments/{file_id}",
+    )
+
+    service = _build_service(
+        message_responses={
+            ("msg-5", "metadata"): _metadata_response("msg-5"),
+            ("msg-5", "raw"): {"raw": _encode("raw body")},
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-5",
+        user_google_email="user@example.com",
+        deliver_as="eml",
+    )
+
+    assert "https://example.test/attachments/" in result
+    assert "raw body" not in result

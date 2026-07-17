@@ -1520,6 +1520,164 @@ async def get_gmail_message_content(
 
 
 @server.tool(
+    title="Get Gmail Message Full",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("get_gmail_message_full", is_read_only=True, service_type="gmail")
+@require_google_service("gmail", "gmail_read")
+async def get_gmail_message_full(
+    service,
+    message_id: str,
+    user_google_email: str,
+    deliver_as: Annotated[
+        Literal["eml", "html", "txt"],
+        Field(
+            description=(
+                "Output format for the saved file. "
+                "'eml' (default) saves the complete raw RFC 5322 message (all headers, "
+                "parts, and inline attachments). "
+                "'html' saves the raw HTML body. "
+                "'txt' saves the plaintext body (HTML converted to text as fallback)."
+            ),
+        ),
+    ] = "eml",
+) -> str:
+    """
+    Retrieves the COMPLETE, untruncated content of a Gmail message and saves it to
+    local storage, returning a URL/path instead of the body text.
+
+    Unlike get_gmail_message_content (which caps body output at 20,000 chars and returns
+    it inline), this tool never truncates and never streams the body through the model
+    context. It writes the full message to disk and hands back a short-lived download URL
+    (HTTP transport) or file path (stdio transport), so large emails can be fetched and
+    processed out-of-band.
+
+    Args:
+        message_id (str): The unique ID of the Gmail message to retrieve.
+        user_google_email (str): The user's Google email address. Required.
+        deliver_as (Literal["eml", "html", "txt"]): Output format for the saved file.
+            "eml" (default) saves the complete raw RFC 5322 message.
+            "html" saves the raw HTML body. "txt" saves the plaintext body.
+
+    Returns:
+        str: A summary (subject, sender, recipients, size) plus the download URL or file
+            path for the saved file. The message body itself is NOT included in the response.
+    """
+    from core.attachment_storage import get_attachment_storage, get_attachment_url
+    from core.config import get_transport_mode
+
+    logger.info(
+        f"[get_gmail_message_full] Invoked. Message ID: '{message_id}', "
+        f"Email: '{user_google_email}', deliver_as='{deliver_as}'"
+    )
+
+    # Fetch headers first for the summary.
+    message_metadata = await asyncio.to_thread(
+        service.users()
+        .messages()
+        .get(
+            userId="me",
+            id=message_id,
+            format="metadata",
+            metadataHeaders=GMAIL_METADATA_HEADERS,
+        )
+        .execute
+    )
+    headers = _extract_headers(
+        message_metadata.get("payload", {}), GMAIL_METADATA_HEADERS
+    )
+    subject = headers.get("Subject", "message") or "message"
+
+    if deliver_as == "eml":
+        message_raw = await asyncio.to_thread(
+            service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="raw")
+            .execute
+        )
+        raw_data = message_raw.get("raw", "")
+        if not raw_data:
+            return "Error: message has no raw content to export."
+        padded_raw = raw_data + "=" * (-len(raw_data) % 4)
+        try:
+            content_bytes = base64.urlsafe_b64decode(padded_raw)
+        except (binascii.Error, ValueError) as exc:
+            return f"Error: failed to decode raw MIME content: {exc}"
+        mime_type = "message/rfc822"
+        extension = ".eml"
+    else:
+        message_full = await asyncio.to_thread(
+            service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="full")
+            .execute
+        )
+        bodies = _extract_message_bodies(message_full.get("payload", {}))
+        text_body = bodies.get("text", "")
+        html_body = bodies.get("html", "")
+
+        if deliver_as == "html":
+            content_str = html_body.strip() or text_body.strip()
+            mime_type = "text/html"
+            extension = ".html"
+        else:  # txt
+            text_stripped = text_body.strip()
+            html_stripped = html_body.strip()
+            if text_stripped:
+                content_str = text_stripped
+            elif html_stripped:
+                content_str = _html_to_text(html_stripped).strip()
+            else:
+                content_str = ""
+            mime_type = "text/plain"
+            extension = ".txt"
+
+        if not content_str:
+            return "Error: message has no readable body content to export."
+        content_bytes = content_str.encode("utf-8")
+
+    # Save via the shared attachment storage (which expects urlsafe base64).
+    storage = get_attachment_storage()
+    saved = storage.save_attachment(
+        base64_data=base64.urlsafe_b64encode(content_bytes).decode("ascii"),
+        filename=f"{subject}{extension}",
+        mime_type=mime_type,
+    )
+    size_bytes = len(content_bytes)
+    size_kb = size_bytes / 1024
+
+    result_lines = _format_message_header_lines(headers)
+    result_lines.append("\n--- FULL MESSAGE EXPORT ---")
+    result_lines.append(f"Format: {deliver_as}")
+    result_lines.append(f"Size: {size_kb:.1f} KB ({size_bytes} bytes)")
+    result_lines.append(f"Saved filename: {Path(saved.path).name}")
+
+    if get_transport_mode() == "stdio":
+        result_lines.append(f"\n📎 Saved to: {saved.path}")
+        result_lines.append(
+            "\nThe full message has been written to disk and can be read directly "
+            "from the file path (its content is NOT included above)."
+        )
+    else:
+        download_url = get_attachment_url(saved.file_id)
+        result_lines.append(f"\n📎 Download URL: {download_url}")
+        result_lines.append(
+            "\nFetch the full message from the URL above (content is NOT included "
+            "in this response). The file will expire after 1 hour."
+        )
+
+    logger.info(
+        f"[get_gmail_message_full] Saved {size_kb:.1f} KB ({deliver_as}) to {saved.path}"
+    )
+    return "\n".join(result_lines)
+
+
+@server.tool(
     title="Get Gmail Messages Content Batch",
     annotations=ToolAnnotations(
         readOnlyHint=True,
