@@ -346,6 +346,27 @@ pip install "workspace-mcp[gcs]"
 
 </details>
 
+<details>
+<summary><b>OpenTelemetry Tracing</b> <sub><sup>← optional distributed tracing</sup></sub></summary>
+
+FastMCP is already instrumented with OpenTelemetry, but spans are a no-op until an
+SDK and exporter are configured. Install the `otel` extra (already included in the
+Docker image) and point the server at an OTLP collector — tracing stays off unless
+an endpoint is set.
+
+```bash
+uv sync --extra otel   # if installing from source
+
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4317"
+export OTEL_EXPORTER_OTLP_PROTOCOL="grpc"   # or "http/protobuf" (default: grpc)
+export OTEL_SERVICE_NAME="google-workspace-mcp"   # optional; this is the default
+```
+
+All standard `OTEL_*` environment variables (endpoint, headers, resource attributes)
+are honored. When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, tracing is fully disabled.
+
+</details>
+
 ### Google Custom Search Setup
 
 <details open>

@@ -298,6 +298,11 @@ def main():
     # Configure safe logging for Windows Unicode handling
     configure_safe_logging()
 
+    # Enable OpenTelemetry tracing when an OTLP endpoint is configured (no-op otherwise).
+    from core.telemetry import configure_telemetry
+
+    configure_telemetry()
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Google Workspace MCP Server")
     parser.add_argument(
