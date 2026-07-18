@@ -1637,47 +1637,56 @@ async def get_gmail_message_full(
             .execute
         )
         bodies = _extract_message_bodies(message_full.get("payload", {}))
-        text_stripped = bodies.get("text", "").strip()
-        html_stripped = bodies.get("html", "").strip()
+        # Preserve the body exactly — the export must be complete — so use .strip()
+        # only to test for emptiness, never to trim the content that gets saved.
+        text_body = bodies.get("text", "")
+        html_body = bodies.get("html", "")
 
         if deliver_as == "html":
-            if html_stripped:
-                content_str = html_stripped
+            if html_body.strip():
+                content_str = html_body
                 mime_type = "text/html"
                 extension = ".html"
-            else:
+            elif text_body.strip():
                 # No HTML part; fall back to plaintext and label it honestly.
-                content_str = text_stripped
+                content_str = text_body
                 mime_type = "text/plain"
                 extension = ".txt"
-                if content_str:
-                    notes.append(
-                        "No HTML body present; exported the plaintext body instead."
-                    )
+                notes.append(
+                    "No HTML body present; exported the plaintext body instead."
+                )
+            else:
+                content_str = ""
+                mime_type = "text/html"
+                extension = ".html"
         else:  # txt
-            if text_stripped:
-                content_str = text_stripped
-            elif html_stripped:
-                content_str = _html_to_text(html_stripped).strip()
+            if text_body.strip():
+                content_str = text_body
+            elif html_body.strip():
+                content_str = _html_to_text(html_body)
             else:
                 content_str = ""
             mime_type = "text/plain"
             extension = ".txt"
 
-        if not content_str:
+        if not content_str.strip():
             return "Error: message has no readable body content to export."
         content_bytes = content_str.encode("utf-8")
 
-    # Save via the shared attachment storage (which expects urlsafe base64). Cap the
-    # sender-controlled subject so a pathologically long Subject can't overflow the
-    # filesystem's filename limit, and surface a clean error if the write still fails.
+    # Encode + write on a worker thread so a large export doesn't block the event loop.
+    # Cap the sender-controlled subject so a pathologically long Subject can't overflow
+    # the filesystem's filename limit, and surface a clean error if the write fails.
     storage = get_attachment_storage()
-    try:
-        saved = storage.save_attachment(
+
+    def _save_export():
+        return storage.save_attachment(
             base64_data=base64.urlsafe_b64encode(content_bytes).decode("ascii"),
             filename=f"{subject[:80]}{extension}",
             mime_type=mime_type,
         )
+
+    try:
+        saved = await asyncio.to_thread(_save_export)
     except OSError as exc:
         logger.error(f"[get_gmail_message_full] Failed to save message: {exc}")
         return f"Error: failed to save message to storage: {exc}"

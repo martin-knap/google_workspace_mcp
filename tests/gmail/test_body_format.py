@@ -609,6 +609,39 @@ async def test_get_gmail_message_full_html_saves_raw_html(stdio_storage):
 
 
 @pytest.mark.asyncio
+async def test_get_gmail_message_full_preserves_edge_whitespace(stdio_storage):
+    """A complete export must not strip leading/trailing body content."""
+    html_with_edges = "\n\n  <html><body>Body</body></html>  \n"
+    text_with_edges = "\n   Leading and trailing kept.   \n"
+    service = _build_service(
+        message_responses={
+            ("msg-ws", "metadata"): _metadata_response("msg-ws"),
+            ("msg-ws", "full"): _message_response(
+                "msg-ws", text=text_with_edges, html=html_with_edges
+            ),
+        }
+    )
+
+    html_result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-ws",
+        user_google_email="user@example.com",
+        deliver_as="html",
+    )
+    with open(_saved_path(html_result), "rb") as fh:
+        assert fh.read().decode() == html_with_edges
+
+    txt_result = await _unwrap(get_gmail_message_full)(
+        service=service,
+        message_id="msg-ws",
+        user_google_email="user@example.com",
+        deliver_as="txt",
+    )
+    with open(_saved_path(txt_result), "rb") as fh:
+        assert fh.read().decode() == text_with_edges
+
+
+@pytest.mark.asyncio
 async def test_get_gmail_message_full_does_not_truncate(stdio_storage):
     """The whole point: full-body export never applies the 20,000-char cap."""
     long_html = "<p>" + ("A" * 50000) + "</p>"
