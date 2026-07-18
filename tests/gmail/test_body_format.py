@@ -757,7 +757,9 @@ async def test_get_gmail_message_full_no_body_errors(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_txt_converts_html_when_no_plaintext(stdio_storage):
+async def test_get_gmail_message_full_txt_converts_html_when_no_plaintext(
+    stdio_storage,
+):
     service = _build_service(
         message_responses={
             ("msg-9", "metadata"): _metadata_response("msg-9"),
