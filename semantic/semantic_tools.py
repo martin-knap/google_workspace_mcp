@@ -371,7 +371,16 @@ scored AS (
             END
           )
           ELSE 0
-        END AS authority_score
+        END AS authority_score,
+        -- A bounded filename signal helps explicit source requests without
+        -- overpowering semantic/text relevance for ordinary questions.
+        LEAST(
+          GREATEST(
+            word_similarity(lower(COALESCE(d.file_name, '')), lower(%s)) - 0.25,
+            0
+          ) * 0.02,
+          0.008
+        ) AS filename_score
     FROM ranked r
     JOIN agent_retrieval.document_chunks c ON c.chunk_id = r.chunk_id
     JOIN agent_retrieval.documents d ON d.document_id = c.document_id
@@ -381,11 +390,11 @@ deduped AS (
         s.*,
         row_number() OVER (
             PARTITION BY CASE WHEN %s THEN COALESCE(s.document_id, s.document_id) ELSE s.chunk_id END
-            ORDER BY s.combined_score + s.authority_score DESC, s.combined_score DESC, s.vector_score DESC NULLS LAST
+            ORDER BY s.combined_score + s.authority_score + s.filename_score DESC, s.combined_score DESC, s.vector_score DESC NULLS LAST
         ) AS chunk_group_rank,
         row_number() OVER (
             PARTITION BY CASE WHEN %s THEN COALESCE(d.canonical_document_id, d.document_id) ELSE s.chunk_id END
-            ORDER BY s.combined_score + s.authority_score DESC, s.combined_score DESC, s.vector_score DESC NULLS LAST
+            ORDER BY s.combined_score + s.authority_score + s.filename_score DESC, s.combined_score DESC, s.vector_score DESC NULLS LAST
         ) AS canonical_group_rank,
         row_number() OVER (
             PARTITION BY CASE
@@ -394,7 +403,7 @@ deduped AS (
             END
             ORDER BY
               CASE WHEN s.current_winner_document_id IS NOT NULL AND d.document_id = s.current_winner_document_id THEN 1 ELSE 0 END DESC,
-              s.combined_score + s.authority_score DESC,
+              s.combined_score + s.authority_score + s.filename_score DESC,
               s.combined_score DESC,
               s.vector_score DESC NULLS LAST
         ) AS version_group_rank
@@ -402,9 +411,10 @@ deduped AS (
     JOIN agent_retrieval.documents d ON d.document_id = s.document_id
 )
 SELECT
-    dd.combined_score + dd.authority_score AS combined_score,
+    dd.combined_score + dd.authority_score + dd.filename_score AS combined_score,
     dd.combined_score AS retrieval_score,
     dd.authority_score,
+    dd.filename_score,
     dd.vector_score,
     dd.text_score,
     dd.vector_rank,
@@ -466,6 +476,7 @@ LIMIT %s;
             query,
             candidate_limit,
             prefer_authoritative,
+            query,
             deduplicate,
             deduplicate,
             deduplicate,
