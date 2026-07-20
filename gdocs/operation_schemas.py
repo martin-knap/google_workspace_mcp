@@ -211,6 +211,28 @@ class UpdateTableColumnPropertiesOperation(StrictDocOperation):
     width_type: Optional[str] = None
 
 
+class UpdateTableRowStyleOperation(StrictDocOperation):
+    type: Literal["update_table_row_style"]
+    table_start_index: int
+    row_indices: list[int] = Field(
+        description="Zero-based row indices to style, e.g. [0] for the header row."
+    )
+    min_row_height: Optional[float] = Field(
+        default=None,
+        description="Minimum row height in points.",
+    )
+
+
+class PinTableHeaderRowsOperation(StrictDocOperation):
+    type: Literal["pin_table_header_rows"]
+    table_start_index: int
+    pinned_header_rows_count: int = Field(
+        description="Number of leading rows to pin as a repeating header on each "
+        "page. 0 unpins all rows. This is a dedicated Docs API request, not a "
+        "TableRowStyle field -- the API rejects a 'tableHeader' style field."
+    )
+
+
 class InsertPageBreakOperation(StrictDocOperation):
     type: Literal["insert_page_break"]
     index: Optional[int] = Field(
@@ -414,6 +436,8 @@ BatchDocOperation = Annotated[
         MergeTableCellsOperation,
         UnmergeTableCellsOperation,
         UpdateTableColumnPropertiesOperation,
+        UpdateTableRowStyleOperation,
+        PinTableHeaderRowsOperation,
         InsertPageBreakOperation,
         InsertSectionBreakOperation,
         FindReplaceOperation,

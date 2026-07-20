@@ -9,7 +9,11 @@ import logging
 import asyncio
 from typing import List, Dict, Any, Tuple, Optional
 
-from gdocs.docs_helpers import create_insert_table_request, create_insert_text_request
+from gdocs.docs_helpers import (
+    create_insert_table_request,
+    create_insert_text_request,
+    create_pin_table_header_rows_request,
+)
 from gdocs.docs_structure import find_tables
 from gdocs.docs_tables import validate_table_data
 
@@ -42,6 +46,7 @@ class TableOperationManager:
         index: int,
         bold_headers: bool = True,
         tab_id: Optional[str] = None,
+        header_rows: int = 0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Creates a table and populates it with data in a reliable multi-step process.
@@ -54,6 +59,7 @@ class TableOperationManager:
             index: Position to insert the table
             bold_headers: Whether to make the first row bold
             tab_id: Optional tab ID for targeting a specific tab
+            header_rows: Number of leading rows to mark as a repeating page header
 
         Returns:
             Tuple of (success, message, metadata)
@@ -94,6 +100,12 @@ class TableOperationManager:
                 document_id, target_table, table_data, bold_headers, tab_id
             )
 
+            # Step 5: Optionally mark leading rows as a repeating page header
+            if header_rows > 0:
+                await self._apply_header_rows(
+                    document_id, target_table["start_index"], header_rows, tab_id
+                )
+
             metadata = {
                 "rows": rows,
                 "columns": cols,
@@ -130,6 +142,30 @@ class TableOperationManager:
                     "requests": [create_insert_table_request(index, rows, cols, tab_id)]
                 },
             )
+            .execute
+        )
+
+    async def _apply_header_rows(
+        self,
+        document_id: str,
+        table_start_index: int,
+        header_rows: int,
+        tab_id: Optional[str] = None,
+    ) -> None:
+        """Mark the leading rows of a table as a repeating page header."""
+        logger.debug(
+            f"Marking first {header_rows} row(s) as header for table at {table_start_index}"
+        )
+
+        request = create_pin_table_header_rows_request(
+            table_start_index=table_start_index,
+            pinned_header_rows_count=header_rows,
+            tab_id=tab_id,
+        )
+
+        await asyncio.to_thread(
+            self.service.documents()
+            .batchUpdate(documentId=document_id, body={"requests": [request]})
             .execute
         )
 
