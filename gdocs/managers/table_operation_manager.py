@@ -102,6 +102,7 @@ class TableOperationManager:
 
             # Step 5: Optionally mark leading rows as a repeating page header
             if header_rows > 0:
+                header_rows = min(header_rows, rows)
                 await self._apply_header_rows(
                     document_id, target_table["start_index"], header_rows, tab_id
                 )
