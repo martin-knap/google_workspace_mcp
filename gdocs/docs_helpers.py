@@ -1682,6 +1682,10 @@ def create_update_table_row_style_request(
     the Docs API rejects a "tableHeader" field on this request with a 400 error
     ("Unallowed field: tableHeader"), confirmed against the live API. Use
     create_pin_table_header_rows_request for that instead.
+
+    Reference:
+        https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#UpdateTableRowStyleRequest
+        https://developers.google.com/workspace/docs/api/reference/rest/v1/documents#TableRowStyle
     """
     location: Dict[str, Any] = {"index": table_start_index}
     if tab_id:
@@ -1722,6 +1726,9 @@ def create_pin_table_header_rows_request(
         table_start_index: Index of the table's start location.
         pinned_header_rows_count: Number of leading rows to pin as a repeating header.
         tab_id: Optional tab ID.
+
+    Reference:
+        https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#PinTableHeaderRowsRequest
     """
     location: Dict[str, Any] = {"index": table_start_index}
     if tab_id:
