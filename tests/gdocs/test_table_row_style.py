@@ -386,6 +386,66 @@ class TestCreateTableWithDataHeaderRows:
         assert len(header_requests) == 1
         inner = header_requests[0]["pinTableHeaderRows"]
         assert inner["pinnedHeaderRowsCount"] == 1
+        assert docs.batchUpdate.call_count == 2
+        population_requests = docs.batchUpdate.call_args_list[1].kwargs["body"][
+            "requests"
+        ]
+        assert any("insertText" in request for request in population_requests)
+        assert any("pinTableHeaderRows" in request for request in population_requests)
+
+    @pytest.mark.asyncio
+    async def test_header_pinning_failure_returns_partial_success(self):
+        """A failed combined batch must not invite callers to recreate the table."""
+        service = Mock()
+        docs = service.documents.return_value
+        docs.batchUpdate.return_value.execute.side_effect = [
+            {"replies": [{}]},
+            RuntimeError("pinTableHeaderRows rejected"),
+        ]
+        docs.get.return_value.execute.return_value = {
+            "body": {
+                "content": [
+                    {
+                        "startIndex": 1,
+                        "endIndex": 20,
+                        "table": {
+                            "rows": 1,
+                            "columns": 1,
+                            "tableRows": [
+                                {
+                                    "tableCells": [
+                                        {
+                                            "startIndex": 2,
+                                            "endIndex": 5,
+                                            "content": [
+                                                {"startIndex": 3, "paragraph": {}}
+                                            ],
+                                        }
+                                    ]
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        }
+
+        result = await _unwrap(docs_tools.create_table_with_data)(
+            service=service,
+            user_google_email="user@example.com",
+            document_id="d" * 25,
+            table_data=[["Header"]],
+            index=1,
+            header_rows=1,
+        )
+
+        assert result.startswith("PARTIAL SUCCESS:")
+        assert "Table was created" in result
+        assert "Do not retry table creation" in result
+        assert docs.batchUpdate.call_count == 2
+        failed_batch = docs.batchUpdate.call_args_list[1].kwargs["body"]["requests"]
+        assert any("insertText" in request for request in failed_batch)
+        assert any("pinTableHeaderRows" in request for request in failed_batch)
 
     @pytest.mark.asyncio
     async def test_no_header_rows_by_default(self):

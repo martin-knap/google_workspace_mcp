@@ -102,15 +102,37 @@ class TableOperationManager:
                     {},
                 )
 
-            # Step 4: Populate all cells in a single batch operation
-            population_count = await self._populate_table_cells_batch(
-                document_id, target_table, table_data, bold_headers, tab_id
-            )
+            # Step 4: Populate all cells and pin any header rows in one batch.
+            try:
+                population_count = await self._populate_table_cells_batch(
+                    document_id,
+                    target_table,
+                    table_data,
+                    bold_headers,
+                    tab_id,
+                    header_rows,
+                )
+            except Exception as e:
+                if header_rows <= 0:
+                    raise
 
-            # Step 5: Optionally mark leading rows as a repeating page header
-            if header_rows > 0:
-                await self._apply_header_rows(
-                    document_id, target_table["start_index"], header_rows, tab_id
+                logger.error(
+                    "Table was created, but the population/header-pinning batch "
+                    f"failed: {str(e)}"
+                )
+                return (
+                    True,
+                    "Table was created, but population and header pinning failed: "
+                    f"{str(e)}. Do not retry table creation.",
+                    {
+                        "rows": rows,
+                        "columns": cols,
+                        "populated_cells": 0,
+                        "total_cells": rows * cols,
+                        "table_created": True,
+                        "partial_success": True,
+                        "header_rows_applied": False,
+                    },
                 )
 
             metadata = {
@@ -118,6 +140,7 @@ class TableOperationManager:
                 "columns": cols,
                 "populated_cells": population_count,
                 "total_cells": rows * cols,
+                "header_rows_applied": header_rows > 0,
             }
 
             return (
@@ -149,30 +172,6 @@ class TableOperationManager:
                     "requests": [create_insert_table_request(index, rows, cols, tab_id)]
                 },
             )
-            .execute
-        )
-
-    async def _apply_header_rows(
-        self,
-        document_id: str,
-        table_start_index: int,
-        header_rows: int,
-        tab_id: Optional[str] = None,
-    ) -> None:
-        """Mark the leading rows of a table as a repeating page header."""
-        logger.debug(
-            f"Marking first {header_rows} row(s) as header for table at {table_start_index}"
-        )
-
-        request = create_pin_table_header_rows_request(
-            table_start_index=table_start_index,
-            pinned_header_rows_count=header_rows,
-            tab_id=tab_id,
-        )
-
-        await asyncio.to_thread(
-            self.service.documents()
-            .batchUpdate(documentId=document_id, body={"requests": [request]})
             .execute
         )
 
@@ -248,9 +247,10 @@ class TableOperationManager:
         table_data: List[List[str]],
         bold_headers: bool,
         tab_id: Optional[str] = None,
+        header_rows: int = 0,
     ) -> int:
         """
-        Populate all table cells in a single batchUpdate call.
+        Populate table cells and optionally pin header rows in one batchUpdate call.
 
         Builds all insertText and updateTextStyle requests at once,
         processing cells in reverse document order to avoid index shifting.
@@ -258,7 +258,6 @@ class TableOperationManager:
         cells = table.get("cells", [])
         if not cells:
             logger.warning("No cell information found in table")
-            return 0
 
         requests = []
         population_count = 0
@@ -267,7 +266,7 @@ class TableOperationManager:
         # then sort by insertion_index descending so insertions don't shift later indices
         cell_operations = []
 
-        for row_idx, row_data in enumerate(table_data):
+        for row_idx, row_data in enumerate(table_data if cells else []):
             if row_idx >= len(cells):
                 logger.warning(
                     f"Data has more rows ({len(table_data)}) than table ({len(cells)})"
@@ -333,6 +332,15 @@ class TableOperationManager:
                 requests.append(style_request)
 
             population_count += 1
+
+        if header_rows > 0:
+            requests.append(
+                create_pin_table_header_rows_request(
+                    table_start_index=table["start_index"],
+                    pinned_header_rows_count=header_rows,
+                    tab_id=tab_id,
+                )
+            )
 
         if not requests:
             logger.warning("No cell population requests generated")

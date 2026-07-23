@@ -1825,10 +1825,9 @@ async def create_table_with_data(
         link = f"https://docs.google.com/document/d/{document_id}/edit"
         rows = metadata.get("rows", 0)
         columns = metadata.get("columns", 0)
+        status = "PARTIAL SUCCESS" if metadata.get("partial_success") else "SUCCESS"
 
-        return (
-            f"SUCCESS: {message}. Table: {rows}x{columns}, Index: {index}. Link: {link}"
-        )
+        return f"{status}: {message}. Table: {rows}x{columns}, Index: {index}. Link: {link}"
     else:
         return f"ERROR: {message}"
 
