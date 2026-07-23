@@ -1,6 +1,10 @@
+import time
 from types import SimpleNamespace
 
 import pytest
+from fastmcp.server.auth.oauth_proxy.models import JTIMapping, UpstreamTokenSet
+from fastmcp.server.auth.providers.google import GoogleProvider
+from key_value.aio.stores.memory import MemoryStore
 
 import auth.oauth21_session_store as session_store
 from auth.oauth21_session_store import (
@@ -258,6 +262,67 @@ async def test_build_credentials_resolves_upstream_refresh_token(monkeypatch):
     assert creds.token_uri == "https://oauth2.googleapis.com/token"
     assert creds.scopes == upstream.scope.split()
     assert creds.expiry is not None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_matches_fastmcp_oauth_proxy_contract(monkeypatch):
+    """Exercise the private FastMCP contract used to recover upstream tokens."""
+    provider = GoogleProvider(
+        client_id="google-client",
+        client_secret="google-secret",
+        base_url="https://example.test",
+        client_storage=MemoryStore(),
+        jwt_signing_key="test-signing-key",
+        required_scopes=["openid"],
+    )
+    provider.get_routes("/mcp")
+
+    now = time.time()
+    jti = "access-jti"
+    upstream_id = "upstream-id"
+    upstream = UpstreamTokenSet(
+        upstream_token_id=upstream_id,
+        access_token="ya29.google-access",
+        refresh_token="1//google-refresh",
+        refresh_token_expires_at=None,
+        expires_at=now + 3600,
+        token_type="Bearer",
+        scope="openid email",
+        client_id="mcp-client",
+        created_at=now,
+    )
+    await provider._upstream_token_store.put(key=upstream_id, value=upstream, ttl=3600)
+    await provider._jti_mapping_store.put(
+        key=jti,
+        value=JTIMapping(
+            jti=jti,
+            upstream_token_id=upstream_id,
+            created_at=now,
+        ),
+        ttl=3600,
+    )
+    bearer = provider.jwt_issuer.issue_access_token(
+        client_id="mcp-client",
+        scopes=["openid", "email"],
+        jti=jti,
+        expires_in=3600,
+    )
+
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store,
+        "get_http_headers",
+        _headers_with_bearer(bearer),
+    )
+
+    creds = await _build_credentials_from_provider()
+
+    assert creds is not None
+    assert creds.token == upstream.access_token
+    assert creds.refresh_token == upstream.refresh_token
+    assert creds.client_id == "google-client"
+    assert creds.client_secret == "google-secret"
+    assert creds.scopes == ["openid", "email"]
 
 
 @pytest.mark.asyncio
