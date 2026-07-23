@@ -1678,10 +1678,10 @@ def create_update_table_row_style_request(
         min_row_height: Minimum row height in points.
         tab_id: Optional tab ID.
 
-    Note: repeating header rows across page breaks is NOT a TableRowStyle field --
-    the Docs API rejects a "tableHeader" field on this request with a 400 error
-    ("Unallowed field: tableHeader"), confirmed against the live API. Use
-    create_pin_table_header_rows_request for that instead.
+    Note: ``tableHeader`` is exposed on TableRowStyle when reading a document,
+    but it cannot be updated through updateTableRowStyle. The Docs API rejects
+    that field on this request with a 400 error ("Unallowed field: tableHeader").
+    Use create_pin_table_header_rows_request instead.
 
     Reference:
         https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#UpdateTableRowStyleRequest
@@ -1718,9 +1718,9 @@ def create_pin_table_header_rows_request(
 ) -> Dict[str, Any]:
     """Build a pinTableHeaderRows request to repeat the leading table rows on each page.
 
-    This is a dedicated Docs API request distinct from updateTableRowStyle -- there is
-    no per-row "header" style field; instead the table as a whole is told how many of
-    its leading rows to pin (0 unpins all rows).
+    This is a dedicated Docs API request distinct from updateTableRowStyle. Although
+    TableRowStyle reports whether a row is a header, the writable request sets the
+    number of leading rows to pin for the table as a whole (0 unpins all rows).
 
     Args:
         table_start_index: Index of the table's start location.
@@ -1730,6 +1730,9 @@ def create_pin_table_header_rows_request(
     Reference:
         https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#PinTableHeaderRowsRequest
     """
+    if pinned_header_rows_count < 0:
+        raise ValueError("pinned_header_rows_count must be non-negative")
+
     location: Dict[str, Any] = {"index": table_start_index}
     if tab_id:
         location["tabId"] = tab_id

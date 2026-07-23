@@ -5,15 +5,16 @@ batch_update_doc, and the header_rows convenience on create_table_with_data.
 Covers helper construction, validate_operation, batch manager integration,
 and the create_table_with_data one-shot header path.
 
-Repeating header rows across page breaks is NOT a TableRowStyle field -- the
-Docs API rejects a "tableHeader" field on updateTableRowStyle with a 400 error
-("Unallowed field: tableHeader"), confirmed against the live API. The real
-mechanism is the dedicated pinTableHeaderRows request (pinnedHeaderRowsCount).
+TableRowStyle reports whether a row is a header, but the Docs API rejects a
+"tableHeader" field on updateTableRowStyle with a 400 error ("Unallowed field:
+tableHeader"), confirmed against the live API. The writable mechanism is the
+dedicated pinTableHeaderRows request (pinnedHeaderRowsCount).
 """
 
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from pydantic import ValidationError
 
 from gdocs import docs_tools
 from gdocs.docs_helpers import (
@@ -21,6 +22,7 @@ from gdocs.docs_helpers import (
     create_update_table_row_style_request,
     validate_operation,
 )
+from gdocs.operation_schemas import PinTableHeaderRowsOperation
 
 
 def _unwrap(tool):
@@ -108,6 +110,13 @@ class TestCreatePinTableHeaderRowsRequest:
         location = result["pinTableHeaderRows"]["tableStartLocation"]
         assert "tabId" not in location
 
+    def test_negative_count_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            create_pin_table_header_rows_request(
+                table_start_index=10,
+                pinned_header_rows_count=-1,
+            )
+
 
 class TestValidateOperation:
     def test_valid_update_table_row_style(self):
@@ -160,6 +169,14 @@ class TestValidateOperation:
         assert not is_valid
         assert "pinned_header_rows_count" in msg
 
+    def test_negative_pinned_header_rows_count_rejected_by_schema(self):
+        with pytest.raises(ValidationError):
+            PinTableHeaderRowsOperation(
+                type="pin_table_header_rows",
+                table_start_index=10,
+                pinned_header_rows_count=-1,
+            )
+
 
 class TestBatchManagerIntegration:
     @pytest.fixture()
@@ -181,7 +198,10 @@ class TestBatchManagerIntegration:
         inner = request["updateTableRowStyle"]
         assert inner["tableStartLocation"] == {"index": 10}
         assert inner["rowIndices"] == [0]
-        assert inner["tableRowStyle"]["minRowHeight"] == {"magnitude": 24.0, "unit": "PT"}
+        assert inner["tableRowStyle"]["minRowHeight"] == {
+            "magnitude": 24.0,
+            "unit": "PT",
+        }
         assert "[0]" in desc
         assert "10" in desc
 
@@ -263,6 +283,27 @@ class TestBatchManagerIntegration:
 
 
 class TestCreateTableWithDataHeaderRows:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header_rows", [-1, 3])
+    async def test_invalid_header_rows_rejected_before_document_mutation(
+        self, header_rows
+    ):
+        service = Mock()
+
+        result = await _unwrap(docs_tools.create_table_with_data)(
+            service=service,
+            user_google_email="user@example.com",
+            document_id="d" * 25,
+            table_data=[["H1"], ["value"]],
+            index=1,
+            header_rows=header_rows,
+        )
+
+        assert result == (
+            "ERROR: header_rows must be between 0 and the table row count (2)"
+        )
+        service.documents.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_header_rows_applies_repeating_header(self):
         """create_table_with_data(header_rows=1) sends a pinTableHeaderRows request."""

@@ -1178,7 +1178,8 @@
             "type": "integer"
           },
           "pinned_header_rows_count": {
-            "description": "Number of leading rows to pin as a repeating header on each page. 0 unpins all rows. This is a dedicated Docs API request, not a TableRowStyle field -- the API rejects a 'tableHeader' style field.",
+            "description": "Number of leading rows to pin as a repeating header on each page. 0 unpins all rows. Use this dedicated request because the 'tableHeader' value reported in TableRowStyle cannot be set through UpdateTableRowStyleRequest.",
+            "minimum": 0,
             "type": "integer"
           }
         },

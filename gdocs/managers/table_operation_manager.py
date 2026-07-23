@@ -76,6 +76,13 @@ class TableOperationManager:
         rows = len(table_data)
         cols = len(table_data[0])
 
+        if not 0 <= header_rows <= rows:
+            return (
+                False,
+                f"header_rows must be between 0 and the table row count ({rows})",
+                {},
+            )
+
         try:
             # Step 1: Create empty table
             await self._create_empty_table(document_id, index, rows, cols, tab_id)
@@ -102,7 +109,6 @@ class TableOperationManager:
 
             # Step 5: Optionally mark leading rows as a repeating page header
             if header_rows > 0:
-                header_rows = min(header_rows, rows)
                 await self._apply_header_rows(
                     document_id, target_table["start_index"], header_rows, tab_id
                 )

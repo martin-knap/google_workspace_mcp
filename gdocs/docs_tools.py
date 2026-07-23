@@ -1209,7 +1209,8 @@ async def batch_update_doc(
                          optional: tab_id
                          Set pinned_header_rows_count=1 to repeat the first row as
                          a header across page breaks (0 unpins all rows). This is
-                         a dedicated request, not a row style field.
+                         the writable request for the tableHeader state reported
+                         in TableRowStyle.
       insert_page_break- optional: index (int), end_of_segment, tab_id
       insert_section_break
                        - optional: index (int), end_of_segment, section_type
@@ -1780,7 +1781,8 @@ async def create_table_with_data(
         bold_headers: Whether to make first row bold (default: true)
         tab_id: Optional tab ID to create the table in a specific tab
         header_rows: Number of leading rows to mark as a repeating header that
-            reappears after each page break (default: 0 = none)
+            reappears after each page break. Must be between 0 and the number of
+            table rows (default: 0 = none)
 
     Returns:
         str: Confirmation with table details and link

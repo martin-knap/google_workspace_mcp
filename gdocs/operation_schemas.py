@@ -227,9 +227,11 @@ class PinTableHeaderRowsOperation(StrictDocOperation):
     type: Literal["pin_table_header_rows"]
     table_start_index: int
     pinned_header_rows_count: int = Field(
+        ge=0,
         description="Number of leading rows to pin as a repeating header on each "
-        "page. 0 unpins all rows. This is a dedicated Docs API request, not a "
-        "TableRowStyle field -- the API rejects a 'tableHeader' style field."
+        "page. 0 unpins all rows. Use this dedicated request because the "
+        "'tableHeader' value reported in TableRowStyle cannot be set through "
+        "UpdateTableRowStyleRequest.",
     )
 
 
