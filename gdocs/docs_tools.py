@@ -1808,6 +1808,7 @@ async def create_table_with_data(
     table_manager = TableOperationManager(service)
 
     # Try to create the table, and if it fails due to index being at document end, retry with index-1
+    effective_index = index
     success, message, metadata = await table_manager.create_and_populate_table(
         document_id, table_data, index, bold_headers, tab_id, header_rows
     )
@@ -1817,8 +1818,14 @@ async def create_table_with_data(
         logger.debug(
             f"Index {index} is at document boundary, retrying with index {index - 1}"
         )
+        effective_index = index - 1
         success, message, metadata = await table_manager.create_and_populate_table(
-            document_id, table_data, index - 1, bold_headers, tab_id, header_rows
+            document_id,
+            table_data,
+            effective_index,
+            bold_headers,
+            tab_id,
+            header_rows,
         )
 
     if success:
@@ -1827,7 +1834,7 @@ async def create_table_with_data(
         columns = metadata.get("columns", 0)
         status = "PARTIAL SUCCESS" if metadata.get("partial_success") else "SUCCESS"
 
-        return f"{status}: {message}. Table: {rows}x{columns}, Index: {index}. Link: {link}"
+        return f"{status}: {message}. Table: {rows}x{columns}, Index: {effective_index}. Link: {link}"
     else:
         return f"ERROR: {message}"
 

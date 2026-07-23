@@ -284,6 +284,39 @@ class TestBatchManagerIntegration:
 
 class TestCreateTableWithDataHeaderRows:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("results", "expected_index"),
+        [
+            ([(True, "created", {"rows": 1, "columns": 1})], 10),
+            (
+                [
+                    (False, "must be less than the end index", {}),
+                    (True, "created", {"rows": 1, "columns": 1}),
+                ],
+                9,
+            ),
+        ],
+    )
+    async def test_success_reports_effective_index(
+        self, monkeypatch, results, expected_index
+    ):
+        create_and_populate = AsyncMock(side_effect=results)
+        manager = Mock(create_and_populate_table=create_and_populate)
+        monkeypatch.setattr(
+            docs_tools, "TableOperationManager", Mock(return_value=manager)
+        )
+
+        result = await _unwrap(docs_tools.create_table_with_data)(
+            service=Mock(),
+            user_google_email="user@example.com",
+            document_id="d" * 25,
+            table_data=[["value"]],
+            index=10,
+        )
+
+        assert f"Index: {expected_index}." in result
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("header_rows", [-1, 3])
     async def test_invalid_header_rows_rejected_before_document_mutation(
         self, header_rows
