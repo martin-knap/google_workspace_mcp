@@ -67,7 +67,9 @@ async def test_read_sheet_values_renders_all_fetched_rows():
     result = await _call_read_sheet_values(service)
 
     assert "Successfully read 120 rows" in result
-    assert "Row  1: ['1']" in result
-    assert "Row 120: ['120']" in result
+    # Every fetched row must be rendered, not just the endpoints.
+    for i in range(1, 121):
+        assert f"Row {i:2d}: ['{i}']" in result
+    assert result.count("Row ") == 120
     assert "more rows" not in result
 
