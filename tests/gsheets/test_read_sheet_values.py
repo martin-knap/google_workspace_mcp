@@ -72,4 +72,3 @@ async def test_read_sheet_values_renders_all_fetched_rows():
         assert f"Row {i:2d}: ['{i}']" in result
     assert result.count("Row ") == 120
     assert "more rows" not in result
-
