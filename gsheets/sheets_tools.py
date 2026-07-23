@@ -294,9 +294,6 @@ async def read_sheet_values(
         padded_row = row + [""] * max(0, len(values[0]) - len(row)) if values else row
         formatted_rows.append(f"Row {i:2d}: {padded_row}")
 
-    # Render every row that was fetched. Callers bound the volume through
-    # `range_name` (default A1:Z1000); truncating the display here would
-    # silently discard data the caller explicitly asked for.
     text_output = (
         f"Successfully read {len(values)} rows from range '{range_name}' in spreadsheet {spreadsheet_id} for {user_google_email}:\n"
         + "\n".join(formatted_rows)
