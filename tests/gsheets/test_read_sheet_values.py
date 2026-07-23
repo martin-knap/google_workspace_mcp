@@ -70,4 +70,3 @@ async def test_read_sheet_values_renders_all_fetched_rows():
     assert "Row  1: ['1']" in result
     assert "Row 120: ['120']" in result
     assert "more rows" not in result
-
