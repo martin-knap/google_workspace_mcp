@@ -467,6 +467,23 @@ async def test_invalid_column_letter_raises_error():
 
 
 @pytest.mark.asyncio
+async def test_cell_reference_column_raises_error():
+    """Test that cell references are rejected where bare column letters are expected."""
+    mock_service = create_mock_service()
+
+    from core.utils import UserInputError
+
+    with pytest.raises(UserInputError, match="Invalid column letter"):
+        await _resize_sheet_dimensions_impl(
+            service=mock_service,
+            spreadsheet_id="test_123",
+            delete_columns=["B2"],
+        )
+
+    mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_negative_pixel_size_raises_error():
     """Test that negative pixel size raises UserInputError."""
     mock_service = create_mock_service()
