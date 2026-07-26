@@ -313,10 +313,12 @@ def _format_message_header_lines(
         content_lines.append(f"In-Reply-To: {in_reply_to}")
     if references:
         content_lines.append(f"References: {references}")
-    if to:
-        content_lines.append(f"To: {to}")
-    if cc:
-        content_lines.append(f"Cc: {cc}")
+    content_lines.append(
+        f"To: {to}" if "To" in headers else "To: [not present in Gmail response]"
+    )
+    content_lines.append(
+        f"Cc: {cc}" if "Cc" in headers else "Cc: [not present in Gmail response]"
+    )
     if list_unsub:
         content_lines.append(f"List-Unsubscribe: {list_unsub}")
     if precedence:
@@ -844,7 +846,14 @@ def _extract_headers(payload: dict, header_names: List[str]) -> Dict[str, str]:
         header_name_lower = header["name"].lower()
         if header_name_lower in target_headers:
             # Store using the original requested casing
-            headers[target_headers[header_name_lower]] = header["value"]
+            target_name = target_headers[header_name_lower]
+            value = header["value"]
+            if header_name_lower in {"to", "cc"} and target_name in headers:
+                headers[target_name] = ", ".join(
+                    part for part in (headers[target_name], value) if part
+                )
+            else:
+                headers[target_name] = value
     return headers
 
 
@@ -2852,10 +2861,7 @@ def _format_thread_content(
 
     # Extract thread subject from the first message
     first_message = messages[0]
-    first_headers = {
-        h["name"]: h["value"]
-        for h in first_message.get("payload", {}).get("headers", [])
-    }
+    first_headers = _extract_headers(first_message.get("payload", {}), ["Subject"])
     thread_subject = first_headers.get("Subject", "(no subject)")
 
     # Build the thread content
@@ -2870,11 +2876,13 @@ def _format_thread_content(
     for i, message in enumerate(messages, 1):
         payload = message.get("payload", {})
         # Extract headers
-        headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
+        headers = _extract_headers(payload, GMAIL_METADATA_HEADERS)
 
         sender = headers.get("From", "(unknown sender)")
         date = headers.get("Date", "(unknown date)")
         subject = headers.get("Subject", "(no subject)")
+        to = headers.get("To", "")
+        cc = headers.get("Cc", "")
         rfc822_message_id = headers.get("Message-ID", "")
         in_reply_to = headers.get("In-Reply-To", "")
         references = headers.get("References", "")
@@ -2907,6 +2915,12 @@ def _format_thread_content(
                 f"From: {sender}",
                 f"Date: {date}",
             ]
+        )
+        content_lines.append(
+            f"To: {to}" if "To" in headers else "To: [not present in Gmail response]"
+        )
+        content_lines.append(
+            f"Cc: {cc}" if "Cc" in headers else "Cc: [not present in Gmail response]"
         )
 
         if rfc822_message_id:
