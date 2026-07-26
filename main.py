@@ -298,7 +298,7 @@ def main():
     # Configure safe logging for Windows Unicode handling
     configure_safe_logging()
 
-    # Enable OpenTelemetry tracing when an OTLP endpoint is configured (no-op otherwise).
+    # Enable OpenTelemetry tracing when an OTLP endpoint is configured.
     from core.telemetry import configure_telemetry
 
     configure_telemetry()

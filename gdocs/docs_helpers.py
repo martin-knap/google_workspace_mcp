@@ -1664,6 +1664,87 @@ def create_update_table_column_properties_request(
     }
 
 
+def create_update_table_row_style_request(
+    table_start_index: int,
+    row_indices: list,
+    min_row_height: float = None,
+    tab_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build an updateTableRowStyle request. Returns None if no properties set.
+
+    Args:
+        table_start_index: Index of the table's start location.
+        row_indices: Zero-based row indices to style (e.g. [0] for the header row).
+        min_row_height: Minimum row height in points.
+        tab_id: Optional tab ID.
+
+    Note: ``tableHeader`` is exposed on TableRowStyle when reading a document,
+    but it cannot be updated through updateTableRowStyle. The Docs API rejects
+    that field on this request with a 400 error ("Unallowed field: tableHeader").
+    Use create_pin_table_header_rows_request instead.
+
+    Reference:
+        https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#UpdateTableRowStyleRequest
+        https://developers.google.com/workspace/docs/api/reference/rest/v1/documents#TableRowStyle
+    """
+    location: Dict[str, Any] = {"index": table_start_index}
+    if tab_id:
+        location["tabId"] = tab_id
+
+    row_style: Dict[str, Any] = {}
+    fields = []
+
+    if min_row_height is not None:
+        row_style["minRowHeight"] = _build_dimension(min_row_height)
+        fields.append("minRowHeight")
+
+    if not fields:
+        return None
+
+    return {
+        "updateTableRowStyle": {
+            "tableStartLocation": location,
+            "rowIndices": row_indices,
+            "tableRowStyle": row_style,
+            "fields": ",".join(fields),
+        }
+    }
+
+
+def create_pin_table_header_rows_request(
+    table_start_index: int,
+    pinned_header_rows_count: int,
+    tab_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a pinTableHeaderRows request to repeat the leading table rows on each page.
+
+    This is a dedicated Docs API request distinct from updateTableRowStyle. Although
+    TableRowStyle reports whether a row is a header, the writable request sets the
+    number of leading rows to pin for the table as a whole (0 unpins all rows).
+
+    Args:
+        table_start_index: Index of the table's start location.
+        pinned_header_rows_count: Number of leading rows to pin as a repeating header.
+        tab_id: Optional tab ID.
+
+    Reference:
+        https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#PinTableHeaderRowsRequest
+    """
+    if pinned_header_rows_count < 0:
+        raise ValueError("pinned_header_rows_count must be non-negative")
+
+    location: Dict[str, Any] = {"index": table_start_index}
+    if tab_id:
+        location["tabId"] = tab_id
+
+    return {
+        "pinTableHeaderRows": {
+            "tableStartLocation": location,
+            "pinnedHeaderRowsCount": pinned_header_rows_count,
+        }
+    }
+
+
 def validate_operation(operation: Dict[str, Any]) -> tuple[bool, str]:
     """
     Validate a batch operation dictionary.
@@ -1720,6 +1801,8 @@ def validate_operation(operation: Dict[str, Any]) -> tuple[bool, str]:
             "column_span",
         ],
         "update_table_column_properties": ["table_start_index", "column_indices"],
+        "update_table_row_style": ["table_start_index", "row_indices"],
+        "pin_table_header_rows": ["table_start_index", "pinned_header_rows_count"],
     }
 
     if op_type not in required_fields:

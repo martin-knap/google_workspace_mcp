@@ -1,6 +1,17 @@
-import pytest
+import time
+from types import SimpleNamespace
 
-from auth.oauth21_session_store import OAuth21SessionStore
+import pytest
+from fastmcp.server.auth.oauth_proxy.models import JTIMapping, UpstreamTokenSet
+from fastmcp.server.auth.providers.google import GoogleProvider
+from key_value.aio.stores.memory import MemoryStore
+
+import auth.oauth21_session_store as session_store
+from auth.oauth21_session_store import (
+    OAuth21SessionStore,
+    _build_credentials_from_provider,
+    ensure_session_from_access_token,
+)
 
 
 def test_oauth_state_persists_across_store_instances(tmp_path):
@@ -172,3 +183,208 @@ def test_store_session_skips_mcp_binding_in_single_user_mode(tmp_path, monkeypat
 
     assert store.get_user_by_mcp_session("session-123") is None
     assert store.get_credentials("account-b@example.com").token == "token-b"
+
+
+# ---------------------------------------------------------------------------
+# _build_credentials_from_provider — fastmcp 3.x jti -> upstream token lookup
+# (regression coverage for #886: refresh_token must be populated)
+# ---------------------------------------------------------------------------
+
+
+class _AsyncKVStore:
+    """Minimal async stand-in for fastmcp's PydanticAdapter key/value store."""
+
+    def __init__(self, data):
+        self._data = data
+
+    async def get(self, *, key):
+        return self._data.get(key)
+
+
+class _FakeJwtIssuer:
+    """Stand-in for OAuthProxy.jwt_issuer; only ``fastmcp-jwt`` is a valid token."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def verify_token(self, token, expected_token_use="access"):  # noqa: ARG002
+        if token != "fastmcp-jwt":
+            raise ValueError("not a FastMCP-issued token")
+        return self._payload
+
+
+class _FakeOAuthProxy:
+    """Stand-in for a FastMCP GoogleProvider exposing the stores and issuer that
+    ``_build_credentials_from_provider`` resolves the upstream token through."""
+
+    def __init__(self, jti_mappings, upstream_tokens, jti_payload):
+        self._jti_mapping_store = _AsyncKVStore(jti_mappings)
+        self._upstream_token_store = _AsyncKVStore(upstream_tokens)
+        self.jwt_issuer = _FakeJwtIssuer(jti_payload)
+        self._upstream_client_id = "client-id-123"
+        self._upstream_client_secret = "client-secret-456"
+
+
+def _headers_with_bearer(token):
+    return lambda include=None: {"authorization": f"Bearer {token}"}
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_resolves_upstream_refresh_token(monkeypatch):
+    """The credential must carry the upstream refresh token resolved via
+    jti -> _jti_mapping_store -> _upstream_token_store, not a bare token."""
+    jti = "jti-abc"
+    upstream_id = "upstream-xyz"
+    upstream = SimpleNamespace(
+        upstream_token_id=upstream_id,
+        access_token="ya29.google-access",
+        refresh_token="1//google-refresh",
+        expires_at=2_000_000_000,
+        scope="https://www.googleapis.com/auth/drive openid email",
+    )
+    provider = _FakeOAuthProxy(
+        jti_mappings={jti: SimpleNamespace(jti=jti, upstream_token_id=upstream_id)},
+        upstream_tokens={upstream_id: upstream},
+        jti_payload={"jti": jti},
+    )
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store, "get_http_headers", _headers_with_bearer("fastmcp-jwt")
+    )
+
+    creds = await _build_credentials_from_provider()
+
+    assert creds is not None
+    assert creds.token == "ya29.google-access"
+    assert creds.refresh_token == "1//google-refresh"
+    assert creds.client_id == "client-id-123"
+    assert creds.client_secret == "client-secret-456"
+    assert creds.token_uri == "https://oauth2.googleapis.com/token"
+    assert creds.scopes == upstream.scope.split()
+    assert creds.expiry is not None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_matches_fastmcp_oauth_proxy_contract(monkeypatch):
+    """Exercise the private FastMCP contract used to recover upstream tokens."""
+    provider = GoogleProvider(
+        client_id="google-client",
+        client_secret="google-secret",
+        base_url="https://example.test",
+        client_storage=MemoryStore(),
+        jwt_signing_key="test-signing-key",
+        required_scopes=["openid"],
+    )
+    provider.get_routes("/mcp")
+
+    now = time.time()
+    jti = "access-jti"
+    upstream_id = "upstream-id"
+    upstream = UpstreamTokenSet(
+        upstream_token_id=upstream_id,
+        access_token="ya29.google-access",
+        refresh_token="1//google-refresh",
+        refresh_token_expires_at=None,
+        expires_at=now + 3600,
+        token_type="Bearer",
+        scope="openid email",
+        client_id="mcp-client",
+        created_at=now,
+    )
+    await provider._upstream_token_store.put(key=upstream_id, value=upstream, ttl=3600)
+    await provider._jti_mapping_store.put(
+        key=jti,
+        value=JTIMapping(
+            jti=jti,
+            upstream_token_id=upstream_id,
+            created_at=now,
+        ),
+        ttl=3600,
+    )
+    bearer = provider.jwt_issuer.issue_access_token(
+        client_id="mcp-client",
+        scopes=["openid", "email"],
+        jti=jti,
+        expires_in=3600,
+    )
+
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store,
+        "get_http_headers",
+        _headers_with_bearer(bearer),
+    )
+
+    creds = await _build_credentials_from_provider()
+
+    assert creds is not None
+    assert creds.token == upstream.access_token
+    assert creds.refresh_token == upstream.refresh_token
+    assert creds.client_id == "google-client"
+    assert creds.client_secret == "google-secret"
+    assert creds.scopes == ["openid", "email"]
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_without_proxy_stores(monkeypatch):
+    """External OAuth 2.1 / single-user providers lack the proxy stores, so the
+    resolver returns None and the caller falls back to a minimal credential."""
+    monkeypatch.setattr(session_store, "_auth_provider", SimpleNamespace())
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_without_inbound_bearer(monkeypatch):
+    """No Authorization header (e.g. no active request) yields no jti to resolve."""
+    provider = _FakeOAuthProxy({}, {}, {"jti": "x"})
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(session_store, "get_http_headers", lambda include=None: {})
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_for_direct_google_token(monkeypatch):
+    """A raw Google token (not a FastMCP JWT) can't be mapped to a refresh token."""
+    provider = _FakeOAuthProxy({}, {}, {"jti": "x"})
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store, "get_http_headers", _headers_with_bearer("ya29.raw-token")
+    )
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_build_credentials_returns_none_when_jti_mapping_missing(monkeypatch):
+    """A revoked or expired jti has no mapping, so the resolver returns None."""
+    provider = _FakeOAuthProxy(
+        jti_mappings={}, upstream_tokens={}, jti_payload={"jti": "gone"}
+    )
+    monkeypatch.setattr(session_store, "_auth_provider", provider)
+    monkeypatch.setattr(
+        session_store, "get_http_headers", _headers_with_bearer("fastmcp-jwt")
+    )
+    assert await _build_credentials_from_provider() is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_falls_back_to_non_refreshable_credential(monkeypatch):
+    """With no proxy provider, ensure_session still returns a usable (but
+    non-refreshable) credential built directly from the access token."""
+    monkeypatch.setattr(session_store, "_auth_provider", None)
+    monkeypatch.setattr(
+        session_store,
+        "get_oauth21_session_store",
+        lambda: SimpleNamespace(store_session=lambda **kwargs: None),
+    )
+    access_token = SimpleNamespace(
+        token="ya29.direct",
+        claims={"email": "user@example.com"},
+        scopes=["https://www.googleapis.com/auth/userinfo.email"],
+        expires_at=2_000_000_000,
+    )
+
+    creds = await ensure_session_from_access_token(access_token, "user@example.com")
+
+    assert creds is not None
+    assert creds.token == "ya29.direct"
+    assert creds.refresh_token is None
