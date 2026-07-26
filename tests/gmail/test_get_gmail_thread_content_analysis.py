@@ -93,6 +93,8 @@ async def test_default_returns_string_unchanged_behavior():
     assert isinstance(result, str)
     assert "Thread ID: t1" in result
     assert "alex@alexreynolds.com" in result or "Alex" in result
+    assert "To: vendor@example.com" in result
+    assert "Cc: [not present in Gmail response]" in result
 
 
 @pytest.mark.asyncio
@@ -111,6 +113,31 @@ async def test_include_analysis_true_returns_dict_with_both_keys():
     assert set(result.keys()) == {"content", "analysis"}
     assert isinstance(result["content"], str)
     assert isinstance(result["analysis"], dict)
+
+
+@pytest.mark.asyncio
+async def test_recipient_headers_are_complete_in_content_and_analysis():
+    thread = _fake_thread_response()
+    thread["messages"][0]["payload"]["headers"].extend(
+        [
+            {"name": "to", "value": "stakeholder@example.com"},
+            {"name": "CC", "value": "copied@example.com"},
+        ]
+    )
+    service = _build_mock_service(thread)
+
+    result = await _unwrap(get_gmail_thread_content)(
+        service=service,
+        thread_id="t1",
+        user_google_email="alex@alexreynolds.com",
+        include_analysis=True,
+    )
+
+    assert "To: vendor@example.com, stakeholder@example.com" in result["content"]
+    assert "Cc: copied@example.com" in result["content"]
+    assert {"stakeholder@example.com", "copied@example.com"} <= set(
+        result["analysis"]["participants"]
+    )
 
 
 @pytest.mark.asyncio
