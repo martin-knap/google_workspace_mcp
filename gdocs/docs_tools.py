@@ -1200,6 +1200,17 @@ async def batch_update_doc(
                        - required: table_start_index (int), column_indices (list[int])
                          optional: width (float, points), width_type
                                    (FIXED_WIDTH|EVENLY_DISTRIBUTED), tab_id
+      update_table_row_style
+                       - required: table_start_index (int), row_indices (list[int])
+                         optional: min_row_height (float, points), tab_id
+      pin_table_header_rows
+                       - required: table_start_index (int),
+                                   pinned_header_rows_count (int)
+                         optional: tab_id
+                         Set pinned_header_rows_count=1 to repeat the first row as
+                         a header across page breaks (0 unpins all rows). This is
+                         the writable request for the tableHeader state reported
+                         in TableRowStyle.
       insert_page_break- optional: index (int), end_of_segment, tab_id
       insert_section_break
                        - optional: index (int), end_of_segment, section_type
@@ -1729,6 +1740,7 @@ async def create_table_with_data(
     index: int,
     bold_headers: bool = True,
     tab_id: Optional[str] = None,
+    header_rows: int = 0,
 ) -> str:
     """
     Creates a table and populates it with data in one reliable operation.
@@ -1768,6 +1780,9 @@ async def create_table_with_data(
         index: Document position (MANDATORY: get from inspect_doc_structure 'total_length')
         bold_headers: Whether to make first row bold (default: true)
         tab_id: Optional tab ID to create the table in a specific tab
+        header_rows: Number of leading rows to mark as a repeating header that
+            reappears after each page break. Must be between 0 and the number of
+            table rows (default: 0 = none)
 
     Returns:
         str: Confirmation with table details and link
@@ -1793,8 +1808,9 @@ async def create_table_with_data(
     table_manager = TableOperationManager(service)
 
     # Try to create the table, and if it fails due to index being at document end, retry with index-1
+    effective_index = index
     success, message, metadata = await table_manager.create_and_populate_table(
-        document_id, table_data, index, bold_headers, tab_id
+        document_id, table_data, index, bold_headers, tab_id, header_rows
     )
 
     # If it failed due to index being at or beyond document end, retry with adjusted index
@@ -1802,18 +1818,23 @@ async def create_table_with_data(
         logger.debug(
             f"Index {index} is at document boundary, retrying with index {index - 1}"
         )
+        effective_index = index - 1
         success, message, metadata = await table_manager.create_and_populate_table(
-            document_id, table_data, index - 1, bold_headers, tab_id
+            document_id,
+            table_data,
+            effective_index,
+            bold_headers,
+            tab_id,
+            header_rows,
         )
 
     if success:
         link = f"https://docs.google.com/document/d/{document_id}/edit"
         rows = metadata.get("rows", 0)
         columns = metadata.get("columns", 0)
+        status = "PARTIAL SUCCESS" if metadata.get("partial_success") else "SUCCESS"
 
-        return (
-            f"SUCCESS: {message}. Table: {rows}x{columns}, Index: {index}. Link: {link}"
-        )
+        return f"{status}: {message}. Table: {rows}x{columns}, Index: {effective_index}. Link: {link}"
     else:
         return f"ERROR: {message}"
 

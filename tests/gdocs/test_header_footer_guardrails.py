@@ -1,4 +1,5 @@
 import json
+from pathlib import PurePath
 from unittest.mock import Mock
 
 import pytest
@@ -401,7 +402,12 @@ class TestHeaderFooterGuardrails:
 
         parsed = json.loads(result)
         assert parsed["runtime_canary"] == docs_tools.HEADER_FOOTER_RUNTIME_CANARY
-        assert parsed["docs_tools_file"].endswith("gdocs/docs_tools.py")
-        assert parsed["header_footer_manager_file"].endswith(
-            "gdocs/managers/header_footer_manager.py"
+        assert PurePath(parsed["docs_tools_file"]).parts[-2:] == (
+            "gdocs",
+            "docs_tools.py",
+        )
+        assert PurePath(parsed["header_footer_manager_file"]).parts[-3:] == (
+            "gdocs",
+            "managers",
+            "header_footer_manager.py",
         )
