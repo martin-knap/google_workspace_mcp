@@ -137,7 +137,7 @@ Workspace MCP is the single most complete MCP server, the only that integrates a
 
 **For Security Teams**
 
-This server sends no data anywhere except Google's APIs, on behalf of the authenticated user, using your own OAuth client credentials. There is no telemetry, no usage reporting, no analytics, no license server, and no SaaS dependency. The entire data path is: your infrastructure → Google APIs.
+By default, this server sends no data anywhere except Google's APIs, on behalf of the authenticated user, using your own OAuth client credentials. There is no usage reporting, analytics, license server, or SaaS dependency. Optional OpenTelemetry tracing exports only to an OTLP endpoint you explicitly configure. The default data path is: your infrastructure → Google APIs.
 
 - **Fully open source** — every line is auditable in this repo
 - **Your OAuth client, your GCP project** — credentials never leave your environment
@@ -159,7 +159,7 @@ This project is [MIT licensed](LICENSE) — not "open core," not "source availab
 - **Use commercially without restriction** — build products, sell services, deploy internally
 - **Fork, embed, redistribute** — MIT requires only attribution
 - **No CLA** — contributions remain under MIT
-- **No telemetry to disclose** — nothing to flag in a privacy review
+- **No built-in telemetry to disclose** — optional tracing is off unless you configure it
 - **No network effects** — the server never contacts any endpoint you didn't configure
 - **Standard dependency licenses** — MIT, Apache 2.0, and BSD throughout the dependency chain; no copyleft, no AGPL
 
@@ -344,6 +344,30 @@ pip install "workspace-mcp[gcs]"
    For public OAuth 2.1 PKCE clients, omit `GOOGLE_OAUTH_CLIENT_SECRET` and set `FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY` instead.
 
 <sub>[Full OAuth documentation →](https://developers.google.com/workspace/guides/auth-overview) · [Credential setup details →](#-credential-configuration)</sub>
+
+</details>
+
+<details>
+<summary><b>OpenTelemetry Tracing</b> <sub><sup>← optional distributed tracing</sup></sub></summary>
+
+FastMCP is already instrumented with OpenTelemetry, but spans are a no-op until an
+SDK and exporter are configured. Install the `otel` extra (already included in the
+Docker image) and point the server at an OTLP collector — tracing stays off unless
+an endpoint is set.
+
+```bash
+pip install "workspace-mcp[otel]"
+# Or, when installing from source: uv sync --extra otel
+
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4317"
+export OTEL_EXPORTER_OTLP_PROTOCOL="grpc"   # or "http/protobuf" (default: grpc)
+export OTEL_SERVICE_NAME="google-workspace-mcp"   # optional; this is the default
+```
+
+Standard OTLP tracing variables for endpoints, protocols, headers, TLS, sampling,
+batching, and resource attributes are honored. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+and `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` override their general counterparts. When
+neither endpoint variable is set, tracing is fully disabled.
 
 </details>
 
