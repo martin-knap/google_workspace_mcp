@@ -795,10 +795,9 @@ cp .env.oauth21 .env
 | <sub>Tool</sub> | <sub>Tier</sub> | <sub>Description</sub> |
 |------|------|-------------|
 | <sub>`search_gmail_messages`</sub> | <sub>Core</sub> | <sub>Search with Gmail operators</sub> |
-| <sub>`get_gmail_message_content`</sub> | <sub>Core</sub> | <sub>Retrieve message content</sub> |
+| <sub>`get_gmail_message_content`</sub> | <sub>Core</sub> | <sub>Retrieve message content (`full=True` exports the untruncated message to a file/URL)</sub> |
 | <sub>`get_gmail_messages_content_batch`</sub> | <sub>Core</sub> | <sub>Batch retrieve message content</sub> |
 | <sub>`send_gmail_message`</sub> | <sub>Core</sub> | <sub>Send emails</sub> |
-| <sub>`get_gmail_message_full`</sub> | <sub>Extended</sub> | <sub>Export complete untruncated message to a file/URL</sub> |
 | <sub>`get_gmail_thread_content`</sub> | <sub>Extended</sub> | <sub>Get full thread content</sub> |
 | <sub>`modify_gmail_message_labels`</sub> | <sub>Extended</sub> | <sub>Modify message labels</sub> |
 | <sub>`list_gmail_labels`</sub> | <sub>Extended</sub> | <sub>List available labels</sub> |

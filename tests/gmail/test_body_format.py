@@ -13,7 +13,6 @@ from gmail.gmail_tools import (
     _format_body_content,
     _html_to_text,
     get_gmail_message_content,
-    get_gmail_message_full,
     get_gmail_messages_content_batch,
     get_gmail_thread_content,
     get_gmail_threads_content_batch,
@@ -515,13 +514,13 @@ def stdio_storage(monkeypatch, tmp_path):
 
     monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
     monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
-    monkeypatch.setattr("core.config.get_transport_mode", lambda: "stdio")
-    monkeypatch.setattr("auth.oauth_config.is_stateless_mode", lambda: False)
+    monkeypatch.setattr(gmail_tools, "get_transport_mode", lambda: "stdio")
+    monkeypatch.setattr(gmail_tools, "is_stateless_mode", lambda: False)
     return tmp_path
 
 
 def _saved_path(result: str) -> str:
-    """Pull the on-disk path out of a stdio-mode get_gmail_message_full response."""
+    """Pull the on-disk path out of a stdio-mode full-export response."""
     marker = "📎 Saved to: "
     line = next(ln for ln in result.splitlines() if marker in ln)
     return line.split(marker, 1)[1].strip()
@@ -533,7 +532,7 @@ def _unpadded(text: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_eml_saves_complete_raw(stdio_storage):
+async def test_full_export_raw_saves_complete_eml(stdio_storage):
     # Use unpadded base64url (as Gmail actually returns) to exercise padding repair.
     raw_mime = "From: sender@example.com\r\n\r\nComplete raw MIME body!"
     service = _build_service(
@@ -543,15 +542,17 @@ async def test_get_gmail_message_full_eml_saves_complete_raw(stdio_storage):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-1",
         user_google_email="user@example.com",
-        deliver_as="eml",
+        body_format="raw",
+        full=True,
     )
 
     # Body content must NOT be inlined in the response.
     assert "Complete raw MIME body" not in result
+    assert "--- RAW MIME ---" not in result
     assert "--- FULL MESSAGE EXPORT ---" in result
     assert "Format: eml" in result
     assert "Subject: Example subject" in result
@@ -562,7 +563,7 @@ async def test_get_gmail_message_full_eml_saves_complete_raw(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_txt_uses_plaintext(stdio_storage):
+async def test_full_export_text_uses_plaintext(stdio_storage):
     service = _build_service(
         message_responses={
             ("msg-2", "metadata"): _metadata_response("msg-2"),
@@ -572,11 +573,11 @@ async def test_get_gmail_message_full_txt_uses_plaintext(stdio_storage):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-2",
         user_google_email="user@example.com",
-        deliver_as="txt",
+        full=True,
     )
 
     assert "Plain body" not in result
@@ -586,7 +587,7 @@ async def test_get_gmail_message_full_txt_uses_plaintext(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_html_saves_raw_html(stdio_storage):
+async def test_full_export_html_saves_raw_html(stdio_storage):
     service = _build_service(
         message_responses={
             ("msg-3", "metadata"): _metadata_response("msg-3"),
@@ -596,11 +597,12 @@ async def test_get_gmail_message_full_html_saves_raw_html(stdio_storage):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-3",
         user_google_email="user@example.com",
-        deliver_as="html",
+        body_format="html",
+        full=True,
     )
 
     assert "Rich HTML" not in result
@@ -609,7 +611,7 @@ async def test_get_gmail_message_full_html_saves_raw_html(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_preserves_edge_whitespace(stdio_storage):
+async def test_full_export_preserves_edge_whitespace(stdio_storage):
     """A complete export must not strip leading/trailing body content."""
     html_with_edges = "\n\n  <html><body>Body</body></html>  \n"
     text_with_edges = "\n   Leading and trailing kept.   \n"
@@ -622,28 +624,30 @@ async def test_get_gmail_message_full_preserves_edge_whitespace(stdio_storage):
         }
     )
 
-    html_result = await _unwrap(get_gmail_message_full)(
+    html_result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-ws",
         user_google_email="user@example.com",
-        deliver_as="html",
+        body_format="html",
+        full=True,
     )
     with open(_saved_path(html_result), "rb") as fh:
         assert fh.read().decode() == html_with_edges
 
-    txt_result = await _unwrap(get_gmail_message_full)(
+    text_result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-ws",
         user_google_email="user@example.com",
-        deliver_as="txt",
+        body_format="text",
+        full=True,
     )
-    with open(_saved_path(txt_result), "rb") as fh:
+    with open(_saved_path(text_result), "rb") as fh:
         assert fh.read().decode() == text_with_edges
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_does_not_truncate(stdio_storage):
-    """The whole point: full-body export never applies the 20,000-char cap."""
+async def test_full_export_does_not_truncate(stdio_storage):
+    """The whole point: full=True never applies the 20,000-char cap."""
     long_html = "<p>" + ("A" * 50000) + "</p>"
     service = _build_service(
         message_responses={
@@ -652,11 +656,12 @@ async def test_get_gmail_message_full_does_not_truncate(stdio_storage):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-4",
         user_google_email="user@example.com",
-        deliver_as="html",
+        body_format="html",
+        full=True,
     )
 
     assert "[Content truncated...]" not in result
@@ -667,15 +672,15 @@ async def test_get_gmail_message_full_does_not_truncate(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_http_returns_url(monkeypatch, tmp_path):
+async def test_full_export_http_returns_url(monkeypatch, tmp_path):
     import core.attachment_storage as attachment_storage
 
     monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
     monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
-    monkeypatch.setattr("core.config.get_transport_mode", lambda: "streamable-http")
-    monkeypatch.setattr("auth.oauth_config.is_stateless_mode", lambda: False)
+    monkeypatch.setattr(gmail_tools, "get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr(gmail_tools, "is_stateless_mode", lambda: False)
     monkeypatch.setattr(
-        attachment_storage,
+        gmail_tools,
         "get_attachment_url",
         lambda file_id: f"https://example.test/attachments/{file_id}",
     )
@@ -687,11 +692,12 @@ async def test_get_gmail_message_full_http_returns_url(monkeypatch, tmp_path):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-5",
         user_google_email="user@example.com",
-        deliver_as="eml",
+        body_format="raw",
+        full=True,
     )
 
     assert "https://example.test/attachments/" in result
@@ -699,25 +705,46 @@ async def test_get_gmail_message_full_http_returns_url(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_blocked_in_stateless_mode(monkeypatch):
-    monkeypatch.setattr("auth.oauth_config.is_stateless_mode", lambda: True)
-    service = _build_service(
-        message_responses={("msg-6", "metadata"): _metadata_response("msg-6")}
-    )
+async def test_full_export_blocked_in_stateless_mode(monkeypatch):
+    monkeypatch.setattr(gmail_tools, "is_stateless_mode", lambda: True)
+    service = _build_service(message_responses={})
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-6",
         user_google_email="user@example.com",
-        deliver_as="eml",
+        body_format="raw",
+        full=True,
     )
 
     assert "stateless mode" in result.lower()
-    assert "get_gmail_message_content" in result
+    assert "full=False" in result
+    # Bails out before spending an API call.
+    service.users.return_value.messages.return_value.get.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_empty_raw_errors(stdio_storage):
+async def test_inline_path_unaffected_by_stateless_mode(monkeypatch):
+    """full=False is pure-read and must keep working in stateless deployments."""
+    monkeypatch.setattr(gmail_tools, "is_stateless_mode", lambda: True)
+    service = _build_service(
+        message_responses={
+            ("msg-6b", "metadata"): _metadata_response("msg-6b"),
+            ("msg-6b", "full"): _message_response("msg-6b", text="Inline body"),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_content)(
+        service=service,
+        message_id="msg-6b",
+        user_google_email="user@example.com",
+    )
+
+    assert "Inline body" in result
+
+
+@pytest.mark.asyncio
+async def test_full_export_empty_raw_errors(stdio_storage):
     service = _build_service(
         message_responses={
             ("msg-7", "metadata"): _metadata_response("msg-7"),
@@ -725,11 +752,12 @@ async def test_get_gmail_message_full_empty_raw_errors(stdio_storage):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-7",
         user_google_email="user@example.com",
-        deliver_as="eml",
+        body_format="raw",
+        full=True,
     )
 
     assert result.startswith("Error:")
@@ -737,7 +765,7 @@ async def test_get_gmail_message_full_empty_raw_errors(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_no_body_errors(stdio_storage):
+async def test_full_export_no_body_errors(stdio_storage):
     service = _build_service(
         message_responses={
             ("msg-8", "metadata"): _metadata_response("msg-8"),
@@ -745,11 +773,11 @@ async def test_get_gmail_message_full_no_body_errors(stdio_storage):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-8",
         user_google_email="user@example.com",
-        deliver_as="txt",
+        full=True,
     )
 
     assert result.startswith("Error:")
@@ -757,9 +785,7 @@ async def test_get_gmail_message_full_no_body_errors(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_txt_converts_html_when_no_plaintext(
-    stdio_storage,
-):
+async def test_full_export_text_converts_html_when_no_plaintext(stdio_storage):
     service = _build_service(
         message_responses={
             ("msg-9", "metadata"): _metadata_response("msg-9"),
@@ -769,11 +795,11 @@ async def test_get_gmail_message_full_txt_converts_html_when_no_plaintext(
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-9",
         user_google_email="user@example.com",
-        deliver_as="txt",
+        full=True,
     )
 
     with open(_saved_path(result), "rb") as fh:
@@ -781,9 +807,7 @@ async def test_get_gmail_message_full_txt_converts_html_when_no_plaintext(
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_html_falls_back_to_text_and_labels_it(
-    stdio_storage,
-):
+async def test_full_export_html_falls_back_to_text_and_labels_it(stdio_storage):
     service = _build_service(
         message_responses={
             ("msg-10", "metadata"): _metadata_response("msg-10"),
@@ -793,14 +817,16 @@ async def test_get_gmail_message_full_html_falls_back_to_text_and_labels_it(
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-10",
         user_google_email="user@example.com",
-        deliver_as="html",
+        body_format="html",
+        full=True,
     )
 
     assert "No HTML body present" in result
+    assert "Format: txt" in result
     saved_path = _saved_path(result)
     assert saved_path.endswith(".txt")
     with open(saved_path, "rb") as fh:
@@ -808,7 +834,7 @@ async def test_get_gmail_message_full_html_falls_back_to_text_and_labels_it(
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_sanitizes_subject_filename(stdio_storage):
+async def test_full_export_sanitizes_subject_filename(stdio_storage):
     headers = _headers(Subject="../../etc/passwd")
     service = _build_service(
         message_responses={
@@ -817,11 +843,12 @@ async def test_get_gmail_message_full_sanitizes_subject_filename(stdio_storage):
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-11",
         user_google_email="user@example.com",
-        deliver_as="eml",
+        body_format="raw",
+        full=True,
     )
 
     saved_path = _saved_path(result)
@@ -831,7 +858,7 @@ async def test_get_gmail_message_full_sanitizes_subject_filename(stdio_storage):
 
 
 @pytest.mark.asyncio
-async def test_get_gmail_message_full_long_subject_does_not_crash(stdio_storage):
+async def test_full_export_long_subject_does_not_crash(stdio_storage):
     headers = _headers(Subject="X" * 900)
     service = _build_service(
         message_responses={
@@ -840,11 +867,12 @@ async def test_get_gmail_message_full_long_subject_does_not_crash(stdio_storage)
         }
     )
 
-    result = await _unwrap(get_gmail_message_full)(
+    result = await _unwrap(get_gmail_message_content)(
         service=service,
         message_id="msg-12",
         user_google_email="user@example.com",
-        deliver_as="eml",
+        body_format="raw",
+        full=True,
     )
 
     saved_path = _saved_path(result)

@@ -27,9 +27,15 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 from googleapiclient.errors import HttpError
 
+from auth.oauth_config import is_stateless_mode
 from auth.service_decorator import require_google_service
-from core.attachment_storage import get_attachment_storage, STORAGE_DIR
+from core.attachment_storage import (
+    get_attachment_storage,
+    get_attachment_url,
+    STORAGE_DIR,
+)
 from core.config import (
+    get_transport_mode,
     WORKSPACE_EXTERNAL_URL,
     WORKSPACE_MCP_BASE_URI,
     WORKSPACE_MCP_PORT,
@@ -319,6 +325,143 @@ def _format_message_header_lines(
         content_lines.append(f"List-Id: {list_id}")
 
     return content_lines
+
+
+async def _export_full_message(
+    service,
+    message_id: str,
+    headers: Dict[str, str],
+    body_format: Literal["text", "html", "raw"],
+) -> str:
+    """
+    Save a message's complete, untruncated content to local storage and format the
+    response as a download URL (HTTP transport) or file path (stdio transport).
+
+    The body is never included in the returned string — that is the point of the
+    export: large messages are handed off out-of-band instead of through the model
+    context, and no truncation limit applies.
+
+    Args:
+        service: Authenticated Gmail API service.
+        message_id: The message to export.
+        headers: Already-fetched message headers, used for the summary and filename.
+        body_format: "raw" saves the byte-exact RFC 5322 message as .eml,
+            "html" saves the raw HTML body, "text" saves the plaintext body.
+
+    Returns:
+        str: Header summary plus the saved file's URL or path, or an "Error:" string.
+    """
+    subject = headers.get("Subject", "message") or "message"
+    notes: List[str] = []
+
+    if body_format == "raw":
+        message_raw = await asyncio.to_thread(
+            service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="raw")
+            .execute
+        )
+        raw_data = message_raw.get("raw", "")
+        if not raw_data:
+            return "Error: message has no raw content to export."
+        padded_raw = raw_data + "=" * (-len(raw_data) % 4)
+        try:
+            content_bytes = base64.urlsafe_b64decode(padded_raw)
+        except (binascii.Error, ValueError) as exc:
+            return f"Error: failed to decode raw MIME content: {exc}"
+        mime_type = "message/rfc822"
+        extension = ".eml"
+    else:
+        message_full = await asyncio.to_thread(
+            service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="full")
+            .execute
+        )
+        bodies = _extract_message_bodies(message_full.get("payload", {}))
+        # Preserve the body exactly — the export must be complete — so use .strip()
+        # only to test for emptiness, never to trim the content that gets saved.
+        text_body = bodies.get("text", "")
+        html_body = bodies.get("html", "")
+
+        if body_format == "html":
+            if html_body.strip():
+                content_str = html_body
+                mime_type = "text/html"
+                extension = ".html"
+            elif text_body.strip():
+                # No HTML part; fall back to plaintext and label it honestly.
+                content_str = text_body
+                mime_type = "text/plain"
+                extension = ".txt"
+                notes.append(
+                    "No HTML body present; exported the plaintext body instead."
+                )
+            else:
+                content_str = ""
+                mime_type = "text/html"
+                extension = ".html"
+        else:  # text
+            if text_body.strip():
+                content_str = text_body
+            elif html_body.strip():
+                content_str = _html_to_text(html_body)
+            else:
+                content_str = ""
+            mime_type = "text/plain"
+            extension = ".txt"
+
+        if not content_str.strip():
+            return "Error: message has no readable body content to export."
+        content_bytes = content_str.encode("utf-8")
+
+    # Encode + write on a worker thread so a large export doesn't block the event loop.
+    # Cap the sender-controlled subject so a pathologically long Subject can't overflow
+    # the filesystem's filename limit, and surface a clean error if the write fails.
+    storage = get_attachment_storage()
+
+    def _save_export():
+        return storage.save_attachment(
+            base64_data=base64.urlsafe_b64encode(content_bytes).decode("ascii"),
+            filename=f"{subject[:80]}{extension}",
+            mime_type=mime_type,
+        )
+
+    try:
+        saved = await asyncio.to_thread(_save_export)
+    except OSError as exc:
+        logger.error(f"[get_gmail_message_content] Failed to save message: {exc}")
+        return f"Error: failed to save message to storage: {exc}"
+
+    size_bytes = len(content_bytes)
+    size_kb = size_bytes / 1024
+
+    result_lines = _format_message_header_lines(headers)
+    result_lines.append("\n--- FULL MESSAGE EXPORT ---")
+    result_lines.append(f"Format: {extension.lstrip('.')}")
+    result_lines.append(f"Size: {size_kb:.1f} KB ({size_bytes} bytes)")
+    result_lines.append(f"Saved filename: {Path(saved.path).name}")
+    for note in notes:
+        result_lines.append(f"Note: {note}")
+
+    if get_transport_mode() == "stdio":
+        result_lines.append(f"\n📎 Saved to: {saved.path}")
+        result_lines.append(
+            "\nThe full message has been written to disk and can be read directly "
+            "from the file path (its content is NOT included above)."
+        )
+    else:
+        result_lines.append(f"\n📎 Download URL: {get_attachment_url(saved.file_id)}")
+        result_lines.append(
+            "\nFetch the full message from the URL above (content is NOT included "
+            "in this response). The file will expire after 1 hour."
+        )
+
+    logger.info(
+        f"[get_gmail_message_content] Exported {size_kb:.1f} KB "
+        f"({extension.lstrip('.')}) to {saved.path}"
+    )
+    return "\n".join(result_lines)
 
 
 def _build_message_get_request(
@@ -1426,9 +1569,26 @@ async def get_gmail_message_content(
             ),
         ),
     ] = "text",
+    full: Annotated[
+        bool,
+        Field(
+            description=(
+                "When True, save the COMPLETE untruncated message to local storage and "
+                "return a download URL/file path instead of the body text. Use for "
+                "messages large enough to hit the truncation limit, or when byte-exact "
+                "fidelity is needed (pair with body_format='raw' for a .eml export). "
+                "Requires persistent storage, so it is unavailable in stateless mode."
+            ),
+        ),
+    ] = False,
 ) -> str:
     """
     Retrieves the full content (subject, sender, recipients, body) of a specific Gmail message.
+
+    Bodies are returned inline and truncated at 20,000 characters. Set full=True to
+    export the complete, untruncated message to disk instead: the response then carries
+    a short-lived download URL (HTTP transport) or file path (stdio transport) rather
+    than the body, so large messages never stream through the model context.
 
     Args:
         message_id (str): The unique ID of the Gmail message to retrieve.
@@ -1437,15 +1597,32 @@ async def get_gmail_message_content(
             "text" (default) returns plaintext (HTML converted to text as fallback).
             "html" returns the raw HTML body as-is without conversion.
             "raw" fetches the full raw MIME message and returns the base64url-decoded content.
+        full (bool): When True, write the untruncated message to local storage and
+            return its URL/path instead of the body. body_format selects the exported
+            file type: "raw" saves the byte-exact RFC 5322 message as .eml, "html"
+            saves the raw HTML body, "text" saves the plaintext body. The "html"/"text"
+            exports decode as UTF-8 and drop undecodable bytes, so prefer "raw" when
+            byte-exact fidelity matters. Unavailable in stateless mode.
 
     Returns:
-        str: The message details including subject, sender, date, Message-ID, recipients (To, Cc), and body content.
+        str: The message details including subject, sender, date, Message-ID, recipients
+            (To, Cc), and body content — or, when full=True, the saved file's download
+            URL or path in place of the body.
     """
     logger.info(
-        f"[get_gmail_message_content] Invoked. Message ID: '{message_id}', Email: '{user_google_email}'"
+        f"[get_gmail_message_content] Invoked. Message ID: '{message_id}', "
+        f"Email: '{user_google_email}', body_format='{body_format}', full={full}"
     )
 
-    logger.info(f"[get_gmail_message_content] Using service for: {user_google_email}")
+    # A full export exists to write the message to disk; stateless deployments have no
+    # persistent storage (and the callback-served URL is per-process), so there is
+    # nothing sensible to return. Steer the caller back to the inline path.
+    if full and is_stateless_mode():
+        return (
+            "Error: full=True is unavailable in stateless mode (no persistent file "
+            "storage). Retry with full=False, which returns the body inline truncated "
+            f"at {HTML_BODY_TRUNCATE_LIMIT:,} characters."
+        )
 
     # Fetch message metadata first to get headers
     message_metadata = await asyncio.to_thread(
@@ -1463,6 +1640,10 @@ async def get_gmail_message_content(
     headers = _extract_headers(
         message_metadata.get("payload", {}), GMAIL_METADATA_HEADERS
     )
+
+    # Full export: hand back a file reference instead of the (truncated) body.
+    if full:
+        return await _export_full_message(service, message_id, headers, body_format)
 
     # Handle raw format separately - fetch with format="raw" and return decoded MIME
     if body_format == "raw":
@@ -1517,208 +1698,6 @@ async def get_gmail_message_content(
             )
 
     return "\n".join(content_lines)
-
-
-@server.tool(
-    title="Get Gmail Message Full",
-    annotations=ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-@handle_http_errors("get_gmail_message_full", is_read_only=True, service_type="gmail")
-@require_google_service("gmail", "gmail_read")
-async def get_gmail_message_full(
-    service,
-    message_id: str,
-    user_google_email: str,
-    deliver_as: Annotated[
-        Literal["eml", "html", "txt"],
-        Field(
-            description=(
-                "Output format for the saved file. "
-                "'eml' (default) saves the complete raw RFC 5322 message (all headers, "
-                "parts, and inline attachments). "
-                "'html' saves the raw HTML body. "
-                "'txt' saves the plaintext body (HTML converted to text as fallback)."
-            ),
-        ),
-    ] = "eml",
-) -> str:
-    """
-    Retrieves the COMPLETE, untruncated content of a Gmail message and saves it to
-    local storage, returning a URL/path instead of the body text.
-
-    Unlike get_gmail_message_content (which caps body output at 20,000 chars and returns
-    it inline), this tool never truncates and never streams the body through the model
-    context. It writes the full message to disk and hands back a short-lived download URL
-    (HTTP transport) or file path (stdio transport), so large emails can be fetched and
-    processed out-of-band.
-
-    For byte-exact fidelity prefer deliver_as="eml": it is the raw message as Gmail stores
-    it. The "html"/"txt" formats decode the body as UTF-8 and drop undecodable bytes, so
-    they may not be byte-identical for messages in other charsets.
-
-    This tool writes to disk and is therefore unavailable in stateless mode.
-
-    Args:
-        message_id (str): The unique ID of the Gmail message to retrieve.
-        user_google_email (str): The user's Google email address. Required.
-        deliver_as (Literal["eml", "html", "txt"]): Output format for the saved file.
-            "eml" (default) saves the complete raw RFC 5322 message.
-            "html" saves the raw HTML body. "txt" saves the plaintext body.
-
-    Returns:
-        str: A summary (subject, sender, recipients, size) plus the download URL or file
-            path for the saved file. The message body itself is NOT included in the response.
-    """
-    from auth.oauth_config import is_stateless_mode
-    from core.attachment_storage import get_attachment_storage, get_attachment_url
-    from core.config import get_transport_mode
-
-    logger.info(
-        f"[get_gmail_message_full] Invoked. Message ID: '{message_id}', "
-        f"Email: '{user_google_email}', deliver_as='{deliver_as}'"
-    )
-
-    # This tool exists to write the full message to disk; stateless deployments
-    # have no persistent storage (and the callback-served URL is per-process), so
-    # there is nothing sensible to return. Steer callers to the inline tool.
-    if is_stateless_mode():
-        return (
-            "Error: get_gmail_message_full is unavailable in stateless mode "
-            "(no persistent file storage). Use get_gmail_message_content instead "
-            "(note it truncates bodies at 20,000 characters)."
-        )
-
-    # Fetch headers first for the summary.
-    message_metadata = await asyncio.to_thread(
-        service.users()
-        .messages()
-        .get(
-            userId="me",
-            id=message_id,
-            format="metadata",
-            metadataHeaders=GMAIL_METADATA_HEADERS,
-        )
-        .execute
-    )
-    headers = _extract_headers(
-        message_metadata.get("payload", {}), GMAIL_METADATA_HEADERS
-    )
-    subject = headers.get("Subject", "message") or "message"
-
-    notes: List[str] = []
-
-    if deliver_as == "eml":
-        message_raw = await asyncio.to_thread(
-            service.users()
-            .messages()
-            .get(userId="me", id=message_id, format="raw")
-            .execute
-        )
-        raw_data = message_raw.get("raw", "")
-        if not raw_data:
-            return "Error: message has no raw content to export."
-        padded_raw = raw_data + "=" * (-len(raw_data) % 4)
-        try:
-            content_bytes = base64.urlsafe_b64decode(padded_raw)
-        except (binascii.Error, ValueError) as exc:
-            return f"Error: failed to decode raw MIME content: {exc}"
-        mime_type = "message/rfc822"
-        extension = ".eml"
-    else:
-        message_full = await asyncio.to_thread(
-            service.users()
-            .messages()
-            .get(userId="me", id=message_id, format="full")
-            .execute
-        )
-        bodies = _extract_message_bodies(message_full.get("payload", {}))
-        # Preserve the body exactly — the export must be complete — so use .strip()
-        # only to test for emptiness, never to trim the content that gets saved.
-        text_body = bodies.get("text", "")
-        html_body = bodies.get("html", "")
-
-        if deliver_as == "html":
-            if html_body.strip():
-                content_str = html_body
-                mime_type = "text/html"
-                extension = ".html"
-            elif text_body.strip():
-                # No HTML part; fall back to plaintext and label it honestly.
-                content_str = text_body
-                mime_type = "text/plain"
-                extension = ".txt"
-                notes.append(
-                    "No HTML body present; exported the plaintext body instead."
-                )
-            else:
-                content_str = ""
-                mime_type = "text/html"
-                extension = ".html"
-        else:  # txt
-            if text_body.strip():
-                content_str = text_body
-            elif html_body.strip():
-                content_str = _html_to_text(html_body)
-            else:
-                content_str = ""
-            mime_type = "text/plain"
-            extension = ".txt"
-
-        if not content_str.strip():
-            return "Error: message has no readable body content to export."
-        content_bytes = content_str.encode("utf-8")
-
-    # Encode + write on a worker thread so a large export doesn't block the event loop.
-    # Cap the sender-controlled subject so a pathologically long Subject can't overflow
-    # the filesystem's filename limit, and surface a clean error if the write fails.
-    storage = get_attachment_storage()
-
-    def _save_export():
-        return storage.save_attachment(
-            base64_data=base64.urlsafe_b64encode(content_bytes).decode("ascii"),
-            filename=f"{subject[:80]}{extension}",
-            mime_type=mime_type,
-        )
-
-    try:
-        saved = await asyncio.to_thread(_save_export)
-    except OSError as exc:
-        logger.error(f"[get_gmail_message_full] Failed to save message: {exc}")
-        return f"Error: failed to save message to storage: {exc}"
-    size_bytes = len(content_bytes)
-    size_kb = size_bytes / 1024
-
-    result_lines = _format_message_header_lines(headers)
-    result_lines.append("\n--- FULL MESSAGE EXPORT ---")
-    result_lines.append(f"Format: {deliver_as}")
-    result_lines.append(f"Size: {size_kb:.1f} KB ({size_bytes} bytes)")
-    result_lines.append(f"Saved filename: {Path(saved.path).name}")
-    for note in notes:
-        result_lines.append(f"Note: {note}")
-
-    if get_transport_mode() == "stdio":
-        result_lines.append(f"\n📎 Saved to: {saved.path}")
-        result_lines.append(
-            "\nThe full message has been written to disk and can be read directly "
-            "from the file path (its content is NOT included above)."
-        )
-    else:
-        download_url = get_attachment_url(saved.file_id)
-        result_lines.append(f"\n📎 Download URL: {download_url}")
-        result_lines.append(
-            "\nFetch the full message from the URL above (content is NOT included "
-            "in this response). The file will expire after 1 hour."
-        )
-
-    logger.info(
-        f"[get_gmail_message_full] Saved {size_kb:.1f} KB ({deliver_as}) to {saved.path}"
-    )
-    return "\n".join(result_lines)
 
 
 @server.tool(
