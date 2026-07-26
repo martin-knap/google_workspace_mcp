@@ -334,12 +334,13 @@ async def _export_full_message(
     body_format: Literal["text", "html", "raw"],
 ) -> str:
     """
-    Save a message's complete, untruncated content to local storage and format the
-    response as a download URL (HTTP transport) or file path (stdio transport).
+    Return a message's complete, untruncated content: saved to local storage and
+    referenced by download URL (HTTP transport) or file path (stdio transport), or —
+    in stateless mode, where there is no storage — inlined in the response.
 
-    The body is never included in the returned string — that is the point of the
-    export: large messages are handed off out-of-band instead of through the model
-    context, and no truncation limit applies.
+    Whenever a file is written the body is kept out of the returned string, which is
+    the point of the export: large messages are handed off out-of-band instead of
+    through the model context. Either way no truncation limit applies.
 
     Args:
         service: Authenticated Gmail API service.
@@ -349,7 +350,8 @@ async def _export_full_message(
             "html" saves the raw HTML body, "text" saves the plaintext body.
 
     Returns:
-        str: Header summary plus the saved file's URL or path, or an "Error:" string.
+        str: Header summary plus the saved file's URL or path (or the inline body in
+            stateless mode), or an "Error:" string.
     """
     subject = headers.get("Subject", "message") or "message"
     notes: List[str] = []
@@ -415,6 +417,37 @@ async def _export_full_message(
             return "Error: message has no readable body content to export."
         content_bytes = content_str.encode("utf-8")
 
+    # Stateless deployments have no persistent storage to hand a file reference off
+    # from, but the guarantee callers actually want is "complete and untruncated".
+    # Inline delivery satisfies that; it only costs model context.
+    stateless = is_stateless_mode()
+
+    size_bytes = len(content_bytes)
+    size_kb = size_bytes / 1024
+    result_lines = _format_message_header_lines(headers)
+    result_lines.append(
+        "\n--- FULL MESSAGE ---" if stateless else "\n--- FULL MESSAGE EXPORT ---"
+    )
+    result_lines.append(f"Format: {extension.lstrip('.')}")
+    result_lines.append(f"Size: {size_kb:.1f} KB ({size_bytes} bytes)")
+
+    if stateless:
+        for note in notes:
+            result_lines.append(f"Note: {note}")
+        result_lines.append(
+            "\nStateless mode: no file storage available, so the complete message is "
+            "included inline below instead of as a download URL. It is NOT truncated."
+        )
+        result_lines.append(
+            "\n--- BODY (COMPLETE, NOT TRUNCATED) ---\n"
+            f"{content_bytes.decode('utf-8', errors='replace')}"
+        )
+        logger.info(
+            f"[get_gmail_message_content] Returned {size_kb:.1f} KB "
+            f"({extension.lstrip('.')}) inline (stateless mode)"
+        )
+        return "\n".join(result_lines)
+
     # Encode + write on a worker thread so a large export doesn't block the event loop.
     # Cap the sender-controlled subject so a pathologically long Subject can't overflow
     # the filesystem's filename limit, and surface a clean error if the write fails.
@@ -433,13 +466,6 @@ async def _export_full_message(
         logger.error(f"[get_gmail_message_content] Failed to save message: {exc}")
         return f"Error: failed to save message to storage: {exc}"
 
-    size_bytes = len(content_bytes)
-    size_kb = size_bytes / 1024
-
-    result_lines = _format_message_header_lines(headers)
-    result_lines.append("\n--- FULL MESSAGE EXPORT ---")
-    result_lines.append(f"Format: {extension.lstrip('.')}")
-    result_lines.append(f"Size: {size_kb:.1f} KB ({size_bytes} bytes)")
     result_lines.append(f"Saved filename: {Path(saved.path).name}")
     for note in notes:
         result_lines.append(f"Note: {note}")
@@ -1573,11 +1599,12 @@ async def get_gmail_message_content(
         bool,
         Field(
             description=(
-                "When True, save the COMPLETE untruncated message to local storage and "
-                "return a download URL/file path instead of the body text. Use for "
-                "messages large enough to hit the truncation limit, or when byte-exact "
-                "fidelity is needed (pair with body_format='raw' for a .eml export). "
-                "Requires persistent storage, so it is unavailable in stateless mode."
+                "When True, return the COMPLETE untruncated message: saved to local "
+                "storage and referenced by download URL/file path instead of the body "
+                "text, or inlined in the response when the server has no file storage "
+                "(stateless mode). Use for messages large enough to hit the truncation "
+                "limit, or when byte-exact fidelity is needed (pair with "
+                "body_format='raw' for a .eml export)."
             ),
         ),
     ] = False,
@@ -1586,9 +1613,11 @@ async def get_gmail_message_content(
     Retrieves the full content (subject, sender, recipients, body) of a specific Gmail message.
 
     Bodies are returned inline and truncated at 20,000 characters. Set full=True to
-    export the complete, untruncated message to disk instead: the response then carries
-    a short-lived download URL (HTTP transport) or file path (stdio transport) rather
-    than the body, so large messages never stream through the model context.
+    get the complete, untruncated message instead: it is exported to disk and the
+    response carries a short-lived download URL (HTTP transport) or file path (stdio
+    transport) rather than the body, so large messages never stream through the model
+    context. Stateless deployments have no file storage, so there full=True returns the
+    untruncated body inline.
 
     Args:
         message_id (str): The unique ID of the Gmail message to retrieve.
@@ -1602,27 +1631,19 @@ async def get_gmail_message_content(
             file type: "raw" saves the byte-exact RFC 5322 message as .eml, "html"
             saves the raw HTML body, "text" saves the plaintext body. The "html"/"text"
             exports decode as UTF-8 and drop undecodable bytes, so prefer "raw" when
-            byte-exact fidelity matters. Unavailable in stateless mode.
+            byte-exact fidelity matters. In stateless mode there is no storage to write
+            to, so the untruncated content is returned inline instead.
 
     Returns:
         str: The message details including subject, sender, date, Message-ID, recipients
             (To, Cc), and body content — or, when full=True, the saved file's download
-            URL or path in place of the body.
+            URL or path in place of the body (the untruncated body itself in stateless
+            mode).
     """
     logger.info(
         f"[get_gmail_message_content] Invoked. Message ID: '{message_id}', "
         f"Email: '{user_google_email}', body_format='{body_format}', full={full}"
     )
-
-    # A full export exists to write the message to disk; stateless deployments have no
-    # persistent storage (and the callback-served URL is per-process), so there is
-    # nothing sensible to return. Steer the caller back to the inline path.
-    if full and is_stateless_mode():
-        return (
-            "Error: full=True is unavailable in stateless mode (no persistent file "
-            "storage). Retry with full=False, which returns the body inline truncated "
-            f"at {HTML_BODY_TRUNCATE_LIMIT:,} characters."
-        )
 
     # Fetch message metadata first to get headers
     message_metadata = await asyncio.to_thread(

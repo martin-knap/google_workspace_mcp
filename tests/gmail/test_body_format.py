@@ -705,9 +705,16 @@ async def test_full_export_http_returns_url(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_full_export_blocked_in_stateless_mode(monkeypatch):
+async def test_full_export_inlines_content_in_stateless_mode(monkeypatch):
+    """Without file storage, full=True still delivers the complete message — inline."""
     monkeypatch.setattr(gmail_tools, "is_stateless_mode", lambda: True)
-    service = _build_service(message_responses={})
+    raw_mime = "From: sender@example.com\r\n\r\nComplete raw MIME body!"
+    service = _build_service(
+        message_responses={
+            ("msg-6", "metadata"): _metadata_response("msg-6"),
+            ("msg-6", "raw"): {"raw": _unpadded(raw_mime)},
+        }
+    )
 
     result = await _unwrap(get_gmail_message_content)(
         service=service,
@@ -717,10 +724,36 @@ async def test_full_export_blocked_in_stateless_mode(monkeypatch):
         full=True,
     )
 
-    assert "stateless mode" in result.lower()
-    assert "full=False" in result
-    # Bails out before spending an API call.
-    service.users.return_value.messages.return_value.get.assert_not_called()
+    assert "--- BODY (COMPLETE, NOT TRUNCATED) ---" in result
+    assert raw_mime in result
+    assert "Format: eml" in result
+    assert "Subject: Example subject" in result
+    # No file was written, so nothing to point at.
+    assert "Saved to:" not in result
+    assert "Download URL:" not in result
+
+
+@pytest.mark.asyncio
+async def test_full_inline_in_stateless_mode_does_not_truncate(monkeypatch):
+    monkeypatch.setattr(gmail_tools, "is_stateless_mode", lambda: True)
+    long_html = "<p>" + ("x" * 30000) + "</p>"
+    service = _build_service(
+        message_responses={
+            ("msg-6c", "metadata"): _metadata_response("msg-6c"),
+            ("msg-6c", "full"): _message_response("msg-6c", text="", html=long_html),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_content)(
+        service=service,
+        message_id="msg-6c",
+        user_google_email="user@example.com",
+        body_format="html",
+        full=True,
+    )
+
+    assert long_html in result
+    assert "[Content truncated...]" not in result
 
 
 @pytest.mark.asyncio
