@@ -19,11 +19,12 @@ MAX_GRID_METADATA_CELLS = 5000
 
 A1_PART_REGEX = re.compile(r"^([A-Za-z]*)(\d*)$")
 SHEET_TITLE_SAFE_RE = re.compile(r"^[A-Za-z0-9_]+$")
+COLUMN_LETTER_REGEX = re.compile(r"^[A-Za-z]+$")
 
 
 def _column_to_index(column: str) -> Optional[int]:
     """Convert column letters (A, B, AA) to zero-based index."""
-    if not column:
+    if not column or not COLUMN_LETTER_REGEX.fullmatch(column):
         return None
     result = 0
     for char in column.upper():
@@ -39,7 +40,7 @@ def _parse_a1_part(
     Supports anchors like '$A$1' by stripping the dollar signs.
     """
     clean_part = part.replace("$", "")
-    match = pattern.match(clean_part)
+    match = pattern.fullmatch(clean_part)
     if not match:
         raise UserInputError(f"Invalid A1 range part: '{part}'.")
     col_letters, row_digits = match.groups()
@@ -172,7 +173,7 @@ def _quote_sheet_title_for_a1(sheet_title: str) -> str:
     If the sheet title contains special characters or spaces, it is wrapped in single quotes.
     Any single quotes in the title are escaped by doubling them, as required by Google Sheets.
     """
-    if SHEET_TITLE_SAFE_RE.match(sheet_title or ""):
+    if SHEET_TITLE_SAFE_RE.fullmatch(sheet_title or ""):
         return sheet_title
     escaped = (sheet_title or "").replace("'", "''")
     return f"'{escaped}'"
