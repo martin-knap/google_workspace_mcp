@@ -2861,10 +2861,7 @@ def _format_thread_content(
 
     # Extract thread subject from the first message
     first_message = messages[0]
-    first_headers = {
-        h["name"]: h["value"]
-        for h in first_message.get("payload", {}).get("headers", [])
-    }
+    first_headers = _extract_headers(first_message.get("payload", {}), ["Subject"])
     thread_subject = first_headers.get("Subject", "(no subject)")
 
     # Build the thread content

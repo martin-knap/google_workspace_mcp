@@ -140,6 +140,26 @@ async def test_recipient_headers_are_complete_in_content_and_analysis():
     )
 
 
+@pytest.mark.parametrize("header_name", ["subject", "sUbJeCt"])
+@pytest.mark.asyncio
+async def test_thread_subject_header_is_case_insensitive(header_name):
+    thread = _fake_thread_response()
+    thread["messages"][0]["payload"]["headers"][-1]["name"] = header_name
+    service = _build_mock_service(thread)
+
+    result = await _unwrap(get_gmail_thread_content)(
+        service=service,
+        thread_id="t1",
+        user_google_email="alex@alexreynolds.com",
+    )
+
+    assert result.splitlines()[:3] == [
+        "Thread ID: t1",
+        "Subject: Test thread",
+        "Messages: 2",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_analysis_keys_match_helper_contract():
     """The analysis dict matches _analyze_thread_ownership_impl's documented shape."""
