@@ -152,7 +152,7 @@ class ExternalOAuthProvider(GoogleProvider):
         # For JWT tokens, use parent class implementation
         return await super().verify_token(token)
 
-    def get_routes(self, mcp_path: Optional[str] = None) -> list[Route]:
+    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
         """
         Get OAuth routes for external provider mode.
 
