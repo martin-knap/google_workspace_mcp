@@ -338,7 +338,23 @@ class TestHeaderFooterGuardrails:
                 {
                     "tabProperties": {"tabId": "t.0"},
                     "documentTab": {
-                        "body": {"content": []},
+                        "body": {
+                            "content": [
+                                {
+                                    "startIndex": 1,
+                                    "endIndex": 19,
+                                    "paragraph": {
+                                        "elements": [
+                                            {
+                                                "textRun": {
+                                                    "content": "Tabbed body text"
+                                                }
+                                            }
+                                        ]
+                                    },
+                                }
+                            ]
+                        },
                         "headers": {
                             "hdr-tab-1": {
                                 "content": [
@@ -386,6 +402,10 @@ class TestHeaderFooterGuardrails:
         payload = result.split("\n\n", 1)[1].rsplit("\n\nLink:", 1)[0]
         parsed = json.loads(payload)
 
+        assert parsed["total_length"] == 19
+        assert parsed["statistics"]["elements"] == 1
+        assert parsed["statistics"]["paragraphs"] == 1
+        assert parsed["elements"][0]["text_preview"] == "Tabbed body text"
         assert parsed["headers"][0]["segment_id"] == "hdr-tab-1"
         assert parsed["headers"][0]["content_preview"] == "Hello"
         assert parsed["footers"][0]["segment_id"] == "ftr-tab-1"
