@@ -229,3 +229,112 @@ def test_exporter_configuration_error_never_prevents_startup(
         assert telemetry.configure_telemetry() is False
 
     assert "certificate file is unreadable" in caplog.text
+
+
+class _FakeSpan:
+    def __init__(self, recording: bool = True) -> None:
+        self._recording = recording
+        self.attributes: dict[str, object] = {}
+
+    def is_recording(self) -> bool:
+        return self._recording
+
+    def set_attribute(self, key: str, value: object) -> None:
+        self.attributes[key] = value
+
+
+def _patch_current_span(monkeypatch: pytest.MonkeyPatch, span: _FakeSpan) -> None:
+    from opentelemetry import trace
+
+    monkeypatch.setattr(trace, "get_current_span", lambda: span)
+
+
+def test_record_authenticated_user_sets_email_when_opted_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(telemetry.USER_EMAIL_ATTRIBUTE_ENV, "true")
+    span = _FakeSpan()
+    _patch_current_span(monkeypatch, span)
+
+    telemetry.record_authenticated_user("alice@example.com")
+
+    assert span.attributes == {"user.email": "alice@example.com"}
+
+
+@pytest.mark.parametrize("value", ("1", "yes", "on", "TRUE"))
+def test_record_authenticated_user_accepts_truthy_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv(telemetry.USER_EMAIL_ATTRIBUTE_ENV, value)
+    span = _FakeSpan()
+    _patch_current_span(monkeypatch, span)
+
+    telemetry.record_authenticated_user("bob@example.com")
+
+    assert span.attributes == {"user.email": "bob@example.com"}
+
+
+def test_record_authenticated_user_is_noop_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(telemetry.USER_EMAIL_ATTRIBUTE_ENV, raising=False)
+    span = _FakeSpan()
+    _patch_current_span(monkeypatch, span)
+
+    telemetry.record_authenticated_user("alice@example.com")
+
+    assert span.attributes == {}
+
+
+@pytest.mark.parametrize("value", ("", "false", "0", "no"))
+def test_record_authenticated_user_ignores_falsy_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv(telemetry.USER_EMAIL_ATTRIBUTE_ENV, value)
+    span = _FakeSpan()
+    _patch_current_span(monkeypatch, span)
+
+    telemetry.record_authenticated_user("alice@example.com")
+
+    assert span.attributes == {}
+
+
+@pytest.mark.parametrize("email", (None, ""))
+def test_record_authenticated_user_skips_empty_email(
+    monkeypatch: pytest.MonkeyPatch, email: object
+) -> None:
+    monkeypatch.setenv(telemetry.USER_EMAIL_ATTRIBUTE_ENV, "true")
+    span = _FakeSpan()
+    _patch_current_span(monkeypatch, span)
+
+    telemetry.record_authenticated_user(email)  # type: ignore[arg-type]
+
+    assert span.attributes == {}
+
+
+def test_record_authenticated_user_skips_non_recording_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(telemetry.USER_EMAIL_ATTRIBUTE_ENV, "true")
+    span = _FakeSpan(recording=False)
+    _patch_current_span(monkeypatch, span)
+
+    telemetry.record_authenticated_user("alice@example.com")
+
+    assert span.attributes == {}
+
+
+def test_record_authenticated_user_never_raises_without_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(telemetry.USER_EMAIL_ATTRIBUTE_ENV, "true")
+    real_import = builtins.__import__
+
+    def import_without_otel(name, *args, **kwargs):
+        if name == "opentelemetry" or name.startswith("opentelemetry."):
+            raise ImportError("simulated missing optional dependency")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_otel)
+
+    telemetry.record_authenticated_user("alice@example.com")  # must not raise
