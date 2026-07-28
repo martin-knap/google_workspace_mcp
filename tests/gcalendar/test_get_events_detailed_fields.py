@@ -41,6 +41,21 @@ RECURRING_INSTANCE = {
     "status": "confirmed",
 }
 
+# Every optional field set to a value that renders, so parity can be asserted
+# on all four at once. RECURRING_INSTANCE deliberately can't do that: its
+# eventType is absent and its status is the suppressed default.
+ALL_FIELDS_INSTANCE = {
+    "id": "ooo1",
+    "summary": "Out of office",
+    "start": {"date": "2026-04-06"},
+    "end": {"date": "2026-04-07"},
+    "htmlLink": "https://calendar.google.com/event?eid=ooo1",
+    "colorId": "5",
+    "recurringEventId": "ooo",
+    "eventType": "outOfOffice",
+    "status": "tentative",
+}
+
 
 def _mock_service(items):
     mock_service = Mock()
@@ -237,32 +252,25 @@ async def test_non_confirmed_status_is_surfaced(status):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "line",
-    ["Color ID: 8", "Recurring Event ID: evt123"],
+    "item,line",
+    [
+        (RECURRING_INSTANCE, "Color ID: 8"),
+        (RECURRING_INSTANCE, "Recurring Event ID: evt123"),
+        (ALL_FIELDS_INSTANCE, "Color ID: 5"),
+        (ALL_FIELDS_INSTANCE, "Recurring Event ID: ooo"),
+        (ALL_FIELDS_INSTANCE, "Event Type: outOfOffice"),
+        (ALL_FIELDS_INSTANCE, "Status: tentative"),
+    ],
 )
-async def test_both_branches_emit_the_same_metadata(line):
-    """The two formatters must agree — that disagreement is the bug being fixed."""
-    assert line in await _ranged_detail(RECURRING_INSTANCE)
-    assert line in await _single_detail(RECURRING_INSTANCE)
+async def test_both_branches_emit_the_same_metadata(item, line):
+    """The two formatters must agree. Their disagreement is the bug being fixed.
 
-
-@pytest.mark.asyncio
-async def test_single_event_branch_surfaces_non_default_event_type():
-    """An event_id lookup of an outOfOffice entry must say so."""
-    item = {
-        "id": "ooo1",
-        "summary": "Out of office",
-        "start": {"date": "2026-04-06"},
-        "end": {"date": "2026-04-07"},
-        "htmlLink": "https://calendar.google.com/event?eid=ooo1",
-        "eventType": "outOfOffice",
-        "status": "tentative",
-    }
-
-    result = await _single_detail(item)
-
-    assert "Event Type: outOfOffice" in result
-    assert "Status: tentative" in result
+    Covers all four fields, so a field added to one branch and not the other
+    fails here rather than slipping through on the fields that happen to be
+    parameterized.
+    """
+    assert line in await _ranged_detail(item)
+    assert line in await _single_detail(item)
 
 
 @pytest.mark.asyncio
