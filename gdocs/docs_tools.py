@@ -1462,6 +1462,8 @@ async def inspect_doc_structure(
 
         first_tab_doc = first_document_tab(doc.get("tabs", []))
         if first_tab_doc:
+            analysis_doc["body"] = first_tab_doc.get("body", {})
+            analysis_doc["namedRanges"] = first_tab_doc.get("namedRanges", {})
             analysis_doc["headers"] = first_tab_doc.get("headers", {})
             analysis_doc["footers"] = first_tab_doc.get("footers", {})
             analysis_doc["documentStyle"] = first_tab_doc.get("documentStyle", {})
