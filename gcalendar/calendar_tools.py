@@ -475,6 +475,9 @@ async def get_events(
         description = item.get("description", "No Description")
         location = item.get("location", "No Location")
         color_id = item.get("colorId", "None")
+        recurring_event_id = item.get("recurringEventId")
+        event_type = item.get("eventType")
+        status = item.get("status")
         attendees = item.get("attendees", [])
         attendee_emails = (
             ", ".join([a.get("email", "") for a in attendees]) if attendees else "None"
@@ -495,6 +498,12 @@ async def get_events(
             f"- Location: {location}\n"
             f"- Color ID: {color_id}\n"
         )
+        if recurring_event_id:
+            event_details += f"- Recurring Event ID: {recurring_event_id}\n"
+        if event_type and event_type != "default":
+            event_details += f"- Event Type: {event_type}\n"
+        if status and status != "confirmed":
+            event_details += f"- Status: {status}\n"
         if creator_str:
             event_details += f"- Creator: {creator_str}\n"
         if organizer_str:
