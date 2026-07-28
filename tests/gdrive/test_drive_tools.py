@@ -15,7 +15,10 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from gdrive.drive_helpers import build_drive_list_params
+from gdrive.drive_helpers import (
+    build_drive_list_params,
+    has_explicit_trashed_clause,
+)
 from gdrive.drive_tools import (
     create_drive_file,
     get_drive_file_permissions,
@@ -2170,3 +2173,41 @@ async def test_search_drive_files_trashed_filter_composes_with_file_type():
         "((fullText contains 'budget') and trashed=false) "
         "and mimeType = 'application/pdf'"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "name contains 'trashed=false'",
+        "name contains 'trashed = true' and modifiedTime > '2024-01-01'",
+        'name contains "trashed=true"',
+    ],
+)
+async def test_search_drive_files_quoted_trashed_text_is_not_a_clause(query):
+    """A `trashed` predicate inside a quoted value is data, not a filter."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query=query,
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == f"({query}) and trashed=false"
+
+
+def test_has_explicit_trashed_clause_ignores_quoted_literals():
+    """The detector sees real predicates and skips quoted look-alikes."""
+    assert has_explicit_trashed_clause("trashed=true")
+    assert has_explicit_trashed_clause("name contains 'report' and trashed = false")
+    assert has_explicit_trashed_clause("TRASHED=FALSE and name contains 'x'")
+    # A real clause still counts even when a quoted look-alike sits beside it.
+    assert has_explicit_trashed_clause("trashed=true and name contains 'trashed=false'")
+
+    assert not has_explicit_trashed_clause("name contains 'trashed=false'")
+    assert not has_explicit_trashed_clause('name contains "trashed=true"')
+    assert not has_explicit_trashed_clause(r"name contains 'it\'s trashed=true'")
+    assert not has_explicit_trashed_clause("budget")

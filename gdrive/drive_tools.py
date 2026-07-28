@@ -44,7 +44,6 @@ from gdrive.drive_helpers import (
     GOOGLE_SHEETS_MIME_TYPE,
     GOOGLE_SLIDES_IMPORT_FORMATS,
     GOOGLE_SLIDES_MIME_TYPE,
-    TRASHED_CLAUSE_PATTERN,
     UPLOAD_CHUNK_SIZE_BYTES,
     _resolve_import_media,
     _stream_url_with_validation,
@@ -52,6 +51,7 @@ from gdrive.drive_helpers import (
     check_public_link_permission,
     format_permission_info,
     get_drive_image_url,
+    has_explicit_trashed_clause,
     resolve_drive_item,
     resolve_file_type_mime,
     resolve_folder_id,
@@ -157,7 +157,7 @@ async def search_drive_files(
     # Drive's files.list returns trashed items unless told otherwise. Hide them by
     # default so search agrees with list_drive_items and the Drive web UI, but never
     # override an explicit trashed clause the caller wrote themselves.
-    if not include_trashed and not TRASHED_CLAUSE_PATTERN.search(final_query):
+    if not include_trashed and not has_explicit_trashed_clause(final_query):
         final_query = f"({final_query}) and trashed=false"
         logger.info(
             "[search_drive_files] Excluding trashed items (include_trashed=False)"
