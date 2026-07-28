@@ -532,6 +532,10 @@ async def get_events(
             # Add detailed information for multiple events
             description = item.get("description", "No Description")
             location = item.get("location", "No Location")
+            color_id = item.get("colorId", "None")
+            recurring_event_id = item.get("recurringEventId")
+            event_type = item.get("eventType")
+            status = item.get("status")
             attendees = item.get("attendees", [])
             attendee_emails = (
                 ", ".join([a.get("email", "") for a in attendees])
@@ -549,7 +553,14 @@ async def get_events(
                 f'- "{summary}" (Starts: {start_time}, Ends: {end_time})\n'
                 f"  Description: {description}\n"
                 f"  Location: {location}\n"
+                f"  Color ID: {color_id}\n"
             )
+            if recurring_event_id:
+                event_detail_parts += f"  Recurring Event ID: {recurring_event_id}\n"
+            if event_type and event_type != "default":
+                event_detail_parts += f"  Event Type: {event_type}\n"
+            if status and status != "confirmed":
+                event_detail_parts += f"  Status: {status}\n"
             if creator_str:
                 event_detail_parts += f"  Creator: {creator_str}\n"
             if organizer_str:
