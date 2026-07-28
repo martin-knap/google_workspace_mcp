@@ -2072,3 +2072,101 @@ async def test_update_drive_file_metadata_only_uploads_no_media(mock_resolve_ite
     update_kwargs = mock_service.files.return_value.update.call_args.kwargs
     assert "media_body" not in update_kwargs
     assert "Successfully updated file" in result
+
+
+# ---------------------------------------------------------------------------
+# search_drive_files — trashed filtering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_excludes_trashed_by_default():
+    """Free-text search hides trashed items, matching list_drive_items and the Drive UI."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="budget",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == "(fullText contains 'budget') and trashed=false"
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_excludes_trashed_for_structured_query():
+    """A structured query without a trashed clause also gets trashed=false appended."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="name contains 'report'",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == "(name contains 'report') and trashed=false"
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_include_trashed_leaves_query_untouched():
+    """include_trashed=True restores the old pass-through behavior."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="name contains 'report'",
+        include_trashed=True,
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == "name contains 'report'"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "name contains 'report' and trashed=true",
+        "name contains 'report' and trashed = true",
+        "TRASHED=FALSE and name contains 'report'",
+    ],
+)
+async def test_search_drive_files_respects_explicit_trashed_clause(query):
+    """A caller-supplied trashed clause wins; no second clause is appended."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query=query,
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == query
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_trashed_filter_composes_with_file_type():
+    """The trashed filter and the mimeType filter both land in the final query."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="budget",
+        file_type="pdf",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == (
+        "((fullText contains 'budget') and trashed=false) "
+        "and mimeType = 'application/pdf'"
+    )

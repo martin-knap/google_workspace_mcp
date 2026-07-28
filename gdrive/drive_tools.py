@@ -44,6 +44,7 @@ from gdrive.drive_helpers import (
     GOOGLE_SHEETS_MIME_TYPE,
     GOOGLE_SLIDES_IMPORT_FORMATS,
     GOOGLE_SLIDES_MIME_TYPE,
+    TRASHED_CLAUSE_PATTERN,
     UPLOAD_CHUNK_SIZE_BYTES,
     _resolve_import_media,
     _stream_url_with_validation,
@@ -93,6 +94,7 @@ async def search_drive_files(
     file_type: Optional[str] = None,
     detailed: bool = True,
     order_by: Optional[str] = None,
+    include_trashed: bool = False,
 ) -> str:
     """
     Searches for files and folders within a user's Google Drive, including shared drives.
@@ -122,13 +124,17 @@ async def search_drive_files(
                                   'name', 'name_natural', 'quotaBytesUsed', 'recency', 'sharedWithMeTime',
                                   'starred', 'viewedByMeTime'. Example: 'modifiedTime desc' or 'folder,modifiedTime desc,name'.
                                   Defaults to None (Drive API default ordering).
+        include_trashed (bool): Whether to include files in the trash. Defaults to False, matching
+                                the Drive web UI and `list_drive_items`. Ignored when `query` already
+                                contains its own `trashed = true/false` clause, which always wins.
 
     Returns:
         str: A formatted list of found files/folders with their details (ID, name, type, and optionally size, modified time, link).
              Includes a nextPageToken line when more results are available.
     """
     logger.info(
-        f"[search_drive_files] Invoked. Email: '{user_google_email}', Query: '{query}', file_type: '{file_type}'"
+        f"[search_drive_files] Invoked. Email: '{user_google_email}', Query: '{query}', "
+        f"file_type: '{file_type}', include_trashed: {include_trashed}"
     )
 
     # Check if the query looks like a structured Drive query or free text
@@ -146,6 +152,15 @@ async def search_drive_files(
         final_query = f"fullText contains '{escaped_query}'"
         logger.info(
             f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'"
+        )
+
+    # Drive's files.list returns trashed items unless told otherwise. Hide them by
+    # default so search agrees with list_drive_items and the Drive web UI, but never
+    # override an explicit trashed clause the caller wrote themselves.
+    if not include_trashed and not TRASHED_CLAUSE_PATTERN.search(final_query):
+        final_query = f"({final_query}) and trashed=false"
+        logger.info(
+            "[search_drive_files] Excluding trashed items (include_trashed=False)"
         )
 
     if file_type is not None:
