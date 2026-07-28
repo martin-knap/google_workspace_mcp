@@ -29,7 +29,7 @@ Search for files and folders across My Drive and shared drives.
 | file_type | string | no | | Friendly name (`folder`, `document`/`doc`, `spreadsheet`/`sheet`, `presentation`/`slides`, `form`, `drawing`, `pdf`, `shortcut`, `script`, `site`, `jam`/`jamboard`) or raw MIME type |
 | detailed | boolean | no | true | Include size, modified time, and link |
 | order_by | string | no | | Sort order (see Sort Order below) |
-| include_trashed | boolean | no | false | Include files in the trash. A `trashed = true/false` clause written into `query` always wins over this flag |
+| include_trashed | boolean | no | false | Include files in the trash. A `trashed` clause (`=` or `!=`) written into `query` always wins over this flag |
 
 ### list_drive_items
 List files and folders in a specific folder.

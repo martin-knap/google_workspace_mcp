@@ -2138,6 +2138,10 @@ async def test_search_drive_files_include_trashed_leaves_query_untouched():
         "name contains 'report' and trashed=true",
         "name contains 'report' and trashed = true",
         "TRASHED=FALSE and name contains 'report'",
+        # Drive accepts != on booleans; `trashed != false` means "only trashed", so
+        # appending `and trashed=false` would silently return nothing.
+        "name contains 'report' and trashed != false",
+        "name contains 'report' and trashed!=true",
     ],
 )
 async def test_search_drive_files_respects_explicit_trashed_clause(query):
@@ -2204,10 +2208,13 @@ def test_has_explicit_trashed_clause_ignores_quoted_literals():
     assert has_explicit_trashed_clause("trashed=true")
     assert has_explicit_trashed_clause("name contains 'report' and trashed = false")
     assert has_explicit_trashed_clause("TRASHED=FALSE and name contains 'x'")
+    assert has_explicit_trashed_clause("trashed != false")
+    assert has_explicit_trashed_clause("name contains 'report' and trashed!=true")
     # A real clause still counts even when a quoted look-alike sits beside it.
     assert has_explicit_trashed_clause("trashed=true and name contains 'trashed=false'")
 
     assert not has_explicit_trashed_clause("name contains 'trashed=false'")
     assert not has_explicit_trashed_clause('name contains "trashed=true"')
+    assert not has_explicit_trashed_clause("name contains 'trashed != false'")
     assert not has_explicit_trashed_clause(r"name contains 'it\'s trashed=true'")
     assert not has_explicit_trashed_clause("budget")

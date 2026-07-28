@@ -126,7 +126,7 @@ async def search_drive_files(
                                   Defaults to None (Drive API default ordering).
         include_trashed (bool): Whether to include files in the trash. Defaults to False, matching
                                 the Drive web UI and `list_drive_items`. Ignored when `query` already
-                                contains its own `trashed = true/false` clause, which always wins.
+                                contains its own `trashed` clause (`=` or `!=`), which always wins.
 
     Returns:
         str: A formatted list of found files/folders with their details (ID, name, type, and optionally size, modified time, link).

@@ -176,8 +176,10 @@ def format_permission_info(permission: Dict[str, Any]) -> str:
 
 
 # Matches an explicit trashed clause anywhere in a Drive query, e.g. "trashed = true".
-# Used both for structured-query detection and to avoid double-adding a trashed filter.
-TRASHED_CLAUSE_PATTERN = re.compile(r"\btrashed\s*=\s*(true|false)\b", re.IGNORECASE)
+# Drive accepts both = and != on boolean fields, so `trashed != false` is just as much
+# a caller-supplied filter as `trashed = true`. Used both for structured-query detection
+# and to avoid double-adding a trashed filter.
+TRASHED_CLAUSE_PATTERN = re.compile(r"\btrashed\s*!?=\s*(true|false)\b", re.IGNORECASE)
 
 # Matches a Drive query string literal, including backslash escapes, in either quote
 # style: 'a\'b' or "a\"b". Used to blank out literals before looking for operators, so
@@ -186,7 +188,7 @@ QUERY_STRING_LITERAL_PATTERN = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*
 
 
 def has_explicit_trashed_clause(query: str) -> bool:
-    """Return True when `query` contains a real `trashed = true/false` predicate.
+    """Return True when `query` contains a real `trashed =`/`!=` `true/false` predicate.
 
     Quoted values are blanked out first, so a search for a filename that happens to
     contain the text (``name contains 'trashed=false'``) is not read as the caller
@@ -203,7 +205,7 @@ DRIVE_QUERY_PATTERNS = [
     re.compile(r"\bcontains\b", re.IGNORECASE),  # contains operator
     re.compile(r"\bin\s+parents\b", re.IGNORECASE),  # in parents
     re.compile(r"\bhas\s*\{", re.IGNORECASE),  # has {properties}
-    TRASHED_CLAUSE_PATTERN,  # trashed=true/false
+    TRASHED_CLAUSE_PATTERN,  # trashed =/!= true/false
     re.compile(r"\bstarred\s*=\s*(true|false)\b", re.IGNORECASE),  # starred=true/false
     re.compile(
         r'[\'"][^\'"]+[\'"]\s+in\s+parents', re.IGNORECASE
