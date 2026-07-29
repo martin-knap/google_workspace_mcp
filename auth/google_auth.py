@@ -829,14 +829,15 @@ async def handle_auth_callback(
         logger.info("Identified user_google_email: %s", consented_email)
 
         enforcement_marker = state_info.get("enforce_user_email_match")
-        if enforcement_marker not in (True, False):
-            # State entries created before explicit binding markers existed are not
-            # trustworthy during a gateway-mode rollout.
-            if is_trust_gateway_identity():
+        if is_trust_gateway_identity():
+            if enforcement_marker is not True:
                 raise GoogleAuthenticationError(
                     "OAuth consent state predates trusted-gateway principal binding. "
                     "Please restart authentication."
                 )
+        elif enforcement_marker not in (True, False):
+            # State entries created before explicit binding markers existed are not
+            # enforcing outside trusted-gateway mode.
             enforcement_marker = False
         enforce_user_email_match = enforcement_marker is True
         if enforce_user_email_match:

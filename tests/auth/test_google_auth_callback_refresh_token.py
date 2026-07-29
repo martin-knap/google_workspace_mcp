@@ -204,6 +204,64 @@ async def test_gateway_callback_rejects_unversioned_oauth_state(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gateway_callback_rejects_predeployment_false_enforcement_marker(
+    monkeypatch,
+):
+    oauth_store, credential_store = _patch_successful_callback(
+        monkeypatch,
+        state_info={
+            "session_id": "session-1",
+            "code_verifier": "verifier",
+            "expected_user_email": "gateway@example.com",
+            "enforce_user_email_match": False,
+            "principal_source": "gateway_assertion",
+        },
+        google_email="gateway@example.com",
+    )
+    monkeypatch.setattr("auth.google_auth.is_trust_gateway_identity", lambda: True)
+
+    with pytest.raises(
+        GoogleAuthenticationError, match="predates trusted-gateway principal binding"
+    ):
+        await handle_auth_callback(
+            scopes=["scope.a"],
+            authorization_response="https://mcp.example/callback?state=abc&code=code",
+            redirect_uri="https://mcp.example/callback",
+            session_id="session-1",
+        )
+
+    assert credential_store.saved_credentials is None
+    assert oauth_store.store_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_non_gateway_callback_preserves_false_enforcement_fallback(monkeypatch):
+    oauth_store, credential_store = _patch_successful_callback(
+        monkeypatch,
+        state_info={
+            "session_id": "session-1",
+            "code_verifier": "verifier",
+            "expected_user_email": None,
+            "enforce_user_email_match": False,
+            "principal_source": None,
+        },
+        google_email="User@Example.com",
+    )
+    monkeypatch.setattr("auth.google_auth.is_trust_gateway_identity", lambda: False)
+
+    email, _ = await handle_auth_callback(
+        scopes=["scope.a"],
+        authorization_response="https://mcp.example/callback?state=abc&code=code",
+        redirect_uri="https://mcp.example/callback",
+        session_id="session-1",
+    )
+
+    assert email == "user@example.com"
+    assert credential_store.saved_user_email == "user@example.com"
+    assert oauth_store.store_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_gateway_callback_stores_under_canonical_expected_principal(monkeypatch):
     oauth_store, credential_store = _patch_successful_callback(
         monkeypatch,

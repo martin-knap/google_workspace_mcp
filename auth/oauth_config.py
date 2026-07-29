@@ -9,9 +9,46 @@ Supports both OAuth 2.0 and OAuth 2.1 with automatic client capability detection
 """
 
 import os
+from ipaddress import ip_address
 from threading import RLock
 from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any
+
+
+_ASYMMETRIC_JWT_ALGORITHM_FAMILIES = {
+    "ES": frozenset({"ES256", "ES256K", "ES384", "ES512", "ES521"}),
+    "EdDSA": frozenset({"EdDSA"}),
+    "PS": frozenset({"PS256", "PS384", "PS512"}),
+    "RS": frozenset({"RS256", "RS384", "RS512"}),
+}
+
+
+def _is_loopback_host(hostname: Optional[str]) -> bool:
+    """Return whether a JWKS hostname is explicitly local-only."""
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_secure_gateway_jwks_url(url: str) -> bool:
+    """Require HTTPS except for explicit HTTP loopback development endpoints."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    return bool(
+        hostname
+        and (
+            parsed.scheme == "https"
+            or (parsed.scheme == "http" and _is_loopback_host(hostname))
+        )
+    )
 
 
 class OAuthConfig:
@@ -114,10 +151,41 @@ class OAuthConfig:
                     "TRUST_GATEWAY_IDENTITY=true requires GATEWAY_IDENTITY_JWKS_URL "
                     "(the gateway's JWKS endpoint used to verify the identity assertion)."
                 )
+            if not _is_secure_gateway_jwks_url(self.gateway_identity_jwks_url):
+                raise ValueError(
+                    "GATEWAY_IDENTITY_JWKS_URL must use HTTPS; HTTP is permitted "
+                    "only for loopback development endpoints."
+                )
             if not self.gateway_identity_algorithms:
                 raise ValueError(
                     "TRUST_GATEWAY_IDENTITY=true requires GATEWAY_IDENTITY_ALGORITHMS "
                     "to list at least one signing algorithm (e.g. ES256)."
+                )
+            algorithm_families = {
+                family
+                for family, algorithms in _ASYMMETRIC_JWT_ALGORITHM_FAMILIES.items()
+                if any(
+                    algorithm in algorithms
+                    for algorithm in self.gateway_identity_algorithms
+                )
+            }
+            allowed_algorithms = set().union(
+                *_ASYMMETRIC_JWT_ALGORITHM_FAMILIES.values()
+            )
+            invalid_algorithms = [
+                algorithm
+                for algorithm in self.gateway_identity_algorithms
+                if algorithm not in allowed_algorithms
+            ]
+            if invalid_algorithms:
+                raise ValueError(
+                    "GATEWAY_IDENTITY_ALGORITHMS must contain only supported "
+                    "asymmetric JWT algorithms."
+                )
+            if len(algorithm_families) != 1:
+                raise ValueError(
+                    "GATEWAY_IDENTITY_ALGORITHMS must use a single asymmetric "
+                    "JWT algorithm family."
                 )
             if not self.gateway_identity_header:
                 raise ValueError(

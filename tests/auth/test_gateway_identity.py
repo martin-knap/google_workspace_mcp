@@ -73,6 +73,11 @@ def test_email_is_lowercased(monkeypatch, ec_keypair):
     assert gi.extract_email_from_assertion(token) == "andy@scientist.com"
 
 
+def test_principal_email_is_trimmed_validated_and_lowercased():
+    assert gi.normalize_principal_email("  User@Example.COM  ") == "user@example.com"
+    assert gi.normalize_principal_email("not-an-email") is None
+
+
 def test_expired_token_rejected(monkeypatch, ec_keypair):
     priv, pub = ec_keypair
     _patch(monkeypatch, pub, _Cfg())
@@ -176,6 +181,7 @@ def _gateway_config_env(monkeypatch):
     monkeypatch.setenv("EXTERNAL_OAUTH21_PROVIDER", "false")
     monkeypatch.setenv("WORKSPACE_MCP_STATELESS_MODE", "false")
     monkeypatch.setenv("GATEWAY_IDENTITY_JWKS_URL", "https://gw/jwks.json")
+    monkeypatch.setenv("GATEWAY_IDENTITY_AUDIENCE", "workspace-mcp")
 
 
 def test_gateway_config_requires_audience(monkeypatch):
@@ -193,3 +199,80 @@ def test_gateway_config_accepts_explicit_audience(monkeypatch):
     config = OAuthConfig()
 
     assert config.gateway_identity_audience == "workspace-mcp"
+
+
+@pytest.mark.parametrize(
+    "jwks_url",
+    [
+        "http://gateway.example/jwks.json",
+        "ftp://gateway.example/jwks.json",
+        "gateway.example/jwks.json",
+    ],
+)
+def test_gateway_config_rejects_insecure_non_loopback_jwks_url(monkeypatch, jwks_url):
+    _gateway_config_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_IDENTITY_JWKS_URL", jwks_url)
+
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        OAuthConfig()
+
+
+@pytest.mark.parametrize(
+    "jwks_url",
+    [
+        "http://localhost/jwks.json",
+        "http://127.0.0.1/jwks.json",
+        "http://[::1]/jwks.json",
+    ],
+)
+def test_gateway_config_allows_http_loopback_jwks_url(monkeypatch, jwks_url):
+    _gateway_config_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_IDENTITY_JWKS_URL", jwks_url)
+
+    config = OAuthConfig()
+
+    assert config.gateway_identity_jwks_url == jwks_url
+
+
+@pytest.mark.parametrize(
+    "algorithms",
+    [
+        "HS256",
+        "HS512",
+        "none",
+        "RS256,ES256",
+        "RS256,PS256",
+        "RS256,EdDSA",
+        "unknown",
+    ],
+)
+def test_gateway_config_rejects_unsafe_or_mixed_algorithm_families(
+    monkeypatch, algorithms
+):
+    _gateway_config_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_IDENTITY_ALGORITHMS", algorithms)
+
+    with pytest.raises(ValueError, match="asymmetric JWT"):
+        OAuthConfig()
+
+
+@pytest.mark.parametrize(
+    "algorithms",
+    [
+        "ES256, ES384",
+        "RS256, RS512",
+        "PS256, PS512",
+        "EdDSA",
+    ],
+)
+def test_gateway_config_accepts_one_asymmetric_algorithm_family(
+    monkeypatch, algorithms
+):
+    _gateway_config_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_IDENTITY_ALGORITHMS", algorithms)
+
+    config = OAuthConfig()
+
+    assert config.gateway_identity_algorithms == [
+        algorithm.strip() for algorithm in algorithms.split(",")
+    ]

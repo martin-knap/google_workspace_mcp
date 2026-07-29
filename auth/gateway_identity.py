@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 import jwt
 from jwt import PyJWKClient
+from pydantic.networks import validate_email
 
 from auth.oauth_config import get_oauth_config
 
@@ -35,9 +36,16 @@ class GatewayIdentityError(Exception):
 
 def normalize_principal_email(value: Any) -> Optional[str]:
     """Return the canonical form used for gateway principals and credential keys."""
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         return None
-    return value.strip().lower()
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        _, canonical_email = validate_email(value)
+    except ValueError:
+        return None
+    return canonical_email.lower()
 
 
 def require_gateway_principal(authenticated_user: Any, authenticated_via: Any) -> str:
