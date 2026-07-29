@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workspace-mcp"
-version = "1.22.0"
+version = "1.22.2"
 description = "Comprehensive, highly performant Google Workspace Streamable HTTP & SSE MCP Server for Calendar, Gmail, Docs, Sheets, Slides & Drive"
 readme = "README.md"
 keywords = [ "mcp", "google", "workspace", "llm", "ai", "claude", "model", "context", "protocol", "server"]
@@ -12,7 +12,7 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
  "fastapi>=0.115.12",
- "fastmcp>=3.4.2",
+ "fastmcp>=3.4.4",
  "google-api-python-client>=2.168.0",
  "google-auth-httplib2>=0.2.0",
  "google-auth-oauthlib>=1.2.2",
@@ -24,7 +24,7 @@ dependencies = [
  "pyyaml>=6.0.2",
  "cryptography>=48.0.1",
  "defusedxml>=0.7.1",
- "pypdf>=6.13.3",
+ "pypdf>=6.14.2",
  "pytz>=2026.1.post1",
  "markdown-it-py>=3.0.0",
 ]
@@ -72,10 +72,16 @@ disk = [
 valkey = [
     "py-key-value-aio[valkey]>=0.3.0",
 ]
+otel = [
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
+]
 test = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
     "google-cloud-storage>=2.18.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
 ]
 release = [
@@ -86,6 +92,8 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
     "google-cloud-storage>=2.18.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
     "ruff>=0.12.4",
     "tomlkit>=0.13.3",
@@ -103,6 +111,8 @@ test = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
     "google-cloud-storage>=2.18.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
 ]
 release = [
@@ -113,6 +123,8 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.23.0",
     "google-cloud-storage>=2.18.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
     "ruff>=0.12.4",
     "tomlkit>=0.13.3",
@@ -139,3 +151,13 @@ filterwarnings = [
 
 [tool.setuptools.package-data]
 core = ["tool_tiers.yaml"]
+
+[tool.uv]
+# Security floors for transitively-pulled deps (not direct dependencies).
+# These are constraints only: they force a patched version *if* the package is
+# pulled in (mcp via fastmcp, pyasn1 via google-auth/pyasn1-modules) without
+# adding it as a direct dependency. Remove once upstream floors cover the CVEs.
+constraint-dependencies = [
+    "mcp>=1.28.1",    # GHSA: HTTP principal verification, WS Host/Origin, cross-client tasks
+    "pyasn1>=0.6.4",  # GHSA: REAL-decode resource consumption, quadratic OID DoS
+]
