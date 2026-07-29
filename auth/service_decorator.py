@@ -27,6 +27,7 @@ from auth.oauth_config import (
     is_service_account_enabled,
 )
 from core.context import set_fastmcp_session_id
+from core.telemetry import record_authenticated_user
 from auth.scopes import (
     GMAIL_READONLY_SCOPE,
     GMAIL_SEND_SCOPE,
@@ -98,6 +99,10 @@ async def _get_auth_context(
         authenticated_user = await ctx.get_state("authenticated_user_email")
         auth_method = await ctx.get_state("authenticated_via")
         mcp_session_id = ctx.session_id if hasattr(ctx, "session_id") else None
+
+        # Opt-in: enrich the active tool-call span with the human-readable user
+        # email (no-op unless WORKSPACE_MCP_OTEL_USER_EMAIL is set).
+        record_authenticated_user(authenticated_user)
 
         if mcp_session_id:
             set_fastmcp_session_id(mcp_session_id)
