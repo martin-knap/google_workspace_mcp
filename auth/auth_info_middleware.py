@@ -17,6 +17,15 @@ from auth.oauth_types import WorkspaceAccessToken
 # Configure logging
 logger = logging.getLogger(__name__)
 
+_AUTH_IDENTITY_STATE_KEYS = (
+    "authenticated_user_email",
+    "authenticated_via",
+    "user_email",
+    "username",
+    "auth_provider_type",
+    "token_type",
+)
+
 
 def _token_fingerprint(token: str) -> str:
     """Return a safe, short fingerprint of a bearer token for logging."""
@@ -50,55 +59,71 @@ class AuthInfoMiddleware(Middleware):
         from auth.oauth_config import is_trust_gateway_identity, get_oauth_config
 
         if is_trust_gateway_identity():
+            from auth.gateway_identity import (
+                GatewayIdentityError,
+                extract_email_from_assertion,
+            )
+
             try:
+                # FastMCP state is session-scoped by default. Remove any identity left by
+                # legacy authentication before installing this request's verified identity.
+                for state_key in _AUTH_IDENTITY_STATE_KEYS:
+                    await context.fastmcp_context.delete_state(state_key)
+
                 header_name = get_oauth_config().gateway_identity_header
                 hdrs = get_http_headers(include={header_name}) or {}
                 assertion = hdrs.get(header_name)
-                if assertion:
-                    from auth.gateway_identity import extract_email_from_assertion
+                if not assertion:
+                    raise GatewayIdentityError(
+                        f"Missing trusted-gateway identity header '{header_name}'"
+                    )
 
-                    # Offload the (synchronous) JWKS fetch/verify off the event loop —
-                    # PyJWKClient can do network I/O on cold start / key rotation.
-                    verified_email = await asyncio.to_thread(
-                        extract_email_from_assertion, assertion
+                # Offload the (synchronous) JWKS fetch/verify off the event loop —
+                # PyJWKClient can do network I/O on cold start / key rotation.
+                verified_email = await asyncio.to_thread(
+                    extract_email_from_assertion, assertion
+                )
+                if not verified_email:
+                    raise GatewayIdentityError(
+                        "Trusted-gateway identity assertion failed verification"
                     )
-                    if verified_email:
-                        await context.fastmcp_context.set_state(
-                            "authenticated_user_email", verified_email
-                        )
-                        await context.fastmcp_context.set_state(
-                            "authenticated_via", "gateway_assertion"
-                        )
-                        await context.fastmcp_context.set_state(
-                            "user_email", verified_email
-                        )
-                        await context.fastmcp_context.set_state(
-                            "username", verified_email
-                        )
-                        authenticated_user = verified_email
-                        auth_via = "gateway_assertion"
-                        logger.info(
-                            f"✓ Verified gateway identity assertion for: {verified_email}"
-                        )
-                    else:
-                        logger.warning(
-                            "[AuthInfoMiddleware] Gateway identity assertion present but FAILED "
-                            "verification — treating request as unauthenticated"
-                        )
-                else:
-                    logger.debug(
-                        "[AuthInfoMiddleware] trust-gateway-identity mode but no assertion "
-                        f"header '{header_name}' present"
-                    )
+
+                # These values are authoritative only for this request. In particular, do
+                # not persist them in FastMCP's session-scoped state store.
+                await context.fastmcp_context.set_state(
+                    "authenticated_user_email",
+                    verified_email,
+                    serializable=False,
+                )
+                await context.fastmcp_context.set_state(
+                    "authenticated_via",
+                    "gateway_assertion",
+                    serializable=False,
+                )
+                await context.fastmcp_context.set_state(
+                    "user_email",
+                    verified_email,
+                    serializable=False,
+                )
+                await context.fastmcp_context.set_state(
+                    "username",
+                    verified_email,
+                    serializable=False,
+                )
+                logger.info("✓ Authenticated via gateway_assertion: %s", verified_email)
+                return
+            except GatewayIdentityError:
+                logger.warning(
+                    "[AuthInfoMiddleware] Trusted-gateway authentication rejected"
+                )
+                raise
             except Exception as e:
                 logger.error(
                     f"[AuthInfoMiddleware] Error processing gateway identity assertion: {e}"
                 )
-            # In trusted-gateway mode the verified assertion is the SOLE principal source —
-            # don't fall through to token/session paths that could overwrite it.
-            if authenticated_user:
-                logger.info(f"✓ Authenticated via {auth_via}: {authenticated_user}")
-                return
+                raise GatewayIdentityError(
+                    "Trusted-gateway identity verification failed"
+                ) from e
 
         # First check if FastMCP has already validated an access token
         try:

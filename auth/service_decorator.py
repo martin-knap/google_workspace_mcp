@@ -14,6 +14,7 @@ from google.oauth2 import service_account as google_service_account
 from googleapiclient.discovery import build
 from fastmcp.server.dependencies import get_access_token, get_context
 from auth.google_auth import get_authenticated_google_service, GoogleAuthenticationError
+from auth.gateway_identity import require_gateway_principal
 from core.config import USER_GOOGLE_EMAIL as _ENV_USER_EMAIL
 from auth.oauth21_session_store import (
     get_auth_provider,
@@ -469,6 +470,17 @@ def _extract_oauth21_user_email(
     return authenticated_user
 
 
+def _extract_managed_user_email(
+    authenticated_user: Optional[str],
+    auth_method: Optional[str],
+    func_name: str,
+) -> str:
+    """Resolve an email from the configured authoritative identity source."""
+    if is_trust_gateway_identity():
+        return require_gateway_principal(authenticated_user, auth_method)
+    return _extract_oauth21_user_email(authenticated_user, func_name)
+
+
 def _extract_oauth20_user_email(
     args: tuple, kwargs: dict, wrapper_sig: inspect.Signature
 ) -> str:
@@ -758,8 +770,10 @@ def require_google_service(
 
             # Extract user_google_email based on OAuth mode
             if _user_email_is_managed():
-                user_google_email = _extract_oauth21_user_email(
-                    authenticated_user, func.__name__
+                user_google_email = _extract_managed_user_email(
+                    authenticated_user,
+                    auth_method,
+                    func.__name__,
                 )
             else:
                 user_google_email = _extract_oauth20_user_email(
@@ -907,8 +921,10 @@ def require_multiple_services(service_configs: List[Dict[str, Any]]):
 
             # Extract user_google_email based on OAuth mode
             if _user_email_is_managed():
-                user_google_email = _extract_oauth21_user_email(
-                    authenticated_user, tool_name
+                user_google_email = _extract_managed_user_email(
+                    authenticated_user,
+                    auth_method,
+                    tool_name,
                 )
             else:
                 user_google_email = _extract_oauth20_user_email(

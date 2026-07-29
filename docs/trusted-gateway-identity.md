@@ -29,32 +29,36 @@ mutually exclusive with `MCP_ENABLE_OAUTH21=true`.
 | `GATEWAY_IDENTITY_HEADER` | no | `x-pomerium-jwt-assertion` | header carrying the JWT (e.g. `cf-access-jwt-assertion` for Cloudflare Access) |
 | `GATEWAY_IDENTITY_ALGORITHMS` | no | `ES256` | comma-separated allowed alg(s); pinned to block alg-confusion/`none` (e.g. `RS256` for Cloudflare Access) |
 | `GATEWAY_IDENTITY_ISSUER` | no | — | if set, the assertion's `iss` must match |
-| `GATEWAY_IDENTITY_AUDIENCE` | no | — | if set, the assertion's `aud` must match |
+| `GATEWAY_IDENTITY_AUDIENCE` | yes | — | assertion `aud` identifying this MCP deployment; always verified |
 
 Example (Pomerium):
 
 ```bash
 TRUST_GATEWAY_IDENTITY=true
 GATEWAY_IDENTITY_JWKS_URL=https://authenticate.example.com/.well-known/pomerium/jwks.json
+GATEWAY_IDENTITY_AUDIENCE=workspace-mcp.example.com
 # header/alg defaults already target Pomerium
 ```
 
-The proxy must be configured to forward the assertion to the upstream (Pomerium: set
-`pass_identity_headers: true` on the route).
+The proxy must overwrite or remove any client-supplied identity header before forwarding
+its own assertion to the upstream (Pomerium: set `pass_identity_headers: true` on the route).
 
 ## How it works
 
 1. **Verify** — `auth/gateway_identity.py` validates the assertion JWT against the JWKS
-   (signature + `exp`; optional `iss`/`aud`), pinned to the configured algorithm(s). Failure
-   ⇒ no identity (fail-closed).
+   (signature + `exp` + `aud`; optional `iss`), pinned to the configured algorithm(s).
+   A missing or invalid assertion rejects the request immediately; gateway mode never falls
+   back to bearer tokens or transport-session identity.
 2. **Principal** — the verified `email` becomes `authenticated_user_email`
-   (`authenticated_via=gateway_assertion`).
+   (`authenticated_via=gateway_assertion`) in request-scoped state only.
 3. **No prompt / no spoofing** — like OAuth 2.1 mode, the `user_google_email` tool parameter
    is hidden and auto-filled from the verified principal, so clients never ask for an email
-   and a caller can't act on another account by passing one.
+   and a caller can't act on another account by passing one. This includes
+   `start_google_auth`; cached clients that still send an email have it ignored.
 4. **Consent enforcement** — the per-user Google consent (side flow) is initiated for the
-   principal, and at `/oauth2callback` the Google account actually consented **must match**
-   the principal; a mismatch is rejected and nothing is stored.
+   principal. The OAuth state records an explicit immutable principal binding, and at
+   `/oauth2callback` the Google account actually consented **must match** it; a missing
+   binding or mismatch is rejected and nothing is stored.
 
 Credentials still use the normal per-user store (keyed by email); the asserted identity just
 selects/locks which user's grant a request may use.
@@ -64,6 +68,9 @@ selects/locks which user's grant a request may use.
 - The assertion is verified **cryptographically** — an unverified/expired/wrong-alg token is
   rejected.
 - Pin `GATEWAY_IDENTITY_ALGORITHMS` to your proxy's actual algorithm.
-- Set `GATEWAY_IDENTITY_ISSUER`/`AUDIENCE` in production for defense-in-depth.
+- `GATEWAY_IDENTITY_AUDIENCE` is mandatory so assertions minted for another application or
+  route cannot be replayed here. Set `GATEWAY_IDENTITY_ISSUER` as well when your gateway
+  provides a stable issuer.
+- Configure the proxy to strip/overwrite incoming `GATEWAY_IDENTITY_HEADER` values.
 - Ensure the backend is reachable **only** via the proxy (e.g. ClusterIP / no public port), so
   the assertion can't be supplied by an untrusted client.

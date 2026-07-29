@@ -7,12 +7,19 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
 import auth.gateway_identity as gi
+from auth.oauth_config import OAuthConfig
 
 
 class _Cfg:
     """Minimal stand-in for the OAuthConfig fields verify_gateway_assertion reads."""
 
-    def __init__(self, jwks_url="https://gw/jwks.json", algs=None, aud=None, iss=None):
+    def __init__(
+        self,
+        jwks_url="https://gw/jwks.json",
+        algs=None,
+        aud="expected-aud",
+        iss=None,
+    ):
         self.gateway_identity_jwks_url = jwks_url
         self.gateway_identity_algorithms = algs or ["ES256"]
         self.gateway_identity_audience = aud
@@ -41,7 +48,11 @@ def _patch(monkeypatch, public_key, cfg):
 
 
 def _make(priv, **claims):
-    payload = {"email": "andy@scientist.com", "exp": int(time.time()) + 300}
+    payload = {
+        "email": "andy@scientist.com",
+        "exp": int(time.time()) + 300,
+        "aud": "expected-aud",
+    }
     payload.update(claims)
     return jwt.encode(payload, priv, algorithm="ES256")
 
@@ -98,7 +109,13 @@ def test_verified_but_emailless_extracts_none(monkeypatch, ec_keypair):
     priv, pub = ec_keypair
     _patch(monkeypatch, pub, _Cfg())
     token = jwt.encode(
-        {"sub": "x", "exp": int(time.time()) + 300}, priv, algorithm="ES256"
+        {
+            "sub": "x",
+            "exp": int(time.time()) + 300,
+            "aud": "expected-aud",
+        },
+        priv,
+        algorithm="ES256",
     )
     assert gi.verify_gateway_assertion(token) is not None  # signature/exp valid
     assert gi.extract_email_from_assertion(token) is None  # but no email claim
@@ -116,6 +133,12 @@ def test_missing_jwks_url_rejected(monkeypatch, ec_keypair):
     assert gi.verify_gateway_assertion(_make(priv)) is None
 
 
+def test_missing_audience_rejected(monkeypatch, ec_keypair):
+    priv, pub = ec_keypair
+    _patch(monkeypatch, pub, _Cfg(aud=None))
+    assert gi.verify_gateway_assertion(_make(priv)) is None
+
+
 def test_blank_email_rejected(monkeypatch, ec_keypair):
     priv, pub = ec_keypair
     _patch(monkeypatch, pub, _Cfg())
@@ -126,3 +149,47 @@ def test_non_string_email_rejected(monkeypatch, ec_keypair):
     priv, pub = ec_keypair
     _patch(monkeypatch, pub, _Cfg())
     assert gi.extract_email_from_assertion(_make(priv, email=["a@b.com"])) is None
+
+
+def test_require_gateway_principal_rejects_other_auth_sources():
+    with pytest.raises(gi.GatewayIdentityError):
+        gi.require_gateway_principal("user@example.com", "mcp_session_binding")
+
+
+@pytest.mark.asyncio
+async def test_get_verified_gateway_principal_reads_request_state():
+    class _Context:
+        async def get_state(self, key):
+            return {
+                "authenticated_user_email": " User@Example.com ",
+                "authenticated_via": "gateway_assertion",
+            }.get(key)
+
+    principal = await gi.get_verified_gateway_principal(_Context())
+
+    assert principal == "user@example.com"
+
+
+def _gateway_config_env(monkeypatch):
+    monkeypatch.setenv("TRUST_GATEWAY_IDENTITY", "true")
+    monkeypatch.setenv("MCP_ENABLE_OAUTH21", "false")
+    monkeypatch.setenv("EXTERNAL_OAUTH21_PROVIDER", "false")
+    monkeypatch.setenv("WORKSPACE_MCP_STATELESS_MODE", "false")
+    monkeypatch.setenv("GATEWAY_IDENTITY_JWKS_URL", "https://gw/jwks.json")
+
+
+def test_gateway_config_requires_audience(monkeypatch):
+    _gateway_config_env(monkeypatch)
+    monkeypatch.delenv("GATEWAY_IDENTITY_AUDIENCE", raising=False)
+
+    with pytest.raises(ValueError, match="GATEWAY_IDENTITY_AUDIENCE"):
+        OAuthConfig()
+
+
+def test_gateway_config_accepts_explicit_audience(monkeypatch):
+    _gateway_config_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_IDENTITY_AUDIENCE", "workspace-mcp")
+
+    config = OAuthConfig()
+
+    assert config.gateway_identity_audience == "workspace-mcp"

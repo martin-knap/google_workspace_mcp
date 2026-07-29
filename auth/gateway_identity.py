@@ -19,7 +19,7 @@ that as "no identity" (fail closed), never as a trusted user.
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import jwt
 from jwt import PyJWKClient
@@ -27,6 +27,50 @@ from jwt import PyJWKClient
 from auth.oauth_config import get_oauth_config
 
 logger = logging.getLogger(__name__)
+
+
+class GatewayIdentityError(Exception):
+    """Raised when a request lacks a valid trusted-gateway identity."""
+
+
+def normalize_principal_email(value: Any) -> Optional[str]:
+    """Return the canonical form used for gateway principals and credential keys."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower()
+
+
+def require_gateway_principal(authenticated_user: Any, authenticated_via: Any) -> str:
+    """Return a canonical principal only when it came from gateway verification."""
+    email = normalize_principal_email(authenticated_user)
+    if authenticated_via != "gateway_assertion" or not email:
+        raise GatewayIdentityError(
+            "Trusted-gateway mode requires a request-scoped verified gateway principal"
+        )
+    return email
+
+
+async def get_verified_gateway_principal(context=None) -> str:
+    """Resolve the authoritative gateway principal from the active FastMCP request."""
+    if context is None:
+        try:
+            from fastmcp.server.dependencies import get_context
+
+            context = get_context()
+        except Exception as exc:
+            raise GatewayIdentityError(
+                "Trusted-gateway principal is unavailable outside an MCP request"
+            ) from exc
+
+    if context is None:
+        raise GatewayIdentityError(
+            "Trusted-gateway principal is unavailable outside an MCP request"
+        )
+
+    authenticated_user = await context.get_state("authenticated_user_email")
+    authenticated_via = await context.get_state("authenticated_via")
+    return require_gateway_principal(authenticated_user, authenticated_via)
+
 
 # PyJWKClient caches fetched keys (and refreshes on unknown kid). Cache one client per
 # JWKS URL for the process lifetime.
@@ -63,6 +107,12 @@ def verify_gateway_assertion(token: str) -> Optional[dict]:
             "verify_gateway_assertion called but GATEWAY_IDENTITY_JWKS_URL is unset"
         )
         return None
+    audience = config.gateway_identity_audience
+    if not audience:
+        logger.error(
+            "verify_gateway_assertion called but GATEWAY_IDENTITY_AUDIENCE is unset"
+        )
+        return None
 
     try:
         signing_key = _get_jwks_client(jwks_url).get_signing_key_from_jwt(token)
@@ -71,14 +121,13 @@ def verify_gateway_assertion(token: str) -> Optional[dict]:
             # Pin to the configured algorithm(s) so a malicious token can't downgrade to
             # "alg: none" or trigger an HMAC/asymmetric confusion attack.
             "algorithms": config.gateway_identity_algorithms,
-            # Require expiry; verify signature. Audience/issuer enforced only if configured.
+            # Require expiry and audience; issuer is additionally enforced when configured.
             "options": {
                 "require": ["exp"],
-                "verify_aud": bool(config.gateway_identity_audience),
+                "verify_aud": True,
             },
+            "audience": audience,
         }
-        if config.gateway_identity_audience:
-            decode_kwargs["audience"] = config.gateway_identity_audience
         if config.gateway_identity_issuer:
             decode_kwargs["issuer"] = config.gateway_identity_issuer
 
@@ -107,11 +156,11 @@ def extract_email_from_assertion(token: str) -> Optional[str]:
     claims = verify_gateway_assertion(token)
     if not claims:
         return None
-    email = claims.get("email")
-    if not isinstance(email, str) or not email.strip():
+    email = normalize_principal_email(claims.get("email"))
+    if not email:
         logger.warning(
             "SECURITY: verified gateway assertion has no usable 'email' claim (sub=%s)",
             claims.get("sub"),
         )
         return None
-    return email.strip().lower()
+    return email

@@ -77,12 +77,16 @@ class OAuthConfig:
         self.trust_gateway_identity = (
             os.getenv("TRUST_GATEWAY_IDENTITY", "false").lower() == "true"
         )
-        self.gateway_identity_jwks_url = os.getenv("GATEWAY_IDENTITY_JWKS_URL")
+        self.gateway_identity_jwks_url = (
+            os.getenv("GATEWAY_IDENTITY_JWKS_URL", "").strip() or None
+        )
         # Header carrying the signed assertion (default: Pomerium's x-pomerium-jwt-assertion;
         # e.g. cf-access-jwt-assertion for Cloudflare Access).
-        self.gateway_identity_header = os.getenv(
-            "GATEWAY_IDENTITY_HEADER", "x-pomerium-jwt-assertion"
-        ).lower()
+        self.gateway_identity_header = (
+            os.getenv("GATEWAY_IDENTITY_HEADER", "x-pomerium-jwt-assertion")
+            .strip()
+            .lower()
+        )
         # Allowed signing algorithm(s), comma-separated (default ES256 — Pomerium; use
         # RS256 for Cloudflare Access, etc.). Pinned to block alg-confusion/none attacks.
         self.gateway_identity_algorithms = [
@@ -90,9 +94,14 @@ class OAuthConfig:
             for a in os.getenv("GATEWAY_IDENTITY_ALGORITHMS", "ES256").split(",")
             if a.strip()
         ]
-        # Optional issuer/audience pinning for the assertion (recommended in production).
-        self.gateway_identity_issuer = os.getenv("GATEWAY_IDENTITY_ISSUER")
-        self.gateway_identity_audience = os.getenv("GATEWAY_IDENTITY_AUDIENCE")
+        # Audience binds assertions to this relying party and is mandatory. Issuer
+        # pinning remains optional for gateways whose JWKS URL is the trust boundary.
+        self.gateway_identity_issuer = (
+            os.getenv("GATEWAY_IDENTITY_ISSUER", "").strip() or None
+        )
+        self.gateway_identity_audience = (
+            os.getenv("GATEWAY_IDENTITY_AUDIENCE", "").strip() or None
+        )
         if self.trust_gateway_identity:
             if self.oauth21_enabled:
                 raise ValueError(
@@ -109,6 +118,16 @@ class OAuthConfig:
                 raise ValueError(
                     "TRUST_GATEWAY_IDENTITY=true requires GATEWAY_IDENTITY_ALGORITHMS "
                     "to list at least one signing algorithm (e.g. ES256)."
+                )
+            if not self.gateway_identity_header:
+                raise ValueError(
+                    "TRUST_GATEWAY_IDENTITY=true requires a non-empty "
+                    "GATEWAY_IDENTITY_HEADER."
+                )
+            if not self.gateway_identity_audience:
+                raise ValueError(
+                    "TRUST_GATEWAY_IDENTITY=true requires GATEWAY_IDENTITY_AUDIENCE "
+                    "(the audience that identifies this MCP deployment)."
                 )
 
         # Stateless mode configuration
