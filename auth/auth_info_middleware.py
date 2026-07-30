@@ -2,6 +2,7 @@
 Authentication middleware to populate context state with user information
 """
 
+import asyncio
 import logging
 import time
 
@@ -10,11 +11,22 @@ from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.dependencies import get_http_headers
 
 from auth.external_oauth_provider import get_session_time
+from auth.gateway_identity import GatewayIdentityError, extract_email_from_assertion
 from auth.oauth21_session_store import ensure_session_from_access_token
+from auth.oauth_config import get_oauth_config, is_trust_gateway_identity
 from auth.oauth_types import WorkspaceAccessToken
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+_AUTH_IDENTITY_STATE_KEYS = (
+    "authenticated_user_email",
+    "authenticated_via",
+    "user_email",
+    "username",
+    "auth_provider_type",
+    "token_type",
+)
 
 
 def _token_fingerprint(token: str) -> str:
@@ -42,6 +54,71 @@ class AuthInfoMiddleware(Middleware):
 
         authenticated_user = None
         auth_via = None
+
+        # Trusted-gateway identity: verify the SIGNED assertion the fronting proxy injects
+        # and use the asserted email as the principal. This is the highest-priority and only
+        # trusted source in this mode (MCP_ENABLE_OAUTH21 is off — the proxy owns the handshake).
+        if is_trust_gateway_identity():
+            try:
+                # FastMCP state is session-scoped by default. Remove any identity left by
+                # legacy authentication before installing this request's verified identity.
+                for state_key in _AUTH_IDENTITY_STATE_KEYS:
+                    await context.fastmcp_context.delete_state(state_key)
+
+                header_name = get_oauth_config().gateway_identity_header
+                hdrs = get_http_headers(include={header_name}) or {}
+                assertion = hdrs.get(header_name)
+                if not assertion:
+                    raise GatewayIdentityError(
+                        f"Missing trusted-gateway identity header '{header_name}'"
+                    )
+
+                # Offload the (synchronous) JWKS fetch/verify off the event loop —
+                # PyJWKClient can do network I/O on cold start / key rotation.
+                verified_email = await asyncio.to_thread(
+                    extract_email_from_assertion, assertion
+                )
+                if not verified_email:
+                    raise GatewayIdentityError(
+                        "Trusted-gateway identity assertion failed verification"
+                    )
+
+                # These values are authoritative only for this request. In particular, do
+                # not persist them in FastMCP's session-scoped state store.
+                await context.fastmcp_context.set_state(
+                    "authenticated_user_email",
+                    verified_email,
+                    serializable=False,
+                )
+                await context.fastmcp_context.set_state(
+                    "authenticated_via",
+                    "gateway_assertion",
+                    serializable=False,
+                )
+                await context.fastmcp_context.set_state(
+                    "user_email",
+                    verified_email,
+                    serializable=False,
+                )
+                await context.fastmcp_context.set_state(
+                    "username",
+                    verified_email,
+                    serializable=False,
+                )
+                logger.info("✓ Authenticated via gateway_assertion: %s", verified_email)
+                return
+            except GatewayIdentityError:
+                logger.warning(
+                    "[AuthInfoMiddleware] Trusted-gateway authentication rejected"
+                )
+                raise
+            except Exception as e:
+                logger.error(
+                    f"[AuthInfoMiddleware] Error processing gateway identity assertion: {e}"
+                )
+                raise GatewayIdentityError(
+                    "Trusted-gateway identity verification failed"
+                ) from e
 
         # First check if FastMCP has already validated an access token
         try:
@@ -383,9 +460,11 @@ class AuthInfoMiddleware(Middleware):
 
         except Exception as e:
             # Check if this is an authentication error - don't log traceback for these
-            if "GoogleAuthenticationError" in str(
-                type(e)
-            ) or "Access denied: Cannot retrieve credentials" in str(e):
+            if (
+                isinstance(e, GatewayIdentityError)
+                or "GoogleAuthenticationError" in str(type(e))
+                or "Access denied: Cannot retrieve credentials" in str(e)
+            ):
                 logger.info(f"Authentication check failed: {e}")
             else:
                 logger.error(f"Error in on_call_tool middleware: {e}", exc_info=True)
@@ -405,9 +484,11 @@ class AuthInfoMiddleware(Middleware):
 
         except Exception as e:
             # Check if this is an authentication error - don't log traceback for these
-            if "GoogleAuthenticationError" in str(
-                type(e)
-            ) or "Access denied: Cannot retrieve credentials" in str(e):
+            if (
+                isinstance(e, GatewayIdentityError)
+                or "GoogleAuthenticationError" in str(type(e))
+                or "Access denied: Cannot retrieve credentials" in str(e)
+            ):
                 logger.info(f"Authentication check failed in prompt: {e}")
             else:
                 logger.error(f"Error in on_get_prompt middleware: {e}", exc_info=True)
