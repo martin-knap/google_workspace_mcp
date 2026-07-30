@@ -4,16 +4,27 @@ Google Apps Script MCP Tools
 This module provides MCP tools for interacting with Google Apps Script API.
 """
 
-import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+import logging
+import weakref
+from typing import Any, Dict, List, Optional
+
+from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from mcp.types import ToolAnnotations
-from core.utils import handle_http_errors, ObjectList
+from core.utils import ObjectList, handle_http_errors
 
 logger = logging.getLogger(__name__)
+
+_SCRIPT_UPDATE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _get_script_update_lock(script_id: str) -> asyncio.Lock:
+    """Return the in-process lock that orders updates for one script."""
+    return _SCRIPT_UPDATE_LOCKS.setdefault(script_id, asyncio.Lock())
 
 
 def _normalize_script_file(file: Dict[str, Any]) -> Dict[str, str]:
@@ -379,19 +390,22 @@ async def _update_script_content_impl(
 
     files_to_push = [_normalize_script_file(file) for file in files]
 
-    if merge:
-        current_content = await asyncio.to_thread(
-            service.projects().getContent(scriptId=script_id).execute
-        )
-        files_to_push = _merge_script_files(
-            current_content.get("files", []), files_to_push
-        )
+    async with _get_script_update_lock(script_id):
+        if merge:
+            current_content = await asyncio.to_thread(
+                service.projects().getContent(scriptId=script_id).execute
+            )
+            files_to_push = _merge_script_files(
+                current_content.get("files", []), files_to_push
+            )
 
-    request_body = {"files": files_to_push}
+        request_body = {"files": files_to_push}
 
-    updated_content = await asyncio.to_thread(
-        service.projects().updateContent(scriptId=script_id, body=request_body).execute
-    )
+        updated_content = await asyncio.to_thread(
+            service.projects()
+            .updateContent(scriptId=script_id, body=request_body)
+            .execute
+        )
 
     mode = "merged into project" if merge else "replaced entire project"
     output = [

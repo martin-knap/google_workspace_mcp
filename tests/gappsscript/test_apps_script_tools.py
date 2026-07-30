@@ -4,11 +4,14 @@ Unit tests for Google Apps Script MCP tools
 Tests all Apps Script tools with mocked API responses
 """
 
-import pytest
+import asyncio
+import os
+import sys
+import threading
 from typing import get_type_hints
 from unittest.mock import Mock
-import sys
-import os
+
+import pytest
 
 from pydantic import TypeAdapter
 
@@ -273,6 +276,83 @@ async def test_update_script_content_merge_fetches_existing_files():
     assert "merged into project" in result
     assert "Code" in result
     assert "appsscript" in result
+
+
+@pytest.mark.asyncio
+async def test_update_script_content_orders_concurrent_merges_for_same_script():
+    """A later merge must fetch content after an earlier update completes."""
+    content = [{"name": "Base", "type": "SERVER_JS", "source": "base"}]
+    first_update_started = threading.Event()
+    allow_first_update = threading.Event()
+    first_update_applied = threading.Event()
+    second_get_started = threading.Event()
+    update_count = 0
+    get_count = 0
+
+    class Request:
+        def __init__(self, execute):
+            self._execute = execute
+
+        def execute(self):
+            return self._execute()
+
+    class Projects:
+        def getContent(self, scriptId):
+            nonlocal get_count
+            get_count += 1
+            if get_count == 2:
+                second_get_started.set()
+            snapshot = [file.copy() for file in content]
+            return Request(lambda: {"files": snapshot})
+
+        def updateContent(self, scriptId, body):
+            nonlocal update_count
+            update_count += 1
+            update_number = update_count
+
+            def execute():
+                nonlocal content
+                if update_number == 1:
+                    first_update_started.set()
+                    assert allow_first_update.wait(timeout=1)
+                else:
+                    assert first_update_applied.wait(timeout=1)
+                content = [file.copy() for file in body["files"]]
+                if update_number == 1:
+                    first_update_applied.set()
+                return {"files": content}
+
+            return Request(execute)
+
+    projects = Projects()
+    service = Mock()
+    service.projects.side_effect = lambda: projects
+
+    first_update = asyncio.create_task(
+        _update_script_content_impl(
+            service=service,
+            user_google_email="test@example.com",
+            script_id="test123",
+            files=[{"name": "First", "type": "SERVER_JS", "source": "first"}],
+        )
+    )
+    assert await asyncio.to_thread(first_update_started.wait, 1)
+
+    second_update = asyncio.create_task(
+        _update_script_content_impl(
+            service=service,
+            user_google_email="test@example.com",
+            script_id="test123",
+            files=[{"name": "Second", "type": "SERVER_JS", "source": "second"}],
+        )
+    )
+    await asyncio.sleep(0)
+    second_get_raced = second_get_started.is_set()
+    allow_first_update.set()
+    await asyncio.gather(first_update, second_update)
+
+    assert not second_get_raced
+    assert {file["name"] for file in content} == {"Base", "First", "Second"}
 
 
 @pytest.mark.asyncio
