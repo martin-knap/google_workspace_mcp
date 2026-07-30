@@ -25,6 +25,7 @@ MAX_READ_SHEET_ROWS = 1000
 A1_PART_REGEX = re.compile(r"^([A-Za-z]*)(\d*)$")
 SHEET_TITLE_SAFE_RE = re.compile(r"^[A-Za-z0-9_]+$")
 COLUMN_LETTER_REGEX = re.compile(r"^[A-Za-z]+$")
+QUOTED_SHEET_ONLY_REGEX = re.compile(r"^'(?:[^']|'')+'$")
 
 
 def _column_to_index(column: str) -> Optional[int]:
@@ -86,21 +87,41 @@ def _format_a1_part(col_idx: Optional[int], row_idx: Optional[int]) -> str:
     return f"{col}{row}"
 
 
+def _format_read_clamp_note(
+    range_name: str, clamped_range: str, max_rows: int
+) -> str:
+    """Describe a rewritten read range and how to continue paging."""
+    return (
+        f"\n\nNote: Requested range '{range_name}' was clamped to '{clamped_range}' "
+        f"(max {max_rows} rows per read). Request a later row window to continue."
+    )
+
+
 def _clamp_a1_read_rows(
     range_name: str, max_rows: int = MAX_READ_SHEET_ROWS
 ) -> tuple[str, Optional[str]]:
     """
     Rewrite an A1 range so it spans at most ``max_rows`` rows.
 
-    Open-ended ranges (e.g. ``A:Z``, ``Sheet1!A1:Z``) are always closed to a
-    finite end row. Oversized finite ranges are truncated from the start row.
-    Non-A1 inputs (named ranges) are returned unchanged.
+    Open-ended ranges (e.g. ``A:Z``, ``Sheet1!A1:Z``) and quoted whole-sheet
+    references (e.g. ``'My Sheet'``) are closed to a finite end row. Oversized
+    finite ranges are truncated from the start row. Bare identifiers are
+    returned unchanged because they can refer to named ranges.
 
     Returns:
         (range_for_api, note): ``note`` is set when the range was rewritten.
     """
     if max_rows < 1:
         raise ValueError(f"max_rows must be >= 1, got {max_rows}")
+
+    # A quoted sheet title without coordinates unambiguously addresses the
+    # entire sheet. Bare identifiers are intentionally not handled here:
+    # Google Sheets resolves them as named ranges when a matching name exists.
+    if QUOTED_SHEET_ONLY_REGEX.fullmatch(range_name):
+        clamped_range = f"{range_name}!1:{max_rows}"
+        return clamped_range, _format_read_clamp_note(
+            range_name, clamped_range, max_rows
+        )
 
     sheet_name, a1_range = _split_sheet_and_range(range_name)
     if not a1_range:
@@ -149,10 +170,7 @@ def _clamp_a1_read_rows(
     else:
         clamped_range = range_ref
 
-    note = (
-        f"\n\nNote: Requested range '{range_name}' was clamped to '{clamped_range}' "
-        f"(max {max_rows} rows per read). Request a later row window to continue."
-    )
+    note = _format_read_clamp_note(range_name, clamped_range, max_rows)
     return clamped_range, note
 
 

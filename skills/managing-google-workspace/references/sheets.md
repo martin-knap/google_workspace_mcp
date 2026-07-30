@@ -40,8 +40,9 @@ Read values from a range in a spreadsheet.
 Open-ended or oversized A1 ranges are clamped to at most **1000 rows** before
 the Sheets API request (same budget as the default `A1:Z1000`). When clamped,
 the response includes a note with the rewritten range so you can request the
-next window (e.g. `A1001:A2000`). Named ranges that are not A1 coordinates are
-left unchanged.
+next window (e.g. `A1001:A2000`). Quoted whole-sheet references such as
+`'My Sheet'` are clamped as well. Bare identifiers are left unchanged because
+Google Sheets can resolve them as named ranges.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|

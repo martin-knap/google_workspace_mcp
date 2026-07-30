@@ -76,6 +76,8 @@ def test_clamp_a1_read_rows_leaves_in_budget_ranges_unchanged(range_name, expect
         ("A1:Z", "A1:Z1000"),
         ("Sheet1!A1:Z5000", "Sheet1!A1:Z1000"),
         ("'My Sheet'!A100:Z", "'My Sheet'!A100:Z1099"),
+        ("'My Sheet'", "'My Sheet'!1:1000"),
+        ("'O''Brien'", "'O''Brien'!1:1000"),
         ("1:5000", "1:1000"),
         ("AA10:ZZ2000", "AA10:ZZ1009"),
     ],
@@ -97,7 +99,9 @@ def test_clamp_a1_read_rows_respects_custom_max():
 
 
 def test_clamp_a1_read_rows_passes_through_named_ranges():
-    for range_name in ("MyNamedRange", "Sheet1!SalesData"):
+    # A bare sheet title is indistinguishable from a named range without
+    # spreadsheet metadata, so it must also be preserved.
+    for range_name in ("MyNamedRange", "Sheet1", "Sheet1!SalesData"):
         clamped, note = _clamp_a1_read_rows(range_name)
         assert clamped == range_name
         assert note is None

@@ -82,11 +82,20 @@ async def test_read_sheet_values_renders_all_fetched_rows():
 
 
 @pytest.mark.asyncio
-async def test_read_sheet_values_clamps_oversized_range_before_api_call():
+@pytest.mark.parametrize(
+    ("requested_range", "expected_range"),
+    [
+        ("Sheet1!A1:A5000", "Sheet1!A1:A1000"),
+        ("'My Custom Sheet'", "'My Custom Sheet'!1:1000"),
+    ],
+)
+async def test_read_sheet_values_clamps_range_before_api_call(
+    requested_range, expected_range
+):
     rows = [[str(i)] for i in range(1, 51)]
     get_mock = Mock(
         return_value=Mock(
-            execute=Mock(return_value={"range": "Sheet1!A1:A50", "values": rows})
+            execute=Mock(return_value={"range": expected_range, "values": rows})
         )
     )
     service = Mock()
@@ -96,12 +105,39 @@ async def test_read_sheet_values_clamps_oversized_range_before_api_call():
         service=service,
         user_google_email="user@example.com",
         spreadsheet_id="spreadsheet-123",
-        range_name="Sheet1!A1:A5000",
+        range_name=requested_range,
     )
 
     get_mock.assert_called_once_with(
-        spreadsheetId="spreadsheet-123", range="Sheet1!A1:A1000"
+        spreadsheetId="spreadsheet-123", range=expected_range
     )
     assert "Successfully read 50 rows" in result
-    assert "clamped to 'Sheet1!A1:A1000'" in result
+    assert f"clamped to '{expected_range}'" in result
     assert "max 1000 rows" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("range_name", ["MyNamedRange", "Sheet1"])
+async def test_read_sheet_values_preserves_ambiguous_bare_range(range_name):
+    get_mock = Mock(
+        return_value=Mock(
+            execute=Mock(
+                return_value={"range": "Sheet1!A1:A1", "values": [["value"]]}
+            )
+        )
+    )
+    service = Mock()
+    service.spreadsheets().values().get = get_mock
+
+    result = await _unwrap(read_sheet_values)(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="spreadsheet-123",
+        range_name=range_name,
+    )
+
+    get_mock.assert_called_once_with(
+        spreadsheetId="spreadsheet-123", range=range_name
+    )
+    assert "Successfully read 1 rows" in result
+    assert "was clamped" not in result
