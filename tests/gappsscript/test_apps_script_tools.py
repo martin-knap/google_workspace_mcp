@@ -17,6 +17,8 @@ from pydantic import TypeAdapter
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from core.utils import UserInputError
+
 # Import the internal implementation functions (not the decorated ones)
 from gappsscript.apps_script_tools import (
     _list_script_projects_impl,
@@ -197,7 +199,7 @@ def test_merge_script_files_adds_new_file():
 def test_merge_script_files_rejects_update_without_name():
     existing = [{"name": "Code", "type": "SERVER_JS", "source": "code"}]
 
-    with pytest.raises(ValueError, match="index 0.*non-empty 'name'"):
+    with pytest.raises(UserInputError, match="index 0.*non-empty 'name'"):
         _merge_script_files(existing, [{"type": "SERVER_JS", "source": "new code"}])
 
 
@@ -234,7 +236,7 @@ def test_merge_script_files_does_not_guess_when_name_is_ambiguous():
     ]
     updates = [{"name": "Code", "source": "new source"}]
 
-    with pytest.raises(ValueError, match="missing 'type'"):
+    with pytest.raises(UserInputError, match="missing 'type'"):
         _merge_script_files(existing, updates)
 
 
@@ -242,7 +244,7 @@ def test_merge_script_files_requires_type_for_new_file():
     existing = [{"name": "Code", "type": "SERVER_JS", "source": "server"}]
     updates = [{"name": "Utils", "source": "function util() {}"}]
 
-    with pytest.raises(ValueError, match="missing 'type'"):
+    with pytest.raises(UserInputError, match="missing 'type'"):
         _merge_script_files(existing, updates)
 
 
