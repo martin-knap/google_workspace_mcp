@@ -7,6 +7,14 @@ import pytest
 from gsheets.sheets_tools import read_sheet_values
 
 
+def _unwrap(tool):
+    """Peel FastMCP/auth wrappers so unit tests can pass a mock service."""
+    fn = tool.fn if hasattr(tool, "fn") else tool
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+    return fn
+
+
 def _create_mock_service(*responses_or_errors):
     """Create a Sheets service mock for sequential values.get responses."""
     mock_service = Mock()
@@ -18,8 +26,7 @@ def _create_mock_service(*responses_or_errors):
 
 async def _call_read_sheet_values(service, **overrides):
     """Call the undecorated implementation to keep auth out of unit tests."""
-    impl = read_sheet_values.__wrapped__.__wrapped__
-    return await impl(
+    return await _unwrap(read_sheet_values)(
         service=service,
         user_google_email="user@example.com",
         spreadsheet_id="spreadsheet-123",
@@ -72,3 +79,29 @@ async def test_read_sheet_values_renders_all_fetched_rows():
         assert f"Row {i:2d}: ['{i}']" in result
     assert result.count("Row ") == 120
     assert "more rows" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_sheet_values_clamps_oversized_range_before_api_call():
+    rows = [[str(i)] for i in range(1, 51)]
+    get_mock = Mock(
+        return_value=Mock(
+            execute=Mock(return_value={"range": "Sheet1!A1:A50", "values": rows})
+        )
+    )
+    service = Mock()
+    service.spreadsheets().values().get = get_mock
+
+    result = await _unwrap(read_sheet_values)(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="spreadsheet-123",
+        range_name="Sheet1!A1:A5000",
+    )
+
+    get_mock.assert_called_once_with(
+        spreadsheetId="spreadsheet-123", range="Sheet1!A1:A1000"
+    )
+    assert "Successfully read 50 rows" in result
+    assert "clamped to 'Sheet1!A1:A1000'" in result
+    assert "max 1000 rows" in result
