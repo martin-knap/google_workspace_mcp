@@ -16,6 +16,35 @@ from core.utils import handle_http_errors, ObjectList
 logger = logging.getLogger(__name__)
 
 
+def _normalize_script_file(file: Dict[str, Any]) -> Dict[str, str]:
+    """Return the Script API file fields used for updateContent requests."""
+    return {
+        "name": file.get("name", ""),
+        "type": file.get("type", ""),
+        "source": file.get("source", ""),
+    }
+
+
+def _merge_script_files(
+    existing_files: List[Dict[str, Any]],
+    updated_files: List[Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """Overlay updated files onto the current project by file name."""
+    merged = {
+        file.get("name"): _normalize_script_file(file)
+        for file in existing_files
+        if file.get("name")
+    }
+
+    for file in updated_files:
+        name = file.get("name")
+        if not name:
+            continue
+        merged[name] = _normalize_script_file(file)
+
+    return list(merged.values())
+
+
 # Internal implementation functions for testing
 async def _list_script_projects_impl(
     service: Any,
@@ -320,26 +349,45 @@ async def _update_script_content_impl(
     user_google_email: str,
     script_id: str,
     files: List[Dict[str, str]],
+    merge: bool = True,
 ) -> str:
     """Internal implementation for update_script_content."""
     logger.info(
-        f"[update_script_content] Email: {user_google_email}, ID: {script_id}, Files: {len(files)}"
+        f"[update_script_content] Email: {user_google_email}, ID: {script_id}, "
+        f"Files: {len(files)}, merge: {merge}"
     )
 
-    request_body = {"files": files}
+    files_to_push = [_normalize_script_file(file) for file in files]
+
+    if merge:
+        current_content = await asyncio.to_thread(
+            service.projects().getContent(scriptId=script_id).execute
+        )
+        files_to_push = _merge_script_files(
+            current_content.get("files", []), files_to_push
+        )
+
+    request_body = {"files": files_to_push}
 
     updated_content = await asyncio.to_thread(
         service.projects().updateContent(scriptId=script_id, body=request_body).execute
     )
 
-    output = [f"Updated script project: {script_id}", "", "Modified files:"]
+    mode = "merged into project" if merge else "replaced entire project"
+    output = [
+        f"Updated script project: {script_id} ({mode})",
+        "",
+        "Files in project after update:",
+    ]
 
     for file in updated_content.get("files", []):
         file_name = file.get("name", "Untitled")
         file_type = file.get("type", "Unknown")
         output.append(f"- {file_name} ({file_type})")
 
-    logger.info(f"[update_script_content] Updated {len(files)} files in {script_id}")
+    logger.info(
+        f"[update_script_content] Updated {len(files_to_push)} files in {script_id}"
+    )
     return "\n".join(output)
 
 
@@ -359,21 +407,29 @@ async def update_script_content(
     user_google_email: str,
     script_id: str,
     files: List[Dict[str, str]],
+    merge: bool = True,
 ) -> str:
     """
-    Updates or creates files in a script project.
+    Update or create files in a script project.
+
+    By default this merges the supplied files into the existing project by file
+    name, leaving other files untouched. Set merge=False to replace the entire
+    project: any existing file omitted from `files` is permanently deleted.
 
     Args:
         service: Injected Google API service client
         user_google_email: User's email address
         script_id: The script project ID
-        files: List of file objects with name, type, and source
+        files: File objects with name, type, and source to create or update
+        merge: When True (default), overlay these files onto the current
+            project. When False, replace the full project file set; omitted
+            files are deleted.
 
     Returns:
         str: Formatted string confirming update with file list
     """
     return await _update_script_content_impl(
-        service, user_google_email, script_id, files
+        service, user_google_email, script_id, files, merge
     )
 
 

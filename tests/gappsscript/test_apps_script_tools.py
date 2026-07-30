@@ -20,6 +20,7 @@ from gappsscript.apps_script_tools import (
     _get_script_project_impl,
     _create_script_project_impl,
     _update_script_content_impl,
+    _merge_script_files,
     _run_script_function_impl,
     _create_deployment_impl,
     _list_deployments_impl,
@@ -140,7 +141,7 @@ async def test_create_script_project():
 
 @pytest.mark.asyncio
 async def test_update_script_content():
-    """Test updating script project files"""
+    """Test updating script project files with merge disabled."""
     mock_service = Mock()
     files_to_update = [
         {"name": "Code", "type": "SERVER_JS", "source": "function main() {}"}
@@ -154,10 +155,75 @@ async def test_update_script_content():
         user_google_email="test@example.com",
         script_id="test123",
         files=files_to_update,
+        merge=False,
     )
 
     assert "Updated script project: test123" in result
+    assert "replaced entire project" in result
     assert "Code" in result
+    mock_service.projects().getContent.assert_not_called()
+
+
+def test_merge_script_files_overlays_updates_and_preserves_existing():
+    existing = [
+        {"name": "Code", "type": "SERVER_JS", "source": "old code"},
+        {"name": "appsscript", "type": "JSON", "source": "{}"},
+    ]
+    updates = [{"name": "Code", "type": "SERVER_JS", "source": "new code"}]
+
+    merged = _merge_script_files(existing, updates)
+
+    assert len(merged) == 2
+    by_name = {file["name"]: file for file in merged}
+    assert by_name["Code"]["source"] == "new code"
+    assert by_name["appsscript"]["source"] == "{}"
+
+
+def test_merge_script_files_adds_new_file():
+    existing = [{"name": "Code", "type": "SERVER_JS", "source": "code"}]
+    updates = [{"name": "Utils", "type": "SERVER_JS", "source": "function util() {}"}]
+
+    merged = _merge_script_files(existing, updates)
+
+    assert len(merged) == 2
+    by_name = {file["name"]: file for file in merged}
+    assert by_name["Utils"]["source"] == "function util() {}"
+    assert by_name["Code"]["source"] == "code"
+
+
+@pytest.mark.asyncio
+async def test_update_script_content_merge_fetches_existing_files():
+    """Test merge=True overlays updates onto the current project."""
+    mock_service = Mock()
+    existing_files = [
+        {"name": "Code", "type": "SERVER_JS", "source": "old code"},
+        {"name": "appsscript", "type": "JSON", "source": "{}"},
+    ]
+    files_to_update = [
+        {"name": "Code", "type": "SERVER_JS", "source": "new code"}
+    ]
+    merged_files = _merge_script_files(existing_files, files_to_update)
+
+    mock_service.projects().getContent().execute.return_value = {
+        "files": existing_files
+    }
+    mock_service.projects().updateContent().execute.return_value = {
+        "files": merged_files
+    }
+
+    result = await _update_script_content_impl(
+        service=mock_service,
+        user_google_email="test@example.com",
+        script_id="test123",
+        files=files_to_update,
+        merge=True,
+    )
+
+    update_body = mock_service.projects().updateContent.call_args.kwargs["body"]
+    assert update_body == {"files": merged_files}
+    assert "merged into project" in result
+    assert "Code" in result
+    assert "appsscript" in result
 
 
 @pytest.mark.asyncio

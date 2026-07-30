@@ -174,7 +174,7 @@ export OAUTHLIB_INSECURE_TRANSPORT=1  # Development only
 | `get_script_project` | Core | Get complete project with all files |
 | `get_script_content` | Core | Retrieve specific file content |
 | `create_script_project` | Core | Create new standalone or bound project |
-| `update_script_content` | Core | Update or create script files |
+| `update_script_content` | Core | Merge or replace script project files |
 | `run_script_function` | Core | Execute function with parameters |
 | `list_deployments` | Extended | List all project deployments |
 | `manage_deployment` | Extended | Create, update, or delete script deployments |
