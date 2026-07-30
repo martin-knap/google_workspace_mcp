@@ -44,10 +44,12 @@ def _merge_script_files(
         if file.get("name")
     }
 
-    for file in updated_files:
+    for index, file in enumerate(updated_files):
         name = file.get("name")
         if not name:
-            continue
+            raise ValueError(
+                f"File at index {index} is missing a non-empty 'name'."
+            )
         key = (name, file.get("type"))
         if key not in merged and file.get("type") is None:
             same_name = [existing for existing in merged if existing[0] == name]

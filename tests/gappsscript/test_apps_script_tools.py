@@ -191,6 +191,13 @@ def test_merge_script_files_adds_new_file():
     assert by_name["Code"]["source"] == "code"
 
 
+def test_merge_script_files_rejects_update_without_name():
+    existing = [{"name": "Code", "type": "SERVER_JS", "source": "code"}]
+
+    with pytest.raises(ValueError, match="index 0.*non-empty 'name'"):
+        _merge_script_files(existing, [{"type": "SERVER_JS", "source": "new code"}])
+
+
 def test_merge_script_files_keeps_existing_fields_when_omitted():
     existing = [{"name": "Code", "type": "SERVER_JS", "source": "code"}]
     updates = [{"name": "Code", "source": "new code"}]
