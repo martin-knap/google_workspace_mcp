@@ -85,6 +85,8 @@ async def test_read_sheet_values_renders_all_fetched_rows():
 @pytest.mark.parametrize(
     ("requested_range", "expected_range"),
     [
+        ("A:Z", "A1:Z1000"),
+        ("Sheet1!A:B", "Sheet1!A1:B1000"),
         ("Sheet1!A1:A5000", "Sheet1!A1:A1000"),
         ("'My Custom Sheet'", "'My Custom Sheet'!1:1000"),
     ],
