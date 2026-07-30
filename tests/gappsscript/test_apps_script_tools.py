@@ -191,17 +191,60 @@ def test_merge_script_files_adds_new_file():
     assert by_name["Code"]["source"] == "code"
 
 
+def test_merge_script_files_keeps_existing_fields_when_omitted():
+    existing = [{"name": "Code", "type": "SERVER_JS", "source": "code"}]
+    updates = [{"name": "Code", "source": "new code"}]
+
+    merged = _merge_script_files(existing, updates)
+
+    assert merged == [{"name": "Code", "type": "SERVER_JS", "source": "new code"}]
+
+
+def test_merge_script_files_keeps_same_name_different_type():
+    """Script API names exclude extensions, so Code.gs and Code.html collide."""
+    existing = [
+        {"name": "Code", "type": "SERVER_JS", "source": "server"},
+        {"name": "Code", "type": "HTML", "source": "<html></html>"},
+    ]
+    updates = [{"name": "Code", "type": "SERVER_JS", "source": "new server"}]
+
+    merged = _merge_script_files(existing, updates)
+
+    assert merged == [
+        {"name": "Code", "type": "SERVER_JS", "source": "new server"},
+        {"name": "Code", "type": "HTML", "source": "<html></html>"},
+    ]
+
+
+def test_merge_script_files_does_not_guess_when_name_is_ambiguous():
+    """An update without a type must not clobber one of two same-name files."""
+    existing = [
+        {"name": "Code", "type": "SERVER_JS", "source": "server"},
+        {"name": "Code", "type": "HTML", "source": "<html></html>"},
+    ]
+    updates = [{"name": "Code", "source": "new source"}]
+
+    with pytest.raises(ValueError, match="missing 'type'"):
+        _merge_script_files(existing, updates)
+
+
+def test_merge_script_files_requires_type_for_new_file():
+    existing = [{"name": "Code", "type": "SERVER_JS", "source": "server"}]
+    updates = [{"name": "Utils", "source": "function util() {}"}]
+
+    with pytest.raises(ValueError, match="missing 'type'"):
+        _merge_script_files(existing, updates)
+
+
 @pytest.mark.asyncio
 async def test_update_script_content_merge_fetches_existing_files():
-    """Test merge=True overlays updates onto the current project."""
+    """Test the default merge mode overlays updates onto the current project."""
     mock_service = Mock()
     existing_files = [
         {"name": "Code", "type": "SERVER_JS", "source": "old code"},
         {"name": "appsscript", "type": "JSON", "source": "{}"},
     ]
-    files_to_update = [
-        {"name": "Code", "type": "SERVER_JS", "source": "new code"}
-    ]
+    files_to_update = [{"name": "Code", "type": "SERVER_JS", "source": "new code"}]
     merged_files = _merge_script_files(existing_files, files_to_update)
 
     mock_service.projects().getContent().execute.return_value = {
@@ -216,7 +259,6 @@ async def test_update_script_content_merge_fetches_existing_files():
         user_google_email="test@example.com",
         script_id="test123",
         files=files_to_update,
-        merge=True,
     )
 
     update_body = mock_service.projects().updateContent.call_args.kwargs["body"]

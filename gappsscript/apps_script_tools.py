@@ -17,21 +17,29 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_script_file(file: Dict[str, Any]) -> Dict[str, str]:
-    """Return the Script API file fields used for updateContent requests."""
-    return {
-        "name": file.get("name", ""),
-        "type": file.get("type", ""),
-        "source": file.get("source", ""),
-    }
+    """Return the Script API file fields used for updateContent requests.
+
+    Output-only fields returned by getContent (createTime, functionSet, ...)
+    are dropped. Fields the caller omitted stay omitted so a merge can fall
+    back to the existing value instead of blanking it.
+    """
+    return {key: file[key] for key in ("name", "type", "source") if key in file}
 
 
 def _merge_script_files(
     existing_files: List[Dict[str, Any]],
     updated_files: List[Dict[str, Any]],
 ) -> List[Dict[str, str]]:
-    """Overlay updated files onto the current project by file name."""
+    """Overlay updated files onto the current project.
+
+    Files are keyed by (name, type) because Script API names exclude the
+    extension, so one project may hold both Code.gs and Code.html as "Code".
+    An update that omits `type` falls back to matching by name, but only when
+    exactly one existing file carries that name; otherwise the type cannot be
+    inferred and a ValueError is raised rather than pushing an untyped file.
+    """
     merged = {
-        file.get("name"): _normalize_script_file(file)
+        (file["name"], file.get("type")): _normalize_script_file(file)
         for file in existing_files
         if file.get("name")
     }
@@ -40,7 +48,17 @@ def _merge_script_files(
         name = file.get("name")
         if not name:
             continue
-        merged[name] = _normalize_script_file(file)
+        key = (name, file.get("type"))
+        if key not in merged and file.get("type") is None:
+            same_name = [existing for existing in merged if existing[0] == name]
+            if len(same_name) != 1:
+                raise ValueError(
+                    f"File '{name}' is missing 'type'; it must be one of "
+                    "SERVER_JS, HTML, or JSON because the existing project "
+                    "does not identify a single file with that name."
+                )
+            key = same_name[0]
+        merged[key] = {**merged.get(key, {}), **_normalize_script_file(file)}
 
     return list(merged.values())
 
@@ -386,7 +404,7 @@ async def _update_script_content_impl(
         output.append(f"- {file_name} ({file_type})")
 
     logger.info(
-        f"[update_script_content] Updated {len(files_to_push)} files in {script_id}"
+        f"[update_script_content] Pushed {len(files_to_push)} files to {script_id}"
     )
     return "\n".join(output)
 
