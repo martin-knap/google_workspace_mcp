@@ -95,9 +95,11 @@ async def test_gateway_identity_is_request_scoped_and_clears_stale_state(monkeyp
     )
     context = SimpleNamespace(fastmcp_context=fastmcp_context)
 
-    monkeypatch.setattr("auth.oauth_config.is_trust_gateway_identity", lambda: True)
     monkeypatch.setattr(
-        "auth.oauth_config.get_oauth_config",
+        "auth.auth_info_middleware.is_trust_gateway_identity", lambda: True
+    )
+    monkeypatch.setattr(
+        "auth.auth_info_middleware.get_oauth_config",
         lambda: SimpleNamespace(gateway_identity_header="x-gateway-assertion"),
     )
     monkeypatch.setattr(
@@ -109,7 +111,7 @@ async def test_gateway_identity_is_request_scoped_and_clears_stale_state(monkeyp
         ),
     )
     monkeypatch.setattr(
-        "auth.gateway_identity.extract_email_from_assertion",
+        "auth.auth_info_middleware.extract_email_from_assertion",
         lambda assertion: "verified@example.com" if assertion == "signed.jwt" else None,
     )
     monkeypatch.setattr(
@@ -143,9 +145,11 @@ async def test_gateway_identity_failure_does_not_fall_back(
     fastmcp_context.state["authenticated_user_email"] = "stale@example.com"
     context = SimpleNamespace(fastmcp_context=fastmcp_context)
 
-    monkeypatch.setattr("auth.oauth_config.is_trust_gateway_identity", lambda: True)
     monkeypatch.setattr(
-        "auth.oauth_config.get_oauth_config",
+        "auth.auth_info_middleware.is_trust_gateway_identity", lambda: True
+    )
+    monkeypatch.setattr(
+        "auth.auth_info_middleware.get_oauth_config",
         lambda: SimpleNamespace(gateway_identity_header="x-gateway-assertion"),
     )
     monkeypatch.setattr(
@@ -153,7 +157,7 @@ async def test_gateway_identity_failure_does_not_fall_back(
         lambda **kwargs: headers,
     )
     monkeypatch.setattr(
-        "auth.gateway_identity.extract_email_from_assertion",
+        "auth.auth_info_middleware.extract_email_from_assertion",
         lambda assertion: verified_email,
     )
     monkeypatch.setattr(

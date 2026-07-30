@@ -2390,6 +2390,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "defusedxml" },
+    { name = "email-validator" },
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "google-api-python-client" },
@@ -2479,6 +2480,7 @@ valkey = [
 requires-dist = [
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "defusedxml", specifier = ">=0.7.1" },
+    { name = "email-validator", specifier = ">=2.0.0" },
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "fastmcp", specifier = ">=3.4.4" },
     { name = "google-api-python-client", specifier = ">=2.168.0" },

@@ -235,7 +235,8 @@ async def test_gateway_callback_rejects_predeployment_false_enforcement_marker(
 
 
 @pytest.mark.asyncio
-async def test_non_gateway_callback_preserves_false_enforcement_fallback(monkeypatch):
+async def test_non_gateway_callback_keeps_google_email_verbatim(monkeypatch):
+    """Legacy flows must keep Google's email byte-for-byte as the credential key."""
     oauth_store, credential_store = _patch_successful_callback(
         monkeypatch,
         state_info={
@@ -256,9 +257,35 @@ async def test_non_gateway_callback_preserves_false_enforcement_fallback(monkeyp
         session_id="session-1",
     )
 
-    assert email == "user@example.com"
-    assert credential_store.saved_user_email == "user@example.com"
+    assert email == "User@Example.com"
+    assert credential_store.saved_user_email == "User@Example.com"
     assert oauth_store.store_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_callback_rejects_unusable_google_email(monkeypatch):
+    oauth_store, credential_store = _patch_successful_callback(
+        monkeypatch,
+        state_info={
+            "session_id": "session-1",
+            "code_verifier": "verifier",
+            "expected_user_email": "gateway@example.com",
+            "enforce_user_email_match": True,
+            "principal_source": "gateway_assertion",
+        },
+        google_email="not-an-email",
+    )
+
+    with pytest.raises(GoogleAuthenticationError, match="Google account mismatch"):
+        await handle_auth_callback(
+            scopes=["scope.a"],
+            authorization_response="https://mcp.example/callback?state=abc&code=code",
+            redirect_uri="https://mcp.example/callback",
+            session_id="session-1",
+        )
+
+    assert credential_store.saved_credentials is None
+    assert oauth_store.store_calls == 0
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,9 @@ from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.dependencies import get_http_headers
 
 from auth.external_oauth_provider import get_session_time
+from auth.gateway_identity import GatewayIdentityError, extract_email_from_assertion
 from auth.oauth21_session_store import ensure_session_from_access_token
+from auth.oauth_config import get_oauth_config, is_trust_gateway_identity
 from auth.oauth_types import WorkspaceAccessToken
 
 # Configure logging
@@ -56,14 +58,7 @@ class AuthInfoMiddleware(Middleware):
         # Trusted-gateway identity: verify the SIGNED assertion the fronting proxy injects
         # and use the asserted email as the principal. This is the highest-priority and only
         # trusted source in this mode (MCP_ENABLE_OAUTH21 is off — the proxy owns the handshake).
-        from auth.oauth_config import is_trust_gateway_identity, get_oauth_config
-
         if is_trust_gateway_identity():
-            from auth.gateway_identity import (
-                GatewayIdentityError,
-                extract_email_from_assertion,
-            )
-
             try:
                 # FastMCP state is session-scoped by default. Remove any identity left by
                 # legacy authentication before installing this request's verified identity.
@@ -465,9 +460,11 @@ class AuthInfoMiddleware(Middleware):
 
         except Exception as e:
             # Check if this is an authentication error - don't log traceback for these
-            if "GoogleAuthenticationError" in str(
-                type(e)
-            ) or "Access denied: Cannot retrieve credentials" in str(e):
+            if (
+                isinstance(e, GatewayIdentityError)
+                or "GoogleAuthenticationError" in str(type(e))
+                or "Access denied: Cannot retrieve credentials" in str(e)
+            ):
                 logger.info(f"Authentication check failed: {e}")
             else:
                 logger.error(f"Error in on_call_tool middleware: {e}", exc_info=True)
@@ -487,9 +484,11 @@ class AuthInfoMiddleware(Middleware):
 
         except Exception as e:
             # Check if this is an authentication error - don't log traceback for these
-            if "GoogleAuthenticationError" in str(
-                type(e)
-            ) or "Access denied: Cannot retrieve credentials" in str(e):
+            if (
+                isinstance(e, GatewayIdentityError)
+                or "GoogleAuthenticationError" in str(type(e))
+                or "Access denied: Cannot retrieve credentials" in str(e)
+            ):
                 logger.info(f"Authentication check failed in prompt: {e}")
             else:
                 logger.error(f"Error in on_get_prompt middleware: {e}", exc_info=True)

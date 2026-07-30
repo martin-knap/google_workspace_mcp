@@ -53,8 +53,10 @@ its own assertion to the upstream (Pomerium: set `pass_identity_headers: true` o
    (`authenticated_via=gateway_assertion`) in request-scoped state only.
 3. **No prompt / no spoofing** — like OAuth 2.1 mode, the `user_google_email` tool parameter
    is hidden and auto-filled from the verified principal, so clients never ask for an email
-   and a caller can't act on another account by passing one. This includes
-   `start_google_auth`; cached clients that still send an email have it ignored.
+   and a caller can't act on another account by passing one. Any caller-supplied
+   `user_google_email` is dropped from every tool call (cached pre-gateway schemas keep
+   working), and a configured `USER_GOOGLE_EMAIL` default is ignored — the verified
+   principal always wins.
 4. **Consent enforcement** — the per-user Google consent (side flow) is initiated for the
    principal. The OAuth state records an explicit immutable principal binding, and at
    `/oauth2callback` the Google account actually consented **must match** it; a missing

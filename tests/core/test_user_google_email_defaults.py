@@ -108,6 +108,29 @@ async def test_call_tool_injects_default_email_before_validation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gateway_mode_strips_email_and_ignores_configured_default(monkeypatch):
+    """In gateway mode call_tool must drop caller-supplied user_google_email and
+    never inject USER_GOOGLE_EMAIL — tool signatures no longer accept the param."""
+    monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", "configured@example.com")
+    monkeypatch.setattr(server_module, "is_oauth21_enabled", lambda: False)
+    monkeypatch.setattr(server_module, "is_trust_gateway_identity", lambda: True)
+
+    server = SecureFastMCP(name="test_server")
+
+    def search_messages(query: str) -> str:
+        return query
+
+    server.tool()(search_messages)
+
+    result = await server.call_tool(
+        "search_messages",
+        {"query": "hello", "user_google_email": "spoofed@example.com"},
+    )
+
+    assert _result_text(result) == "hello"
+
+
+@pytest.mark.asyncio
 async def test_gateway_mode_hides_start_google_auth_email(monkeypatch):
     monkeypatch.setattr(server_module, "USER_GOOGLE_EMAIL", None)
     monkeypatch.setattr(server_module, "is_oauth21_enabled", lambda: False)

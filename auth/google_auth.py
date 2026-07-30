@@ -823,10 +823,8 @@ async def handle_auth_callback(
             logger.error("Could not retrieve user email from Google.")
             raise ValueError("Failed to get user email for identification.")
 
-        consented_email = normalize_principal_email(user_info["email"])
-        if not consented_email:
-            raise ValueError("Google returned an unusable email for identification.")
-        logger.info("Identified user_google_email: %s", consented_email)
+        user_google_email = user_info["email"]
+        logger.info(f"Identified user_google_email: {user_google_email}")
 
         enforcement_marker = state_info.get("enforce_user_email_match")
         if is_trust_gateway_identity():
@@ -839,8 +837,9 @@ async def handle_auth_callback(
             # State entries created before explicit binding markers existed are not
             # enforcing outside trusted-gateway mode.
             enforcement_marker = False
-        enforce_user_email_match = enforcement_marker is True
-        if enforce_user_email_match:
+        if enforcement_marker is True:
+            # Normalization is confined to the enforced gateway path so legacy flows
+            # keep Google's email byte-for-byte as the credential key.
             expected_email = normalize_principal_email(
                 state_info.get("expected_user_email")
             )
@@ -853,22 +852,21 @@ async def handle_auth_callback(
                 raise GoogleAuthenticationError(
                     "OAuth consent state is missing its verified gateway principal."
                 )
+            consented_email = normalize_principal_email(user_google_email)
             if consented_email != expected_email:
                 logger.error(
                     "SECURITY: OAuth consent account '%s' does not match the gateway "
                     "identity '%s'; rejecting (no credentials stored).",
-                    consented_email,
+                    user_google_email,
                     expected_email,
                 )
                 raise GoogleAuthenticationError(
-                    f"Google account mismatch: you signed in as {consented_email}, but "
-                    f"your verified gateway identity is {expected_email}. Please sign "
-                    f"in to Google as {expected_email}."
+                    f"Google account mismatch: you signed in as {user_google_email}, "
+                    f"but your verified gateway identity is {expected_email}. Please "
+                    f"sign in to Google as {expected_email}."
                 )
             # Use the exact canonical key selected by the gateway for every store.
             user_google_email = expected_email
-        else:
-            user_google_email = consented_email
 
         stateless_mode = is_stateless_mode()
         credential_store = None
