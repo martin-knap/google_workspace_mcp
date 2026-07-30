@@ -1033,7 +1033,7 @@ The required scopes (`chat.spaces.readonly`, `chat.messages.readonly`, `chat.mes
 | <sub>`get_script_project`</sub> | <sub>Core</sub> | <sub>Get complete project with all files</sub> |
 | <sub>`get_script_content`</sub> | <sub>Core</sub> | <sub>Retrieve specific file content</sub> |
 | <sub>`create_script_project`</sub> | <sub>Core</sub> | <sub>Create new standalone or bound project</sub> |
-| <sub>`update_script_content`</sub> | <sub>Core</sub> | <sub>Update or create script files</sub> |
+| <sub>`update_script_content`</sub> | <sub>Core</sub> | <sub>Merge or replace script project files</sub> |
 | <sub>`run_script_function`</sub> | <sub>Core</sub> | <sub>Execute function with parameters</sub> |
 | <sub>`list_deployments`</sub> | <sub>Extended</sub> | <sub>List all project deployments</sub> |
 | <sub>`manage_deployment`</sub> | <sub>Extended</sub> | <sub>Create, update, or delete script deployments</sub> |
