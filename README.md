@@ -369,6 +369,15 @@ batching, and resource attributes are honored. `OTEL_EXPORTER_OTLP_TRACES_ENDPOI
 and `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` override their general counterparts. When
 neither endpoint variable is set, tracing is fully disabled.
 
+Spans already carry the opaque `enduser.id` FastMCP derives from the OAuth token.
+To also record the authenticated user's email as the OpenTelemetry `user.email`
+attribute — so traces can be attributed to a person — opt in explicitly. This is
+PII and is off by default:
+
+```bash
+export WORKSPACE_MCP_OTEL_USER_EMAIL="true"   # default: unset (disabled)
+```
+
 </details>
 
 ### Google Custom Search Setup

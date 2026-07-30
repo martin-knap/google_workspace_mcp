@@ -13,13 +13,46 @@ it by installing the ``otel`` extra and setting ``OTEL_EXPORTER_OTLP_ENDPOINT``.
 
 import logging
 import os
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SERVICE_NAME = "google-workspace-mcp"
 _OTLP_PROTOCOL_GRPC = "grpc"
 _OTLP_PROTOCOL_HTTP = "http/protobuf"
+
+# Recording the authenticated user's email on spans is personally identifying,
+# so it is strictly opt-in and off by default. FastMCP's own spans already
+# carry the opaque ``enduser.id`` derived from the OAuth token; this adds a
+# human-readable ``user.email`` only when the operator sets this env var.
+USER_EMAIL_ATTRIBUTE_ENV = "WORKSPACE_MCP_OTEL_USER_EMAIL"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _user_email_attribute_enabled() -> bool:
+    """True if the operator opted in to recording the user email on spans."""
+    return os.getenv(USER_EMAIL_ATTRIBUTE_ENV, "").strip().lower() in _TRUTHY
+
+
+def record_authenticated_user(email: Optional[str]) -> None:
+    """Attach the authenticated Google user's email to the active span.
+
+    Sets the OpenTelemetry ``user.email`` attribute so tool-call traces can be
+    attributed to a person rather than only the opaque ``enduser.id`` FastMCP
+    derives from the OAuth token. This is PII, so it is a no-op unless the
+    operator opts in via ``WORKSPACE_MCP_OTEL_USER_EMAIL``. Safe to call
+    unconditionally: it no-ops when disabled, when there is no email, when the
+    OpenTelemetry API is not installed, or when no span is recording.
+    """
+    if not email or not _user_email_attribute_enabled():
+        return
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return
+    span = trace.get_current_span()
+    if span is not None and span.is_recording():
+        span.set_attribute("user.email", email)
 
 
 def _otlp_endpoint_configured() -> bool:
