@@ -212,6 +212,32 @@ def test_merge_script_files_keeps_existing_fields_when_omitted():
     assert merged == [{"name": "Code", "type": "SERVER_JS", "source": "new code"}]
 
 
+def test_merge_script_files_keeps_existing_type_when_update_type_is_none():
+    existing = [{"name": "Code", "type": "SERVER_JS", "source": "code"}]
+    updates = [{"name": "Code", "type": None, "source": "new code"}]
+
+    merged = _merge_script_files(existing, updates)
+
+    assert merged == [{"name": "Code", "type": "SERVER_JS", "source": "new code"}]
+
+
+@pytest.mark.parametrize("file_type", ["TEXT", "", 123])
+def test_merge_script_files_rejects_unsupported_explicit_type(file_type):
+    with pytest.raises(UserInputError, match="unsupported type"):
+        _merge_script_files(
+            [],
+            [{"name": "Code", "type": file_type, "source": "source"}],
+        )
+
+
+def test_merge_script_files_rejects_json_file_without_manifest_name():
+    with pytest.raises(UserInputError, match="manifest name 'appsscript'"):
+        _merge_script_files(
+            [],
+            [{"name": "config", "type": "JSON", "source": "{}"}],
+        )
+
+
 def test_merge_script_files_keeps_same_name_different_type():
     """Script API names exclude extensions, so Code.gs and Code.html collide."""
     existing = [

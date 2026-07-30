@@ -17,6 +17,8 @@ from core.utils import ObjectList, UserInputError, handle_http_errors
 
 logger = logging.getLogger(__name__)
 
+_VALID_SCRIPT_FILE_TYPES = frozenset({"SERVER_JS", "HTML", "JSON"})
+
 # These locks serialize updates only within this process. Other worker
 # processes or service instances can still race while merging the same script_id.
 _SCRIPT_UPDATE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = (
@@ -36,7 +38,11 @@ def _normalize_script_file(file: Dict[str, Any]) -> Dict[str, str]:
     are dropped. Fields the caller omitted stay omitted so a merge can fall
     back to the existing value instead of blanking it.
     """
-    return {key: file[key] for key in ("name", "type", "source") if key in file}
+    return {
+        key: file[key]
+        for key in ("name", "type", "source")
+        if key in file and file[key] is not None
+    }
 
 
 def _merge_script_files(
@@ -63,8 +69,20 @@ def _merge_script_files(
             raise UserInputError(
                 f"File at index {index} is missing a non-empty 'name'."
             )
-        key = (name, file.get("type"))
-        if key not in merged and file.get("type") is None:
+        file_type = file.get("type")
+        if file_type is not None:
+            if file_type not in _VALID_SCRIPT_FILE_TYPES:
+                raise UserInputError(
+                    f"File '{name}' has unsupported type '{file_type}'; it must "
+                    "be one of SERVER_JS, HTML, or JSON."
+                )
+            if file_type == "JSON" and name != "appsscript":
+                raise UserInputError(
+                    f"JSON file '{name}' must use the manifest name 'appsscript'."
+                )
+
+        key = (name, file_type)
+        if key not in merged and file_type is None:
             same_name = [existing for existing in merged if existing[0] == name]
             if len(same_name) != 1:
                 raise UserInputError(
