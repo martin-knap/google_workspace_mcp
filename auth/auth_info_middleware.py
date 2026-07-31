@@ -6,9 +6,8 @@ import asyncio
 import logging
 import time
 
+from fastmcp.server.dependencies import get_access_token, get_http_headers
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.server.dependencies import get_access_token
-from fastmcp.server.dependencies import get_http_headers
 
 from auth.external_oauth_provider import get_session_time
 from auth.gateway_identity import GatewayIdentityError, extract_email_from_assertion
