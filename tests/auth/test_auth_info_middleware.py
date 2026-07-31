@@ -81,6 +81,43 @@ async def test_on_call_tool_includes_authorization_header_for_bearer_auth(
     assert observed["token"] == "ya29.token"
     assert fastmcp_context.state["authenticated_user_email"] == "user@example.com"
     assert fastmcp_context.state["authenticated_via"] == "bearer_token"
+    assert fastmcp_context.state_serializable["authenticated_user_email"] is False
+    assert fastmcp_context.state_serializable["authenticated_via"] is False
+    assert fastmcp_context.state_serializable["access_token"] is False
+    assert fastmcp_context.state_serializable["user_email"] is False
+    assert fastmcp_context.state_serializable["username"] is False
+    assert fastmcp_context.state_serializable["auth_provider_type"] is False
+    assert fastmcp_context.state_serializable["token_type"] is False
+
+
+@pytest.mark.asyncio
+async def test_fastmcp_oauth_identity_is_request_scoped(monkeypatch):
+    middleware = AuthInfoMiddleware()
+    fastmcp_context = _FakeFastMCPContext()
+    context = SimpleNamespace(fastmcp_context=fastmcp_context)
+    access_token = SimpleNamespace(
+        email="passthrough@local",
+        claims={"email": "passthrough@local"},
+    )
+
+    monkeypatch.setattr(
+        "auth.auth_info_middleware.get_access_token", lambda: access_token
+    )
+    monkeypatch.setattr(
+        "auth.auth_info_middleware.get_http_headers",
+        lambda *args, **kwargs: pytest.fail(
+            "fastmcp_oauth path must not fall through to bearer header parsing"
+        ),
+    )
+
+    await middleware._process_request_for_auth(context)
+
+    assert fastmcp_context.state["authenticated_user_email"] == "passthrough@local"
+    assert fastmcp_context.state["authenticated_via"] == "fastmcp_oauth"
+    assert fastmcp_context.state["access_token"] is access_token
+    assert fastmcp_context.state_serializable["authenticated_user_email"] is False
+    assert fastmcp_context.state_serializable["authenticated_via"] is False
+    assert fastmcp_context.state_serializable["access_token"] is False
 
 
 @pytest.mark.asyncio
@@ -229,3 +266,5 @@ async def test_on_call_tool_requests_authorization_header_when_default_headers_a
     assert observed["token"] == "ya29.token"
     assert fastmcp_context.state["authenticated_user_email"] == "user@example.com"
     assert fastmcp_context.state["authenticated_via"] == "bearer_token"
+    assert fastmcp_context.state_serializable["authenticated_user_email"] is False
+    assert fastmcp_context.state_serializable["authenticated_via"] is False
