@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -229,3 +230,61 @@ async def test_on_call_tool_requests_authorization_header_when_default_headers_a
     assert observed["token"] == "ya29.token"
     assert fastmcp_context.state["authenticated_user_email"] == "user@example.com"
     assert fastmcp_context.state["authenticated_via"] == "bearer_token"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transport", "oauth21_enabled", "headers", "expect_warning"),
+    [
+        ("streamable-http", False, {}, False),
+        (
+            "streamable-http",
+            False,
+            {"authorization": "Bearer invalid-token"},
+            True,
+        ),
+        ("streamable-http", True, {}, True),
+        ("stdio", False, {}, True),
+    ],
+)
+async def test_unresolved_auth_warning_is_suppressed_only_for_legacy_http_no_bearer(
+    monkeypatch,
+    caplog,
+    transport,
+    oauth21_enabled,
+    headers,
+    expect_warning,
+):
+    middleware = AuthInfoMiddleware()
+    fastmcp_context = _FakeFastMCPContext()
+    fastmcp_context.session_id = None
+    context = SimpleNamespace(fastmcp_context=fastmcp_context)
+
+    monkeypatch.setattr("auth.auth_info_middleware.get_access_token", lambda: None)
+    monkeypatch.setattr(
+        "auth.auth_info_middleware.get_http_headers", lambda **kwargs: headers
+    )
+    monkeypatch.setattr(
+        "auth.auth_info_middleware.get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: oauth21_enabled,
+        ),
+    )
+    monkeypatch.setattr(
+        "auth.auth_info_middleware.is_trust_gateway_identity", lambda: False
+    )
+    monkeypatch.setattr("core.config.get_transport_mode", lambda: transport)
+    monkeypatch.setattr(
+        "auth.oauth21_session_store.get_oauth21_session_store",
+        lambda: SimpleNamespace(get_single_user_email=lambda: None),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="auth.auth_info_middleware"):
+        await middleware._process_request_for_auth(context)
+
+    unresolved_warnings = [
+        record
+        for record in caplog.records
+        if "reason=all_auth_paths_failed" in record.getMessage()
+    ]
+    assert bool(unresolved_warnings) is expect_warning
