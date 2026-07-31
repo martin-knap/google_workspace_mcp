@@ -101,8 +101,11 @@ def get_tool_components(server) -> dict:
     return tools
 
 
-def filter_server_tools(server):
-    """Remove disabled tools from the server after registration."""
+def filter_server_tools(server) -> int:
+    """Remove disabled tools from the server after registration.
+
+    Returns the number of tools removed so callers can report it.
+    """
     enabled_tools = get_enabled_tools()
     oauth21_enabled = is_oauth21_enabled()
     permissions_mode = is_permissions_mode()
@@ -112,7 +115,7 @@ def filter_server_tools(server):
         and not is_read_only_mode()
         and not permissions_mode
     ):
-        return
+        return 0
 
     tools_removed = 0
     tool_components = get_tool_components(server)
@@ -149,7 +152,7 @@ def filter_server_tools(server):
             if required_scopes:
                 # If ANY required scope is not in the allowed read-only scopes, disable the tool
                 if not all(scope in allowed_scopes for scope in required_scopes):
-                    logger.info(
+                    logger.debug(
                         f"Read-only mode: Disabling tool '{tool_name}' (requires write scopes: {required_scopes})"
                     )
                     tools_to_remove.add(tool_name)
@@ -173,7 +176,7 @@ def filter_server_tools(server):
             required_scopes = getattr(func_to_check, "_required_google_scopes", [])
             if required_scopes:
                 if not all(scope in perm_allowed for scope in required_scopes):
-                    logger.info(
+                    logger.debug(
                         "Permissions mode: Disabling tool '%s' (requires: %s)",
                         tool_name,
                         required_scopes,
@@ -206,6 +209,9 @@ def filter_server_tools(server):
             mode = "Read-Only"
         else:
             mode = "Full"
-        logger.info(
+        # Debug level: main.py reports the filtered count on the startup screen.
+        logger.debug(
             f"Tool filtering: removed {tools_removed} tools, {enabled_count} enabled. Mode: {mode}"
         )
+
+    return tools_removed

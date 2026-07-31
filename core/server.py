@@ -224,7 +224,7 @@ class SecureFastMCP(FastMCP):
 
         # Rebuild middleware stack
         app.middleware_stack = app.build_middleware_stack()
-        logger.info(
+        logger.debug(
             "Added middleware stack: WellKnownCacheControl, OriginValidation, "
             "Session Management"
         )
@@ -359,7 +359,8 @@ def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
 def set_transport_mode(mode: str):
     """Sets the transport mode for the server."""
     _set_transport_mode(mode)
-    logger.info(f"Transport: {mode}")
+    # Debug level: the startup banner already shows the active transport.
+    logger.debug(f"Transport: {mode}")
 
 
 def _ensure_legacy_callback_route() -> None:
@@ -715,7 +716,8 @@ def configure_server_for_http():
             )
             raise
     else:
-        logger.info(
+        # Debug level: main.py surfaces the loopback default as a startup notice.
+        logger.debug(
             "OAuth 2.0 legacy mode - streamable HTTP defaults to loopback unless "
             "WORKSPACE_MCP_HOST is explicitly set."
         )
