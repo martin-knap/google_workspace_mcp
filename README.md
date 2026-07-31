@@ -48,7 +48,7 @@
 
 Workspace MCP connects AI assistants to all twelve major Google Workspace services - 120+ tools behind a single MCP server, with OAuth 2.1 multi-user auth, three progressive tool tiers, read-only mode, a full CLI, and stateless container deployment. It runs locally over stdio for legacy clients and remotely over streamable HTTP with full implementation of the latest MCP spec.
 
-The README covers just enough to get you running, with extensive documentation on the webiste:
+The README covers just enough to get you running, with extensive documentation on the website:
 
 | Where to go | What you'll find |
 |:---|:---|
