@@ -68,13 +68,11 @@ The README covers just enough to get you running, with extensive documentation o
 
 **For Security Teams**
 
-By default, this server sends no data anywhere except Google's APIs, on behalf of the authenticated user, using your own OAuth client credentials. There is no usage reporting, analytics, license server, or SaaS dependency. Optional OpenTelemetry tracing exports only to an OTLP endpoint you explicitly configure. The default data path is: your infrastructure → Google APIs.
+By default, this server sends no data anywhere except Google's APIs, on behalf of the authenticated user, using your own OAuth client credentials. There is no usage reporting, analytics, license server, or SaaS dependency outside optional OTel support for your own usage.
 
 - **Fully open source** — every line is auditable in this repo
-- **Your OAuth client, your GCP project** — credentials never leave your environment
-- **You control the scopes** — read-only, granular per-service permissions, or full access
+- **Your OAuth client, your GCP project** — credentials never leave your environment & you control scopes
 - **You control the network** — deploy behind your reverse proxy, in your VPC, on your own terms
-- **No third-party services** — no intermediary servers, no token relays, no hosted backends
 - **Stateless mode** — zero disk writes for locked-down container environments
 - **Sensitive path blocking** — local file reads default to the managed attachment directory, and `validate_file_path()` still blocks `.env*` files plus common home-directory credential stores such as `~/.ssh/` and `~/.aws/` even if `ALLOWED_FILE_DIRS` is broadened
 
