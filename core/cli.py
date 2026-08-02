@@ -16,7 +16,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import stat
 import sys
 from typing import Any
@@ -69,39 +68,18 @@ def _build_oauth() -> OAuth:
     return OAuth(token_storage=storage)
 
 
-# Guarded CLI value coercion.
-#
-# The previous parser ran json.loads on every value and only fell back to the
-# raw string on a JSONDecodeError. That silently mangled ordinary quoted
-# strings: a value like '"grow therapy"' is valid JSON, so json.loads stripped
-# the surrounding quotes and the server received grow therapy (unquoted),
-# breaking Gmail queries that rely on the literal quotes for phrase matching.
-#
-# This helper only attempts json.loads when the value actually looks like JSON
-# (an empty string maps to ''; a container starting with { or [; the JSON
-# scalars true/false/null; or a numeric literal). Anything else is returned
-# unchanged as a raw string, so quotes and other characters survive verbatim.
-# page_size=3 still coerces to int(3) and values=[["a"]] still parses to a list.
-_JSON_NUMBER_RE = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$")
+def _coerce_cli_value(value: str) -> Any:
+    """Parse a CLI value as JSON, but keep the raw text whenever it is a string.
 
-
-def _coerce_cli_value(v: str) -> Any:
-    """Coerce a CLI value to a JSON type only when it clearly looks like JSON."""
-    if v == "":
-        return ""
-
-    stripped = v.strip()
-    looks_like_json = (
-        stripped[:1] in "{["
-        or stripped in {"true", "false", "null"}
-        or bool(_JSON_NUMBER_RE.match(stripped))
-    )
-    if looks_like_json:
-        try:
-            return json.loads(v)
-        except json.JSONDecodeError:
-            return v
-    return v
+    ``max_results=5`` still becomes ``int(5)``, while a quoted value such as
+    ``query='"grow therapy"'`` keeps its quotes instead of being unwrapped into
+    ``grow therapy``, which would break Gmail phrase matching.
+    """
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return value if isinstance(parsed, str) else parsed
 
 
 async def _list_tools(url: str) -> None:
