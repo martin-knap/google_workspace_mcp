@@ -356,7 +356,7 @@ class AuthInfoMiddleware(Middleware):
                 auth_header = (get_http_headers() or {}).get("authorization", "")
             except Exception:
                 auth_header = ""
-            if auth_header.startswith("Bearer "):
+            if auth_header[:7].lower() == "bearer ":
                 bearer = auth_header[7:]
                 token_fp = _token_fingerprint(bearer)
                 token_kind = (
@@ -366,13 +366,20 @@ class AuthInfoMiddleware(Middleware):
                 token_fp = "none"
                 token_kind = "no_bearer"
             session_id = getattr(context.fastmcp_context, "session_id", None)
-            logger.warning(
-                f"[AuthInfoMiddleware] No authenticated user resolved "
-                f"reason=all_auth_paths_failed "
-                f"token={token_fp} "
-                f"token_kind={token_kind} "
-                f"session_id={session_id}"
+            expected_legacy_http_no_bearer = (
+                transport_mode == "streamable-http"
+                and token_kind == "no_bearer"
+                and not get_oauth_config().is_oauth21_enabled()
+                and not is_trust_gateway_identity()
             )
+            if not expected_legacy_http_no_bearer:
+                logger.warning(
+                    f"[AuthInfoMiddleware] No authenticated user resolved "
+                    f"reason=all_auth_paths_failed "
+                    f"token={token_fp} "
+                    f"token_kind={token_kind} "
+                    f"session_id={session_id}"
+                )
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         """Extract auth info from token and set in context state"""
