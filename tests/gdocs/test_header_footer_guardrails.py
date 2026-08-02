@@ -345,11 +345,7 @@ class TestHeaderFooterGuardrails:
                                     "endIndex": 19,
                                     "paragraph": {
                                         "elements": [
-                                            {
-                                                "textRun": {
-                                                    "content": "Tabbed body text"
-                                                }
-                                            }
+                                            {"textRun": {"content": "Tabbed body text"}}
                                         ]
                                     },
                                 }

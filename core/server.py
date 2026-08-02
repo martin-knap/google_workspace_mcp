@@ -14,12 +14,14 @@ install_startup_warning_filters()
 
 from auth.auth_info_middleware import AuthInfoMiddleware
 from auth.google_auth import handle_auth_callback, start_auth_flow, check_client_secrets
+from auth.gateway_identity import get_verified_gateway_principal
 from auth.mcp_session_middleware import MCPSessionMiddleware
 from auth.oauth21_session_store import set_auth_provider
 from auth.oauth_config import (
     is_oauth21_enabled,
     is_external_oauth21_provider,
     get_oauth_config,
+    is_trust_gateway_identity,
 )
 from auth.oauth_responses import (
     create_error_response,
@@ -222,7 +224,7 @@ class SecureFastMCP(FastMCP):
 
         # Rebuild middleware stack
         app.middleware_stack = app.build_middleware_stack()
-        logger.info(
+        logger.debug(
             "Added middleware stack: WellKnownCacheControl, OriginValidation, "
             "Session Management"
         )
@@ -238,6 +240,23 @@ class SecureFastMCP(FastMCP):
         runtime still resolves the email correctly via the service decorator.
         """
         tools = list(await super().list_tools(run_middleware=run_middleware))
+        if is_trust_gateway_identity():
+            patched = []
+            for tool in tools:
+                if tool.name != "start_google_auth":
+                    patched.append(tool)
+                    continue
+                schema = dict(tool.parameters)
+                required = [
+                    name
+                    for name in schema.get("required", [])
+                    if name != "user_google_email"
+                ]
+                properties = dict(schema.get("properties", {}))
+                properties.pop("user_google_email", None)
+                schema.update(required=required, properties=properties)
+                patched.append(tool.model_copy(update={"parameters": schema}))
+            return patched
         if not USER_GOOGLE_EMAIL or is_oauth21_enabled():
             return tools
         patched = []
@@ -264,7 +283,17 @@ class SecureFastMCP(FastMCP):
         inject the default BEFORE that validation step.
         """
         arguments = arguments or {}
-        if (
+        if is_trust_gateway_identity():
+            # The verified gateway principal is authoritative for every tool, and the
+            # parameter is gone from tool signatures. Drop any caller-supplied email
+            # (older clients may have the pre-gateway schema cached) instead of letting
+            # it fail signature validation, and never inject USER_GOOGLE_EMAIL.
+            arguments = {
+                key: value
+                for key, value in arguments.items()
+                if key != "user_google_email"
+            }
+        elif (
             not is_oauth21_enabled()
             and USER_GOOGLE_EMAIL
             and "user_google_email" not in arguments
@@ -273,9 +302,11 @@ class SecureFastMCP(FastMCP):
         return await super().call_tool(name, arguments, *args, **kwargs)
 
 
-# Build server instructions with user email context for single-user mode
+# Build server instructions with user email context for single-user mode.
+# Skipped in trusted-gateway mode: the verified principal supersedes the configured
+# default, and user_google_email is no longer a tool parameter clients can pass.
 _server_instructions = None
-if USER_GOOGLE_EMAIL:
+if USER_GOOGLE_EMAIL and not is_trust_gateway_identity():
     _server_instructions = f"""Connected Google account: {USER_GOOGLE_EMAIL}
 
 When using Google Workspace tools, always use `{USER_GOOGLE_EMAIL}` as the `user_google_email` parameter. Do not ask the user for their email address."""
@@ -328,7 +359,8 @@ def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
 def set_transport_mode(mode: str):
     """Sets the transport mode for the server."""
     _set_transport_mode(mode)
-    logger.info(f"Transport: {mode}")
+    # Debug level: the startup banner already shows the active transport.
+    logger.debug(f"Transport: {mode}")
 
 
 def _ensure_legacy_callback_route() -> None:
@@ -684,7 +716,8 @@ def configure_server_for_http():
             )
             raise
     else:
-        logger.info(
+        # Debug level: main.py surfaces the loopback default as a startup notice.
+        logger.debug(
             "OAuth 2.0 legacy mode - streamable HTTP defaults to loopback unless "
             "WORKSPACE_MCP_HOST is explicitly set."
         )
@@ -824,6 +857,9 @@ async def start_google_auth(
             "original tool."
         )
 
+    if is_trust_gateway_identity():
+        user_google_email = await get_verified_gateway_principal()
+
     if not user_google_email:
         raise ValueError("user_google_email must be provided.")
 
@@ -847,6 +883,9 @@ async def start_google_auth(
             user_google_email=user_google_email,
             service_name=service_name,
             redirect_uri=get_oauth_redirect_uri_for_current_mode(),
+            principal_source=(
+                "gateway_assertion" if is_trust_gateway_identity() else None
+            ),
         )
         return auth_message
     except Exception as e:

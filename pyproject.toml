@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workspace-mcp"
-version = "1.22.2"
+version = "1.23.0"
 description = "Comprehensive, highly performant Google Workspace Streamable HTTP & SSE MCP Server for Calendar, Gmail, Docs, Sheets, Slides & Drive"
 readme = "README.md"
 keywords = [ "mcp", "google", "workspace", "llm", "ai", "claude", "model", "context", "protocol", "server"]
@@ -24,6 +24,7 @@ dependencies = [
  "pyyaml>=6.0.2",
  "cryptography>=48.0.1",
  "defusedxml>=0.7.1",
+ "email-validator>=2.0.0",
  "pypdf>=6.14.2",
  "pytz>=2026.1.post1",
  "markdown-it-py>=3.0.0",
@@ -95,7 +96,7 @@ dev = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
-    "ruff>=0.12.4",
+    "ruff>=0.15.22,<0.16",
     "tomlkit>=0.13.3",
     "twine>=5.0.0",
 ]
@@ -126,7 +127,7 @@ dev = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
-    "ruff>=0.12.4",
+    "ruff>=0.15.22,<0.16",
     "tomlkit>=0.13.3",
     "twine>=5.0.0",
 ]
