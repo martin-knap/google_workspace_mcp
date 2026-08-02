@@ -926,7 +926,14 @@ def main():
                     if http_available:
                         app = server.http_app(path="/mcp")
                         config = uvicorn.Config(
-                            app, host=http_host, port=http_port, log_level="warning"
+                            app,
+                            host=http_host,
+                            port=http_port,
+                            log_level="warning",
+                            # Match FastMCP's own uvicorn config: uvicorn's "auto"
+                            # default resolves to the deprecated legacy-websockets
+                            # implementation whenever `websockets` is installed.
+                            ws="websockets-sansio",
                         )
                         http_srv = uvicorn.Server(config)
                         http_task = asyncio.create_task(http_srv.serve())
