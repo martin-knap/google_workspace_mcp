@@ -6,27 +6,22 @@ import asyncio
 import logging
 import time
 
+from fastmcp.server.dependencies import get_access_token, get_http_headers
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.server.dependencies import get_access_token
-from fastmcp.server.dependencies import get_http_headers
 
 from auth.external_oauth_provider import get_session_time
 from auth.gateway_identity import GatewayIdentityError, extract_email_from_assertion
 from auth.oauth21_session_store import ensure_session_from_access_token
 from auth.oauth_config import get_oauth_config, is_trust_gateway_identity
 from auth.oauth_types import WorkspaceAccessToken
+from auth.request_identity import (
+    get_request_identity,
+    reset_request_identity,
+    set_request_identity,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-_AUTH_IDENTITY_STATE_KEYS = (
-    "authenticated_user_email",
-    "authenticated_via",
-    "user_email",
-    "username",
-    "auth_provider_type",
-    "token_type",
-)
 
 
 def _token_fingerprint(token: str) -> str:
@@ -42,15 +37,17 @@ class AuthInfoMiddleware(Middleware):
     and populate the FastMCP context state for use in tools and prompts.
     """
 
-    def __init__(self):
-        super().__init__()
-        self.auth_provider_type = "GoogleProvider"
-
     async def _process_request_for_auth(self, context: MiddlewareContext):
         """Helper to extract, verify, and store auth info from a request."""
         if not context.fastmcp_context:
             logger.warning("No fastmcp_context available")
             return
+
+        # Shadow any identity inherited from session state before any auth path
+        # runs. Paths below may fail and still fall through to the tool, so this
+        # is what guarantees an unauthenticated request reads None rather than an
+        # earlier request's principal.
+        await reset_request_identity(context.fastmcp_context)
 
         authenticated_user = None
         auth_via = None
@@ -60,11 +57,6 @@ class AuthInfoMiddleware(Middleware):
         # trusted source in this mode (MCP_ENABLE_OAUTH21 is off — the proxy owns the handshake).
         if is_trust_gateway_identity():
             try:
-                # FastMCP state is session-scoped by default. Remove any identity left by
-                # legacy authentication before installing this request's verified identity.
-                for state_key in _AUTH_IDENTITY_STATE_KEYS:
-                    await context.fastmcp_context.delete_state(state_key)
-
                 header_name = get_oauth_config().gateway_identity_header
                 hdrs = get_http_headers(include={header_name}) or {}
                 assertion = hdrs.get(header_name)
@@ -83,27 +75,10 @@ class AuthInfoMiddleware(Middleware):
                         "Trusted-gateway identity assertion failed verification"
                     )
 
-                # These values are authoritative only for this request. In particular, do
-                # not persist them in FastMCP's session-scoped state store.
-                await context.fastmcp_context.set_state(
-                    "authenticated_user_email",
-                    verified_email,
-                    serializable=False,
-                )
-                await context.fastmcp_context.set_state(
-                    "authenticated_via",
-                    "gateway_assertion",
-                    serializable=False,
-                )
-                await context.fastmcp_context.set_state(
-                    "user_email",
-                    verified_email,
-                    serializable=False,
-                )
-                await context.fastmcp_context.set_state(
-                    "username",
-                    verified_email,
-                    serializable=False,
+                await set_request_identity(
+                    context.fastmcp_context,
+                    email=verified_email,
+                    via="gateway_assertion",
                 )
                 logger.info("✓ Authenticated via gateway_assertion: %s", verified_email)
                 return
@@ -133,14 +108,10 @@ class AuthInfoMiddleware(Middleware):
                     logger.info(
                         f"✓ Using FastMCP validated token for user: {user_email}"
                     )
-                    await context.fastmcp_context.set_state(
-                        "authenticated_user_email", user_email
-                    )
-                    await context.fastmcp_context.set_state(
-                        "authenticated_via", "fastmcp_oauth"
-                    )
-                    await context.fastmcp_context.set_state(
-                        "access_token", access_token, serializable=False
+                    await set_request_identity(
+                        context.fastmcp_context,
+                        email=user_email,
+                        via="fastmcp_oauth",
                     )
                     authenticated_user = user_email
                     auth_via = "fastmcp_oauth"
@@ -231,12 +202,6 @@ class AuthInfoMiddleware(Middleware):
                                                 email=user_email,
                                             )
 
-                                        # Store in context state - this is the authoritative authentication state
-                                        await context.fastmcp_context.set_state(
-                                            "access_token",
-                                            access_token,
-                                            serializable=False,
-                                        )
                                         mcp_session_id = getattr(
                                             context.fastmcp_context, "session_id", None
                                         )
@@ -245,25 +210,10 @@ class AuthInfoMiddleware(Middleware):
                                             user_email,
                                             mcp_session_id,
                                         )
-                                        await context.fastmcp_context.set_state(
-                                            "auth_provider_type",
-                                            self.auth_provider_type,
-                                        )
-                                        await context.fastmcp_context.set_state(
-                                            "token_type", "google_oauth"
-                                        )
-                                        await context.fastmcp_context.set_state(
-                                            "user_email", user_email
-                                        )
-                                        await context.fastmcp_context.set_state(
-                                            "username", user_email
-                                        )
-                                        # Set the definitive authentication state
-                                        await context.fastmcp_context.set_state(
-                                            "authenticated_user_email", user_email
-                                        )
-                                        await context.fastmcp_context.set_state(
-                                            "authenticated_via", "bearer_token"
+                                        await set_request_identity(
+                                            context.fastmcp_context,
+                                            email=user_email,
+                                            via="bearer_token",
                                         )
                                         authenticated_user = user_email
                                         auth_via = "bearer_token"
@@ -338,14 +288,10 @@ class AuthInfoMiddleware(Middleware):
                                 f"Using recent stdio session for {requested_user}"
                             )
                             # In stdio mode, we can trust the user has authenticated recently
-                            await context.fastmcp_context.set_state(
-                                "authenticated_user_email", requested_user
-                            )
-                            await context.fastmcp_context.set_state(
-                                "authenticated_via", "stdio_session"
-                            )
-                            await context.fastmcp_context.set_state(
-                                "auth_provider_type", "oauth21_stdio"
+                            await set_request_identity(
+                                context.fastmcp_context,
+                                email=requested_user,
+                                via="stdio_session",
                             )
                             authenticated_user = requested_user
                             auth_via = "stdio_session"
@@ -363,20 +309,10 @@ class AuthInfoMiddleware(Middleware):
                             logger.debug(
                                 f"Defaulting to single stdio OAuth session for {single_user}"
                             )
-                            await context.fastmcp_context.set_state(
-                                "authenticated_user_email", single_user
-                            )
-                            await context.fastmcp_context.set_state(
-                                "authenticated_via", "stdio_single_session"
-                            )
-                            await context.fastmcp_context.set_state(
-                                "auth_provider_type", "oauth21_stdio"
-                            )
-                            await context.fastmcp_context.set_state(
-                                "user_email", single_user
-                            )
-                            await context.fastmcp_context.set_state(
-                                "username", single_user
+                            await set_request_identity(
+                                context.fastmcp_context,
+                                email=single_user,
+                                via="stdio_single_session",
                             )
                             authenticated_user = single_user
                             auth_via = "stdio_single_session"
@@ -400,14 +336,10 @@ class AuthInfoMiddleware(Middleware):
                         bound_user = store.get_user_by_mcp_session(mcp_session_id)
                         if bound_user:
                             logger.debug(f"MCP session bound to {bound_user}")
-                            await context.fastmcp_context.set_state(
-                                "authenticated_user_email", bound_user
-                            )
-                            await context.fastmcp_context.set_state(
-                                "authenticated_via", "mcp_session_binding"
-                            )
-                            await context.fastmcp_context.set_state(
-                                "auth_provider_type", "oauth21_session"
+                            await set_request_identity(
+                                context.fastmcp_context,
+                                email=bound_user,
+                                via="mcp_session_binding",
                             )
                             authenticated_user = bound_user
                             auth_via = "mcp_session_binding"
@@ -417,18 +349,14 @@ class AuthInfoMiddleware(Middleware):
         # Single exit point with logging
         if authenticated_user:
             logger.info(f"✓ Authenticated via {auth_via}: {authenticated_user}")
-            auth_email = await context.fastmcp_context.get_state(
-                "authenticated_user_email"
-            )
-            logger.debug(
-                f"Context state after auth: authenticated_user_email={auth_email}"
-            )
+            identity = await get_request_identity(context.fastmcp_context)
+            logger.debug(f"Request identity after auth: {identity}")
         else:
             try:
                 auth_header = (get_http_headers() or {}).get("authorization", "")
             except Exception:
                 auth_header = ""
-            if auth_header.startswith("Bearer "):
+            if auth_header[:7].lower() == "bearer ":
                 bearer = auth_header[7:]
                 token_fp = _token_fingerprint(bearer)
                 token_kind = (

@@ -15,6 +15,7 @@ from googleapiclient.discovery import build
 from fastmcp.server.dependencies import get_access_token, get_context
 from auth.google_auth import get_authenticated_google_service, GoogleAuthenticationError
 from auth.gateway_identity import require_gateway_principal
+from auth.request_identity import get_request_identity
 from core.config import USER_GOOGLE_EMAIL as _ENV_USER_EMAIL
 from auth.oauth21_session_store import (
     get_auth_provider,
@@ -95,11 +96,11 @@ async def _get_auth_context(
     """
     try:
         ctx = get_context()
-        if not ctx:
+        identity = await get_request_identity(ctx)
+        if identity is None:
             return None, None, None
 
-        authenticated_user = await ctx.get_state("authenticated_user_email")
-        auth_method = await ctx.get_state("authenticated_via")
+        authenticated_user, auth_method = identity
         mcp_session_id = ctx.session_id if hasattr(ctx, "session_id") else None
 
         # Opt-in: enrich the active tool-call span with the human-readable user
