@@ -269,9 +269,8 @@ async def read_sheet_values(
         )
 
     if not values and not formula_values:
-        return (
-            f"No data found in range '{range_name}' for {user_google_email}."
-            + (clamp_note or "")
+        return f"No data found in range '{range_name}' for {user_google_email}." + (
+            clamp_note or ""
         )
 
     if not values:

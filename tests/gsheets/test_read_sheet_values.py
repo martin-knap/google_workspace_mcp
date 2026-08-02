@@ -123,9 +123,7 @@ async def test_read_sheet_values_clamps_range_before_api_call(
 async def test_read_sheet_values_preserves_ambiguous_bare_range(range_name):
     get_mock = Mock(
         return_value=Mock(
-            execute=Mock(
-                return_value={"range": "Sheet1!A1:A1", "values": [["value"]]}
-            )
+            execute=Mock(return_value={"range": "Sheet1!A1:A1", "values": [["value"]]})
         )
     )
     service = Mock()
@@ -138,8 +136,6 @@ async def test_read_sheet_values_preserves_ambiguous_bare_range(range_name):
         range_name=range_name,
     )
 
-    get_mock.assert_called_once_with(
-        spreadsheetId="spreadsheet-123", range=range_name
-    )
+    get_mock.assert_called_once_with(spreadsheetId="spreadsheet-123", range=range_name)
     assert "Successfully read 1 rows" in result
     assert "was clamped" not in result

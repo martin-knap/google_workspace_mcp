@@ -87,9 +87,7 @@ def _format_a1_part(col_idx: Optional[int], row_idx: Optional[int]) -> str:
     return f"{col}{row}"
 
 
-def _format_read_clamp_note(
-    range_name: str, clamped_range: str, max_rows: int
-) -> str:
+def _format_read_clamp_note(range_name: str, clamped_range: str, max_rows: int) -> str:
     """Describe a rewritten read range and how to continue paging."""
     return (
         f"\n\nNote: Requested range '{range_name}' was clamped to '{clamped_range}' "
