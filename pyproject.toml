@@ -96,7 +96,7 @@ dev = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
-    "ruff>=0.12.4",
+    "ruff>=0.15.22,<0.16",
     "tomlkit>=0.13.3",
     "twine>=5.0.0",
 ]
@@ -127,7 +127,7 @@ dev = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
     "requests>=2.32.3",
-    "ruff>=0.12.4",
+    "ruff>=0.15.22,<0.16",
     "tomlkit>=0.13.3",
     "twine>=5.0.0",
 ]

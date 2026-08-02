@@ -26,6 +26,7 @@ from jwt import PyJWKClient
 from pydantic.networks import validate_email
 
 from auth.oauth_config import get_oauth_config
+from auth.request_identity import get_request_identity
 
 logger = logging.getLogger(__name__)
 
@@ -60,24 +61,13 @@ def require_gateway_principal(authenticated_user: Any, authenticated_via: Any) -
 
 async def get_verified_gateway_principal(context=None) -> str:
     """Resolve the authoritative gateway principal from the active FastMCP request."""
-    if context is None:
-        try:
-            from fastmcp.server.dependencies import get_context
-
-            context = get_context()
-        except Exception as exc:
-            raise GatewayIdentityError(
-                "Trusted-gateway principal is unavailable outside an MCP request"
-            ) from exc
-
-    if context is None:
+    identity = await get_request_identity(context)
+    if identity is None:
         raise GatewayIdentityError(
             "Trusted-gateway principal is unavailable outside an MCP request"
         )
 
-    authenticated_user = await context.get_state("authenticated_user_email")
-    authenticated_via = await context.get_state("authenticated_via")
-    return require_gateway_principal(authenticated_user, authenticated_via)
+    return require_gateway_principal(identity.email, identity.via)
 
 
 # PyJWKClient caches fetched keys (and refreshes on unknown kid). Cache one client per
