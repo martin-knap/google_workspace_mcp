@@ -14,8 +14,11 @@ async def test_start_google_auth_skips_preflight_outside_stdio(monkeypatch):
         raise AssertionError("callback preflight should not run outside stdio")
 
     monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: False)
+    monkeypatch.setattr("core.server.is_trust_gateway_identity", lambda: False)
     monkeypatch.setattr("core.server.check_client_secrets", lambda: None)
-    monkeypatch.setattr("core.server.get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr(
+        "auth.oauth_callback_server.get_transport_mode", lambda: "streamable-http"
+    )
     monkeypatch.setattr(
         "core.server.get_oauth_redirect_uri_for_current_mode",
         lambda: "http://localhost:8000/oauth2callback",
@@ -47,8 +50,11 @@ async def test_start_google_auth_preflights_in_stdio(monkeypatch):
         return True, ""
 
     monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: False)
+    monkeypatch.setattr("core.server.is_trust_gateway_identity", lambda: False)
     monkeypatch.setattr("core.server.check_client_secrets", lambda: None)
-    monkeypatch.setattr("core.server.get_transport_mode", lambda: "stdio")
+    monkeypatch.setattr(
+        "auth.oauth_callback_server.get_transport_mode", lambda: "stdio"
+    )
     monkeypatch.setattr("core.server.asyncio.to_thread", fake_to_thread)
     monkeypatch.setattr(
         "core.server.get_oauth_redirect_uri_for_current_mode",
@@ -56,7 +62,7 @@ async def test_start_google_auth_preflights_in_stdio(monkeypatch):
     )
     monkeypatch.setattr("core.server.start_auth_flow", fake_start_auth_flow)
     monkeypatch.setattr(
-        "auth.oauth_config.get_oauth_config",
+        "auth.oauth_callback_server.get_oauth_config",
         lambda: SimpleNamespace(port=8000, base_uri="http://localhost"),
     )
     monkeypatch.setattr(
@@ -68,3 +74,37 @@ async def test_start_google_auth_preflights_in_stdio(monkeypatch):
 
     assert result == "auth-url"
     assert ("ensure", ("stdio", 8000, "http://localhost"), {}) in calls
+
+
+@pytest.mark.asyncio
+async def test_start_google_auth_uses_verified_gateway_principal(monkeypatch):
+    captured = {}
+
+    async def fake_get_verified_gateway_principal():
+        return "verified@example.com"
+
+    async def fake_start_auth_flow(**kwargs):
+        captured.update(kwargs)
+        return "auth-url"
+
+    monkeypatch.setattr("core.server.is_oauth21_enabled", lambda: False)
+    monkeypatch.setattr("core.server.is_trust_gateway_identity", lambda: True)
+    monkeypatch.setattr(
+        "core.server.get_verified_gateway_principal",
+        fake_get_verified_gateway_principal,
+    )
+    monkeypatch.setattr("core.server.check_client_secrets", lambda: None)
+    monkeypatch.setattr(
+        "auth.oauth_callback_server.get_transport_mode", lambda: "streamable-http"
+    )
+    monkeypatch.setattr(
+        "core.server.get_oauth_redirect_uri_for_current_mode",
+        lambda: "https://mcp.example.com/oauth2callback",
+    )
+    monkeypatch.setattr("core.server.start_auth_flow", fake_start_auth_flow)
+
+    result = await start_google_auth("Gmail", "spoofed@example.com")
+
+    assert result == "auth-url"
+    assert captured["user_google_email"] == "verified@example.com"
+    assert captured["principal_source"] == "gateway_assertion"

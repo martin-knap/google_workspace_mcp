@@ -658,6 +658,7 @@ async def test_draft_gmail_message_gracefully_degrades_when_thread_fetch_fails()
 
     assert "In-Reply-To:" not in raw_text
     assert "References:" not in raw_text
+    assert "threadId" not in create_kwargs["body"]["message"]
 
 
 @pytest.mark.asyncio
@@ -686,6 +687,7 @@ async def test_draft_gmail_message_gracefully_degrades_when_thread_has_no_messag
 
     assert "In-Reply-To:" not in raw_text
     assert "References:" not in raw_text
+    assert "threadId" not in create_kwargs["body"]["message"]
 
 
 # ---------------------------------------------------------------------------

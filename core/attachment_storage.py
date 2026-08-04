@@ -8,6 +8,8 @@ Files are automatically cleaned up after expiration (default 1 hour).
 import base64
 import logging
 import os
+import re
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import NamedTuple, Optional, Dict
@@ -25,10 +27,41 @@ STORAGE_DIR = (
     Path(os.getenv("WORKSPACE_ATTACHMENT_DIR", _default_dir)).expanduser().resolve()
 )
 
+_WINDOWS_RESERVED_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def _ensure_storage_dir() -> None:
     """Create the storage directory on first use, not at import time."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
+def sanitize_attachment_filename(filename: Optional[str]) -> str:
+    """Return a filesystem-safe attachment filename."""
+    if not filename:
+        return "attachment"
+
+    # Normalize Unicode space separators (category "Zs") to a plain ASCII space.
+    filename = "".join(
+        " " if unicodedata.category(ch) == "Zs" else ch for ch in filename
+    )
+
+    sanitized = _WINDOWS_RESERVED_FILENAME_CHARS.sub("_", filename).rstrip(" .")
+    if not sanitized:
+        return "attachment"
+
+    stem = sanitized.split(".", 1)[0]
+    if stem.upper() in _WINDOWS_RESERVED_NAMES:
+        sanitized = f"_{sanitized}"
+
+    return sanitized
 
 
 class SavedAttachment(NamedTuple):
@@ -76,8 +109,10 @@ class AttachmentStorage:
 
         # Determine file extension from filename or mime type
         extension = ""
+        safe_filename = sanitize_attachment_filename(filename)
+
         if filename:
-            extension = Path(filename).suffix
+            extension = Path(safe_filename).suffix
         elif mime_type:
             # Basic mime type to extension mapping
             mime_to_ext = {
@@ -93,8 +128,8 @@ class AttachmentStorage:
 
         # Use original filename if available, with UUID suffix for uniqueness
         if filename:
-            stem = Path(filename).stem
-            ext = Path(filename).suffix
+            stem = Path(safe_filename).stem
+            ext = Path(safe_filename).suffix
             save_name = f"{stem}_{file_id[:8]}{ext}"
         else:
             save_name = f"{file_id}{extension}"
@@ -134,7 +169,8 @@ class AttachmentStorage:
         expires_at = datetime.now() + timedelta(seconds=self.expiration_seconds)
         self._metadata[file_id] = {
             "file_path": str(file_path),
-            "filename": filename or f"attachment{extension}",
+            "filename": save_name,
+            "original_filename": filename,
             "mime_type": mime_type or "application/octet-stream",
             "size": len(file_bytes),
             "created_at": datetime.now(),
@@ -251,6 +287,20 @@ def get_attachment_url(file_id: str) -> str:
         Full URL to access the attachment
     """
     from core.config import WORKSPACE_MCP_PORT, WORKSPACE_MCP_BASE_URI
+
+    # In stdio mode the attachment route is served by the lazily-started callback
+    # server; bring it up now so the URL we hand out is actually reachable. The
+    # import is local to avoid pulling the FastAPI/uvicorn auth stack into this
+    # lightweight, widely-imported module (matches every other call site, #832).
+    from auth.oauth_callback_server import ensure_stdio_oauth_callback_available
+
+    success, error_msg = ensure_stdio_oauth_callback_available()
+    if not success:
+        logger.warning(
+            "Failed to start stdio attachment server; attachment URL may be "
+            "unreachable: %s",
+            error_msg,
+        )
 
     # Use external URL if set (for reverse proxy scenarios)
     external_url = os.getenv("WORKSPACE_EXTERNAL_URL")

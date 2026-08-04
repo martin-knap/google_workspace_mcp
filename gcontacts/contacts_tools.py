@@ -6,7 +6,6 @@ This module provides MCP tools for interacting with Google Contacts via the Peop
 
 import asyncio
 import logging
-import re
 import warnings
 from typing import Any, Dict, List, Literal, Optional
 
@@ -19,16 +18,27 @@ from mcp.types import ToolAnnotations
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import UserInputError, handle_http_errors, StringList
+from gcontacts.contacts_helpers import (
+    _format_contact,
+    _merge_emails,
+    _merge_nicknames,
+    _merge_organizations,
+    _merge_phones,
+    _merge_relations,
+    _merge_urls,
+    _merge_user_defined,
+    _parse_birthday,
+)
 
 logger = logging.getLogger(__name__)
 
 # Default person fields for list/search operations
-DEFAULT_PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations"
+DEFAULT_PERSON_FIELDS = "names,nicknames,emailAddresses,phoneNumbers,organizations"
 
 # Detailed person fields for get operations
 DETAILED_PERSON_FIELDS = (
-    "names,emailAddresses,phoneNumbers,organizations,biographies,"
-    "addresses,birthdays,urls,photos,metadata,memberships"
+    "names,nicknames,emailAddresses,phoneNumbers,organizations,biographies,"
+    "addresses,birthdays,urls,userDefined,relations,photos,metadata,memberships"
 )
 
 # Contact group fields
@@ -112,6 +122,62 @@ class OrganizationInput(BaseModel):
     )
 
 
+class NicknameInput(BaseModel):
+    """Typed input for a nickname entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(
+        description="Nickname value. Used for bilingual contacts (e.g. Hebrew alternative form).",
+    )
+    type: Optional[str] = Field(
+        default=None,
+        description="Nickname type such as default, alternate_name, maiden_name, initials, or other.",
+    )
+
+
+class UrlInput(BaseModel):
+    """Typed input for a URL entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(
+        description="The URL value (e.g. https://example.com).",
+    )
+    type: Optional[str] = Field(
+        default=None,
+        description="URL type such as homepage, blog, profile, work, ftp, reservations, or other. Custom values allowed.",
+    )
+
+
+class UserDefinedInput(BaseModel):
+    """Typed input for a userDefined custom field entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(
+        description="Custom field key (e.g. 'ID', 'Hebrew Birthday', 'Account Number').",
+    )
+    value: str = Field(
+        default="",
+        description="Custom field value. May be omitted when using remove mode (only the key is needed).",
+    )
+
+
+class RelationInput(BaseModel):
+    """Typed input for a relation entry (spouse, parent, child, etc.)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person: str = Field(
+        description="The related person's name (matched against contact names by Google Assistant).",
+    )
+    type: Optional[str] = Field(
+        default=None,
+        description="Relation type: spouse, child, parent, father, mother, sister, brother, friend, manager, assistant, partner, sibling, domesticPartner, or custom.",
+    )
+
+
 class ContactInput(BaseModel):
     """Typed batch-create input for a contact."""
 
@@ -122,8 +188,16 @@ class ContactInput(BaseModel):
     phones: Optional[List[PhoneInput]] = None
     emails: Optional[List[EmailInput]] = None
     organizations: Optional[List[OrganizationInput]] = None
+    nicknames: Optional[List[NicknameInput]] = None
+    urls: Optional[List[UrlInput]] = None
+    user_defined: Optional[List[UserDefinedInput]] = None
+    relations: Optional[List[RelationInput]] = None
     notes: Optional[str] = None
     address: Optional[str] = None
+    birthday: Optional[str] = Field(
+        default=None,
+        description="Birthday as 'YYYY-MM-DD', 'MM-DD' (no year), or 'clear'/'' to remove.",
+    )
     phone: Optional[str] = None
     email: Optional[str] = None
     organization: Optional[str] = None
@@ -166,6 +240,36 @@ def _coerce_organization_input(org: Any) -> OrganizationInput:
     return OrganizationInput.model_validate(org)
 
 
+def _coerce_nickname_input(nickname: Any) -> NicknameInput:
+    if isinstance(nickname, NicknameInput):
+        return nickname
+    if isinstance(nickname, str):
+        return NicknameInput(value=nickname)
+    return NicknameInput.model_validate(nickname)
+
+
+def _coerce_url_input(url: Any) -> UrlInput:
+    if isinstance(url, UrlInput):
+        return url
+    if isinstance(url, str):
+        return UrlInput(value=url)
+    return UrlInput.model_validate(url)
+
+
+def _coerce_user_defined_input(entry: Any) -> UserDefinedInput:
+    if isinstance(entry, UserDefinedInput):
+        return entry
+    return UserDefinedInput.model_validate(entry)
+
+
+def _coerce_relation_input(relation: Any) -> RelationInput:
+    if isinstance(relation, RelationInput):
+        return relation
+    if isinstance(relation, str):
+        return RelationInput(person=relation)
+    return RelationInput.model_validate(relation)
+
+
 def _coerce_contact_input(contact: Any) -> ContactInput:
     if isinstance(contact, ContactInput):
         return contact
@@ -178,165 +282,6 @@ def _coerce_contact_update_input(update: Any) -> ContactUpdateInput:
     return ContactUpdateInput.model_validate(update)
 
 
-def _normalize_phone(value: str) -> str:
-    """Return a normalized phone string for deduplication. Strips non-digit chars except leading +."""
-    stripped = re.sub(r"[^\d+]", "", value)
-    return stripped.lower()
-
-
-def _normalize_email(value: str) -> str:
-    """Return a normalized email string for deduplication."""
-    return value.strip().lower()
-
-
-def _format_phone_line(phone: Dict[str, Any]) -> str:
-    """
-    Format a single phone entry into a display line.
-
-    Returns e.g. '+79270000000 (mobile)' or '250 (Internal)'.
-    """
-    value = phone.get("value", "")
-    phone_type = phone.get("type", "")
-    formatted_type = phone.get("formattedType", "")
-
-    if phone_type == "internal":
-        label = "Internal"
-    elif formatted_type:
-        label = formatted_type
-    elif phone_type:
-        label = phone_type
-    else:
-        label = ""
-
-    if label:
-        return f"{value} ({label})"
-    return value
-
-
-def _format_email_line(email: Dict[str, Any]) -> str:
-    """
-    Format a single email entry into a display line.
-
-    Returns e.g. 'user@example.com (work)'.
-    """
-    value = email.get("value", "")
-    email_type = email.get("type", "")
-    formatted_type = email.get("formattedType", "")
-
-    label = formatted_type or email_type or ""
-    if label:
-        return f"{value} ({label})"
-    return value
-
-
-def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
-    """
-    Format a Person resource into a readable string.
-
-    Args:
-        person: The Person resource from the People API.
-        detailed: Whether to include detailed fields.
-
-    Returns:
-        Formatted string representation of the contact.
-    """
-    resource_name = person.get("resourceName", "Unknown")
-    contact_id = resource_name.replace("people/", "") if resource_name else "Unknown"
-
-    lines = [f"Contact ID: {contact_id}"]
-
-    # Names
-    names = person.get("names", [])
-    if names:
-        primary_name = names[0]
-        display_name = primary_name.get("displayName", "")
-        if display_name:
-            lines.append(f"Name: {display_name}")
-
-    # Email addresses — each on its own line with type label
-    emails = person.get("emailAddresses", [])
-    if emails:
-        valid_emails = [e for e in emails if e.get("value")]
-        if valid_emails:
-            if len(valid_emails) == 1:
-                lines.append(f"Email: {_format_email_line(valid_emails[0])}")
-            else:
-                lines.append("Emails:")
-                for e in valid_emails:
-                    lines.append(f"  - {_format_email_line(e)}")
-
-    # Phone numbers — each on its own line with type label
-    phones = person.get("phoneNumbers", [])
-    if phones:
-        valid_phones = [p for p in phones if p.get("value")]
-        if valid_phones:
-            if len(valid_phones) == 1:
-                lines.append(f"Phone: {_format_phone_line(valid_phones[0])}")
-            else:
-                lines.append("Phones:")
-                for p in valid_phones:
-                    lines.append(f"  - {_format_phone_line(p)}")
-
-    # Organizations
-    orgs = person.get("organizations", [])
-    if orgs:
-        org = orgs[0]
-        org_parts = []
-        if org.get("title"):
-            org_parts.append(org["title"])
-        if org.get("name"):
-            org_parts.append(f"at {org['name']}")
-        if org_parts:
-            lines.append(f"Organization: {' '.join(org_parts)}")
-
-    if detailed:
-        # Addresses
-        addresses = person.get("addresses", [])
-        if addresses:
-            addr = addresses[0]
-            formatted_addr = addr.get("formattedValue", "")
-            if formatted_addr:
-                lines.append(f"Address: {formatted_addr}")
-
-        # Birthday
-        birthdays = person.get("birthdays", [])
-        if birthdays:
-            bday = birthdays[0].get("date", {})
-            if bday:
-                bday_str = f"{bday.get('month', '?')}/{bday.get('day', '?')}"
-                if bday.get("year"):
-                    bday_str = f"{bday.get('year')}/{bday_str}"
-                lines.append(f"Birthday: {bday_str}")
-
-        # URLs
-        urls = person.get("urls", [])
-        if urls:
-            url_list = [u.get("value", "") for u in urls if u.get("value")]
-            if url_list:
-                lines.append(f"URLs: {', '.join(url_list)}")
-
-        # Biography/Notes
-        bios = person.get("biographies", [])
-        if bios:
-            bio = bios[0].get("value", "")
-            if bio:
-                # Truncate long bios
-                if len(bio) > 200:
-                    bio = bio[:200] + "..."
-                lines.append(f"Notes: {bio}")
-
-        # Metadata
-        metadata = person.get("metadata", {})
-        if metadata:
-            sources = metadata.get("sources", [])
-            if sources:
-                source_types = [s.get("type", "") for s in sources]
-                if source_types:
-                    lines.append(f"Sources: {', '.join(source_types)}")
-
-    return "\n".join(lines)
-
-
 def _build_person_body(
     given_name: Optional[str] = None,
     family_name: Optional[str] = None,
@@ -344,8 +289,13 @@ def _build_person_body(
     phones: Optional[List[PhoneInput]] = None,
     emails: Optional[List[EmailInput]] = None,
     organizations: Optional[List[OrganizationInput]] = None,
+    nicknames: Optional[List[NicknameInput]] = None,
+    urls: Optional[List[UrlInput]] = None,
+    user_defined: Optional[List[UserDefinedInput]] = None,
+    relations: Optional[List[RelationInput]] = None,
     notes: Optional[str] = None,
     address: Optional[str] = None,
+    birthday: Optional[str] = None,
     # Deprecated single-value aliases
     email: Optional[str] = None,
     phone: Optional[str] = None,
@@ -368,6 +318,7 @@ def _build_person_body(
         organizations: List of OrganizationInput items {name?, title?, department?, jobDescription?, type?}.
         notes: Additional notes/biography.
         address: Street address.
+        birthday: Birthday as 'YYYY-MM-DD', 'MM-DD' (no year), or 'clear'/'' to remove.
         email: [DEPRECATED] Single email address. Use emails instead.
         phone: [DEPRECATED] Single phone number. Use phones instead.
         organization: [DEPRECATED] Company/organization name. Use organizations instead.
@@ -384,6 +335,14 @@ def _build_person_body(
         emails = [_coerce_email_input(email_entry) for email_entry in emails]
     if organizations is not None:
         organizations = [_coerce_organization_input(org) for org in organizations]
+    if nicknames is not None:
+        nicknames = [_coerce_nickname_input(n) for n in nicknames]
+    if urls is not None:
+        urls = [_coerce_url_input(u) for u in urls]
+    if user_defined is not None:
+        user_defined = [_coerce_user_defined_input(ud) for ud in user_defined]
+    if relations is not None:
+        relations = [_coerce_relation_input(r) for r in relations]
 
     if given_name or family_name:
         body["names"] = [
@@ -494,138 +453,77 @@ def _build_person_body(
                 org_entries.append(entry)
         body["organizations"] = org_entries
 
-    if notes:
-        body["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
+    # --- Nicknames ---
+    if nicknames is not None:
+        nickname_entries = []
+        for n in nicknames:
+            value = (n.value or "").strip()
+            if not value:
+                continue
+            entry: Dict[str, Any] = {"value": value}
+            if n.type:
+                entry["type"] = n.type
+            nickname_entries.append(entry)
+        body["nicknames"] = nickname_entries
+
+    # --- URLs ---
+    if urls is not None:
+        url_entries = []
+        for u in urls:
+            value = (u.value or "").strip()
+            if not value:
+                continue
+            entry = {"value": value}
+            if u.type:
+                entry["type"] = u.type
+            url_entries.append(entry)
+        body["urls"] = url_entries
+
+    # --- User Defined custom fields ---
+    if user_defined is not None:
+        ud_entries = []
+        for ud in user_defined:
+            key = (ud.key or "").strip()
+            value = (ud.value or "").strip()
+            if not key:
+                continue
+            entry: Dict[str, str] = {"key": key}
+            if value:
+                entry["value"] = value
+            ud_entries.append(entry)
+        body["userDefined"] = ud_entries
+
+    # --- Relations ---
+    if relations is not None:
+        relation_entries = []
+        for r in relations:
+            person = (r.person or "").strip()
+            if not person:
+                continue
+            entry = {"person": person}
+            if r.type:
+                entry["type"] = r.type
+            relation_entries.append(entry)
+        body["relations"] = relation_entries
+
+    # notes=None → no change. notes="" → explicit clear (empty biographies).
+    # notes="text" → write that text.
+    if notes is not None:
+        if notes:
+            body["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
+        else:
+            body["biographies"] = []
 
     if address:
         body["addresses"] = [{"formattedValue": address}]
 
+    if birthday is not None:
+        if birthday.strip().lower() in ("clear", ""):
+            body["birthdays"] = []
+        else:
+            body["birthdays"] = [_parse_birthday(birthday)]
+
     return body
-
-
-def _merge_phones(
-    existing: List[Dict[str, Any]],
-    new_phones: List[Dict[str, Any]],
-    mode: str,
-) -> List[Dict[str, Any]]:
-    """
-    Merge phone lists according to mode.
-
-    Args:
-        existing: Current phoneNumbers from People API.
-        new_phones: New phone entries (API format: {value, type?, ...}).
-        mode: 'merge', 'replace', or 'remove'.
-
-    Returns:
-        Merged phone list.
-    """
-
-    def phone_key(phone: Dict[str, Any]) -> str:
-        return _normalize_phone(phone.get("canonicalForm") or phone.get("value", ""))
-
-    if mode == "replace":
-        return new_phones
-    if mode == "remove":
-        remove_normalized = {
-            _normalize_phone(p["value"]) for p in new_phones if p.get("value")
-        }
-        return [
-            p
-            for p in existing
-            if _normalize_phone(p.get("value", "")) not in remove_normalized
-        ]
-    # merge: add new entries that don't already exist (dedup by canonicalForm or normalized value)
-    result = list(existing)
-    existing_keys = set()
-    for p in existing:
-        existing_keys.add(phone_key(p))
-    for p in new_phones:
-        canonical = phone_key(p)
-        if canonical not in existing_keys:
-            result.append(p)
-            existing_keys.add(canonical)
-    return result
-
-
-def _merge_emails(
-    existing: List[Dict[str, Any]],
-    new_emails: List[Dict[str, Any]],
-    mode: str,
-) -> List[Dict[str, Any]]:
-    """
-    Merge email lists according to mode.
-
-    Args:
-        existing: Current emailAddresses from People API.
-        new_emails: New email entries (API format: {value, type?, ...}).
-        mode: 'merge', 'replace', or 'remove'.
-
-    Returns:
-        Merged email list.
-    """
-    if mode == "replace":
-        return new_emails
-    if mode == "remove":
-        remove_normalized = {
-            _normalize_email(e["value"]) for e in new_emails if e.get("value")
-        }
-        return [
-            e
-            for e in existing
-            if _normalize_email(e.get("value", "")) not in remove_normalized
-        ]
-    # merge: add new entries not already present (dedup by lowercased address)
-    result = list(existing)
-    existing_keys = {_normalize_email(e.get("value", "")) for e in existing}
-    for e in new_emails:
-        normalized = _normalize_email(e.get("value", ""))
-        if normalized not in existing_keys:
-            result.append(e)
-            existing_keys.add(normalized)
-    return result
-
-
-def _merge_organizations(
-    existing: List[Dict[str, Any]],
-    new_orgs: List[Dict[str, Any]],
-    mode: str,
-) -> List[Dict[str, Any]]:
-    """
-    Merge organization lists according to mode.
-
-    Args:
-        existing: Current organizations from People API.
-        new_orgs: New org entries (API format).
-        mode: 'merge', 'replace', or 'remove'.
-
-    Returns:
-        Merged org list.
-    """
-
-    def organization_key(org: Dict[str, Any]) -> tuple[str, str, str, str, str]:
-        job_description = org.get("jobDescription") or org.get("description") or ""
-        return (
-            ((org.get("name") or "").strip().lower()),
-            ((org.get("title") or "").strip().lower()),
-            ((org.get("department") or "").strip().lower()),
-            job_description.strip().lower(),
-            ((org.get("type") or "").strip().lower()),
-        )
-
-    if mode == "replace":
-        return new_orgs
-    if mode == "remove":
-        remove_keys = {organization_key(org) for org in new_orgs}
-        return [org for org in existing if organization_key(org) not in remove_keys]
-    # merge: add orgs whose identifying fields don't already exist
-    result = list(existing)
-    existing_keys = {organization_key(org) for org in existing}
-    for org in new_orgs:
-        org_key = organization_key(org)
-        if org_key not in existing_keys:
-            result.append(org)
-            existing_keys.add(org_key)
-    return result
 
 
 async def _warmup_search_cache(service: Resource, user_google_email: str) -> None:
@@ -872,12 +770,21 @@ async def manage_contact(
     phones: Optional[List[PhoneInput]] = None,
     emails: Optional[List[EmailInput]] = None,
     organizations: Optional[List[OrganizationInput]] = None,
+    nicknames: Optional[List[NicknameInput]] = None,
+    urls: Optional[List[UrlInput]] = None,
+    user_defined: Optional[List[UserDefinedInput]] = None,
+    relations: Optional[List[RelationInput]] = None,
     notes: Optional[str] = None,
     address: Optional[str] = None,
+    birthday: Optional[str] = None,
     # Merge modes for update action
     phones_mode: Literal["merge", "replace", "remove"] = "merge",
     emails_mode: Literal["merge", "replace", "remove"] = "merge",
     organizations_mode: Literal["merge", "replace", "remove"] = "merge",
+    nicknames_mode: Literal["merge", "replace", "remove"] = "merge",
+    urls_mode: Literal["merge", "replace", "remove"] = "merge",
+    user_defined_mode: Literal["merge", "replace", "remove"] = "merge",
+    relations_mode: Literal["merge", "replace", "remove"] = "merge",
     # Deprecated single-value aliases
     phone: Optional[str] = None,
     email: Optional[str] = None,
@@ -900,14 +807,31 @@ async def manage_contact(
             as a standalone number without + prefix, displayed as "Internal: 250".
         emails (Optional[List[Dict]]): List of email dicts {address, type?}.
         organizations (Optional[List[Dict]]): List of org dicts {name?, title?, department?, jobDescription?, type?}.
+        nicknames (Optional[List[Dict]]): List of nickname dicts {value, type?}.
+            Useful for bilingual contacts (e.g. Hebrew/English alternative forms). Android dialer
+            and WhatsApp search both index nicknames, enabling cross-script lookup.
+            Supported types: default, alternate_name, maiden_name, initials, other, etc.
+        urls (Optional[List[Dict]]): List of URL dicts {value, type?}.
+            Supported types: homepage, blog, profile, work, ftp, reservations, other, etc.
+        user_defined (Optional[List[Dict]]): List of custom field dicts {key, value}.
+            Useful for structured data like account numbers, IDs, or custom dates.
+        relations (Optional[List[Dict]]): List of relation dicts {person, type?}.
+            Supported types: spouse, child, parent, friend, manager, assistant, etc.
         notes (Optional[str]): Additional notes (for create/update).
         address (Optional[str]): Street address (for create/update).
+        birthday (Optional[str]): Birthday as 'YYYY-MM-DD', 'MM-DD' (no year), or 'clear'/'' to remove.
         phones_mode (str): How to update phones on "update": "merge" (default), "replace", or "remove".
             merge = read-modify-write with dedup by canonicalForm/normalized value.
             replace = overwrite all phones with provided list.
             remove = delete phones matching provided numbers.
         emails_mode (str): How to update emails on "update": "merge" (default), "replace", or "remove".
         organizations_mode (str): How to update orgs on "update": "merge" (default), "replace", or "remove".
+        nicknames_mode (str): How to update nicknames on "update": "merge" (default), "replace", or "remove".
+        urls_mode (str): How to update urls on "update": "merge" (default), "replace", or "remove".
+            merge dedups by normalized URL (lowercased, trailing slash stripped).
+        user_defined_mode (str): How to update custom fields on "update": "merge" (default), "replace", or "remove".
+            merge overrides value on matching key; new keys appended.
+        relations_mode (str): How to update relations on "update": "merge" (default), "replace", or "remove".
         phone (Optional[str]): [DEPRECATED] Single phone number. Use phones=[{"number":..., "type":"mobile"}].
         email (Optional[str]): [DEPRECATED] Email address. Use emails=[{"address":..., "type":"other"}].
         organization (Optional[str]): [DEPRECATED] Company name. Use organizations=[{"name":...}].
@@ -926,6 +850,10 @@ async def manage_contact(
         ("phones_mode", phones_mode),
         ("emails_mode", emails_mode),
         ("organizations_mode", organizations_mode),
+        ("nicknames_mode", nicknames_mode),
+        ("urls_mode", urls_mode),
+        ("user_defined_mode", user_defined_mode),
+        ("relations_mode", relations_mode),
     ]:
         if mode_val not in ("merge", "replace", "remove"):
             raise UserInputError(
@@ -943,8 +871,13 @@ async def manage_contact(
             phones=phones,
             emails=emails,
             organizations=organizations,
+            nicknames=nicknames,
+            urls=urls,
+            user_defined=user_defined,
+            relations=relations,
             notes=notes,
             address=address,
+            birthday=birthday,
             phone=phone,
             email=email,
             organization=organization,
@@ -1001,8 +934,13 @@ async def manage_contact(
                 phones=phones,
                 emails=emails,
                 organizations=organizations,
+                nicknames=nicknames,
+                urls=urls,
+                user_defined=user_defined,
+                relations=relations,
                 notes=notes,
                 address=address,
+                birthday=birthday,
                 phone=phone,
                 email=email,
                 organization=organization,
@@ -1038,6 +976,34 @@ async def manage_contact(
                     organizations_mode,
                 )
 
+            if "nicknames" in new_body:
+                merged_body["nicknames"] = _merge_nicknames(
+                    current.get("nicknames", []),
+                    new_body["nicknames"],
+                    nicknames_mode,
+                )
+
+            if "urls" in new_body:
+                merged_body["urls"] = _merge_urls(
+                    current.get("urls", []),
+                    new_body["urls"],
+                    urls_mode,
+                )
+
+            if "userDefined" in new_body:
+                merged_body["userDefined"] = _merge_user_defined(
+                    current.get("userDefined", []),
+                    new_body["userDefined"],
+                    user_defined_mode,
+                )
+
+            if "relations" in new_body:
+                merged_body["relations"] = _merge_relations(
+                    current.get("relations", []),
+                    new_body["relations"],
+                    relations_mode,
+                )
+
             merged_body["etag"] = etag
 
             update_person_fields = []
@@ -1049,10 +1015,20 @@ async def manage_contact(
                 update_person_fields.append("phoneNumbers")
             if "organizations" in merged_body:
                 update_person_fields.append("organizations")
+            if "nicknames" in merged_body:
+                update_person_fields.append("nicknames")
+            if "urls" in merged_body:
+                update_person_fields.append("urls")
+            if "userDefined" in merged_body:
+                update_person_fields.append("userDefined")
+            if "relations" in merged_body:
+                update_person_fields.append("relations")
             if "biographies" in merged_body:
                 update_person_fields.append("biographies")
             if "addresses" in merged_body:
                 update_person_fields.append("addresses")
+            if "birthdays" in merged_body:
+                update_person_fields.append("birthdays")
 
             try:
                 result = await asyncio.to_thread(
@@ -1268,8 +1244,13 @@ async def manage_contacts_batch(
             "phoneNumbers",
             "emailAddresses",
             "organizations",
+            "nicknames",
+            "urls",
+            "userDefined",
+            "relations",
             "biographies",
             "addresses",
+            "birthdays",
         ]
     ] = None,
 ) -> str:
@@ -1288,9 +1269,9 @@ async def manage_contacts_batch(
         contact_ids (Optional[List[str]]): List of contact IDs for "delete" action.
         field (str): For "update" action — the single People API field to update across
             all contacts in this batch. Required. Must be one of: names, phoneNumbers,
-            emailAddresses, organizations, biographies, addresses.
-            Using a single field per batch call prevents unintentional data loss from
-            a union updateMask overwriting unrelated fields.
+            emailAddresses, organizations, nicknames, urls, userDefined, relations,
+            biographies, addresses, birthdays. Using a single field per batch call prevents
+            unintentional data loss from a union updateMask overwriting unrelated fields.
 
     Returns:
         str: Result of the batch action performed.
@@ -1325,8 +1306,13 @@ async def manage_contacts_batch(
                 phones=contact.phones,
                 emails=contact.emails,
                 organizations=contact.organizations,
+                nicknames=contact.nicknames,
+                urls=contact.urls,
+                user_defined=contact.user_defined,
+                relations=contact.relations,
                 notes=contact.notes,
                 address=contact.address,
+                birthday=contact.birthday,
                 # deprecated aliases
                 phone=contact.phone,
                 email=contact.email,
@@ -1375,15 +1361,21 @@ async def manage_contacts_batch(
             "phoneNumbers",
             "emailAddresses",
             "organizations",
+            "nicknames",
+            "urls",
+            "userDefined",
+            "relations",
             "biographies",
             "addresses",
+            "birthdays",
         }
         if not field:
             raise UserInputError(
                 "field parameter is required for batch 'update' action. "
                 "Must be one of: names, phoneNumbers, emailAddresses, organizations, "
-                "biographies, addresses. Use a single field per batch call to avoid "
-                "unintentional data loss from a union updateMask."
+                "nicknames, urls, userDefined, relations, biographies, addresses, birthdays. "
+                "Use a single field per batch call to avoid unintentional data loss "
+                "from a union updateMask."
             )
         if field not in valid_fields:
             raise UserInputError(
@@ -1423,8 +1415,13 @@ async def manage_contacts_batch(
             "phoneNumbers": "phoneNumbers",
             "emailAddresses": "emailAddresses",
             "organizations": "organizations",
+            "nicknames": "nicknames",
+            "urls": "urls",
+            "userDefined": "userDefined",
+            "relations": "relations",
             "biographies": "biographies",
             "addresses": "addresses",
+            "birthdays": "birthdays",
         }
         body_key = field_to_body_key[field]
 
@@ -1447,8 +1444,13 @@ async def manage_contacts_batch(
                 phones=update.phones,
                 emails=update.emails,
                 organizations=update.organizations,
+                nicknames=update.nicknames,
+                urls=update.urls,
+                user_defined=update.user_defined,
+                relations=update.relations,
                 notes=update.notes,
                 address=update.address,
+                birthday=update.birthday,
                 # deprecated aliases
                 phone=update.phone,
                 email=update.email,

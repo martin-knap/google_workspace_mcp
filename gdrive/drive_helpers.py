@@ -1,12 +1,30 @@
 """
 Google Drive Helper Functions
 
-Shared utilities for Google Drive operations including permission checking.
+Shared utilities for Google Drive operations including permission checking,
+remote content download, and import-time format conversion.
 """
 
 import asyncio
+import io
+import logging
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
+from tempfile import SpooledTemporaryFile
+from typing import List, Dict, Any, Awaitable, BinaryIO, Callable, Optional, Tuple
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+
+import httpx
+from googleapiclient.http import MediaIoBaseUpload
+
+from core.http_utils import (
+    redact_url as _redact_url,
+    ssrf_safe_stream as _ssrf_safe_stream,
+)
+from core.utils import validate_file_path
+
+logger = logging.getLogger(__name__)
 
 VALID_SHARE_ROLES = {"reader", "commenter", "writer"}
 VALID_SHARE_TYPES = {"user", "group", "domain", "anyone"}
@@ -157,6 +175,29 @@ def format_permission_info(permission: Dict[str, Any]) -> str:
     return base
 
 
+# Matches an explicit trashed clause anywhere in a Drive query, e.g. "trashed = true".
+# Drive accepts both = and != on boolean fields, so `trashed != false` is just as much
+# a caller-supplied filter as `trashed = true`. Used both for structured-query detection
+# and to avoid double-adding a trashed filter.
+TRASHED_CLAUSE_PATTERN = re.compile(r"\btrashed\s*!?=\s*(true|false)\b", re.IGNORECASE)
+
+# Matches a Drive query string literal, including backslash escapes, in either quote
+# style: 'a\'b' or "a\"b". Used to blank out literals before looking for operators, so
+# text that merely *looks* like a predicate inside a value is not mistaken for one.
+QUERY_STRING_LITERAL_PATTERN = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
+
+
+def has_explicit_trashed_clause(query: str) -> bool:
+    """Return True when `query` contains a real `trashed =`/`!=` `true/false` predicate.
+
+    Quoted values are blanked out first, so a search for a filename that happens to
+    contain the text (``name contains 'trashed=false'``) is not read as the caller
+    having already filtered by trash state.
+    """
+    without_literals = QUERY_STRING_LITERAL_PATTERN.sub("''", query)
+    return bool(TRASHED_CLAUSE_PATTERN.search(without_literals))
+
+
 # Precompiled regex patterns for Drive query detection
 DRIVE_QUERY_PATTERNS = [
     re.compile(r'\b\w+\s*(=|!=|>|<)\s*[\'"].*?[\'"]', re.IGNORECASE),  # field = 'value'
@@ -164,7 +205,7 @@ DRIVE_QUERY_PATTERNS = [
     re.compile(r"\bcontains\b", re.IGNORECASE),  # contains operator
     re.compile(r"\bin\s+parents\b", re.IGNORECASE),  # in parents
     re.compile(r"\bhas\s*\{", re.IGNORECASE),  # has {properties}
-    re.compile(r"\btrashed\s*=\s*(true|false)\b", re.IGNORECASE),  # trashed=true/false
+    TRASHED_CLAUSE_PATTERN,  # trashed =/!= true/false
     re.compile(r"\bstarred\s*=\s*(true|false)\b", re.IGNORECASE),  # starred=true/false
     re.compile(
         r'[\'"][^\'"]+[\'"]\s+in\s+parents', re.IGNORECASE
@@ -183,6 +224,7 @@ def build_drive_list_params(
     corpora: Optional[str] = None,
     page_token: Optional[str] = None,
     detailed: bool = True,
+    include_permissions: bool = False,
     order_by: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -197,6 +239,7 @@ def build_drive_list_params(
         page_token: Optional page token for pagination (from a previous nextPageToken)
         detailed: Whether to request size, modifiedTime, and webViewLink fields.
                   Defaults to True to preserve existing behavior.
+        include_permissions: Whether detailed results should include file ACL fields.
         order_by: Optional sort order. Comma-separated list of sort keys.
                   Valid keys: 'createdTime', 'folder', 'modifiedByMeTime', 'modifiedTime',
                   'name', 'name_natural', 'quotaBytesUsed', 'recency', 'sharedWithMeTime',
@@ -207,7 +250,15 @@ def build_drive_list_params(
         Dictionary of parameters for Drive API list calls
     """
     if detailed:
-        fields = "nextPageToken, files(id, name, mimeType, webViewLink, iconLink, modifiedTime, size, driveId)"
+        permission_fields = (
+            ", permissions(id, type, role)" if include_permissions else ""
+        )
+        fields = (
+            "nextPageToken, files(id, name, mimeType, webViewLink, iconLink,"
+            " modifiedTime, createdTime, size, driveId,"
+            " lastModifyingUser(displayName, emailAddress)"
+            f"{permission_fields})"
+        )
     else:
         fields = "nextPageToken, files(id, name, mimeType)"
     list_params = {
@@ -384,3 +435,252 @@ async def resolve_folder_id(
             f"Resolved ID '{resolved_id}' (from '{folder_id}') is not a folder; mimeType={mime_type}."
         )
     return resolved_id
+
+
+DOWNLOAD_CHUNK_SIZE_BYTES = 256 * 1024  # 256 KB
+UPLOAD_CHUNK_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB (Google recommended minimum)
+MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB safety limit for URL downloads
+
+
+async def _stream_url_with_validation(
+    url: str, write_chunk: Optional[Callable[[bytes], Awaitable[None]]] = None
+) -> Tuple[int, Optional[str]]:
+    """Stream a remote file with shared status and size validation."""
+    total_bytes = 0
+    redacted_url = _redact_url(url)
+
+    async with _ssrf_safe_stream(url) as resp:
+        if resp.status_code != 200:
+            request = getattr(resp, "request", None)
+            if request is None:
+                parsed_url = urlparse(url)
+                request = httpx.Request("GET", f"{parsed_url.scheme}://{redacted_url}")
+            raise httpx.HTTPStatusError(
+                f"Failed to fetch file from URL: {redacted_url} (status {resp.status_code})",
+                request=request,
+                response=resp,
+            )
+
+        content_type = resp.headers.get("Content-Type")
+        async for chunk in resp.aiter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE_BYTES):
+            total_bytes += len(chunk)
+            if total_bytes > MAX_DOWNLOAD_BYTES:
+                raise ValueError(
+                    f"Download from {redacted_url} exceeded {MAX_DOWNLOAD_BYTES} byte limit "
+                    f"({total_bytes} bytes)"
+                )
+            if write_chunk is not None:
+                await write_chunk(chunk)
+
+    return total_bytes, content_type
+
+
+async def _download_url_to_bytes(url: str) -> Tuple[BinaryIO, Optional[str]]:
+    """Download a remote file into a spooled temporary file with bounded streaming."""
+    spool = SpooledTemporaryFile(max_size=UPLOAD_CHUNK_SIZE_BYTES)
+    try:
+
+        async def _collect(chunk: bytes) -> None:
+            await asyncio.to_thread(spool.write, chunk)
+
+        _total_bytes, content_type = await _stream_url_with_validation(url, _collect)
+        await asyncio.to_thread(spool.seek, 0)
+        return spool, content_type
+    except Exception:
+        spool.close()
+        raise
+
+
+# Mapping of file extensions to source MIME types for Google Docs conversion
+GOOGLE_DOCS_IMPORT_FORMATS = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".txt": "text/plain",
+    ".text": "text/plain",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".rtf": "application/rtf",
+    ".odt": "application/vnd.oasis.opendocument.text",
+}
+
+# Mapping of file extensions to source MIME types for Google Slides conversion
+GOOGLE_SLIDES_IMPORT_FORMATS = {
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".odp": "application/vnd.oasis.opendocument.presentation",
+}
+
+# Mapping of file extensions to source MIME types for Google Sheets conversion
+GOOGLE_SHEETS_IMPORT_FORMATS = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+}
+
+GOOGLE_DOCS_MIME_TYPE = "application/vnd.google-apps.document"
+GOOGLE_SLIDES_MIME_TYPE = "application/vnd.google-apps.presentation"
+GOOGLE_SHEETS_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
+
+# Source MIME types safe to build from an in-memory `content` string. Binary
+# Office/OpenDocument formats must come from file_path/file_url; UTF-8 encoding
+# their bytes from a string would corrupt the upload and its conversion.
+TEXT_BASED_IMPORT_MIME_TYPES = {
+    "text/plain",
+    "text/markdown",
+    "text/html",
+    "text/csv",
+    "text/tab-separated-values",
+    "application/rtf",
+}
+
+
+def _detect_source_format(
+    file_name: str,
+    content: Optional[str] = None,
+    format_map: Optional[Dict[str, str]] = None,
+) -> str:
+    """
+    Detect the source MIME type from a file extension.
+
+    Uses ``format_map`` (defaults to the Google Docs format map) and falls back to
+    text/markdown for markdown-looking content, else text/plain.
+    """
+    if format_map is None:
+        format_map = GOOGLE_DOCS_IMPORT_FORMATS
+
+    ext = Path(file_name).suffix.lower()
+    if ext in format_map:
+        return format_map[ext]
+
+    if content and (content.startswith("#") or "```" in content or "**" in content):
+        return "text/markdown"
+
+    return "text/plain"
+
+
+async def _resolve_import_media(
+    *,
+    tool_name: str,
+    file_name: str,
+    content: Optional[str],
+    file_path: Optional[str],
+    file_url: Optional[str],
+    source_format: Optional[str],
+    format_map: Dict[str, str],
+) -> Tuple[MediaIoBaseUpload, str, Optional[BinaryIO]]:
+    """
+    Resolve a content source into an upload ``MediaIoBaseUpload`` and source MIME type.
+
+    Exactly one of ``content``, ``file_path``, or ``file_url`` must be provided.
+    The source bytes are uploaded with their *source* MIME type so the Drive API can
+    convert them into the destination Google Apps format. ``format_map`` is the
+    extension → source MIME allowlist used for detection and validation.
+
+    Returns ``(media, source_mime_type, closeable)``; when the source is a remote URL,
+    ``closeable`` is the download stream the caller must close after upload (else None).
+    """
+    source_count = sum(1 for x in (content, file_path, file_url) if x is not None)
+    if source_count == 0:
+        raise ValueError(
+            "You must provide one of: 'content', 'file_path', or 'file_url'."
+        )
+    if source_count > 1:
+        raise ValueError("Provide only one of: 'content', 'file_path', or 'file_url'.")
+
+    # Determine source MIME type from the explicit hint or auto-detection.
+    if source_format:
+        format_key = f".{source_format.lower().lstrip('.')}"
+        if format_key not in format_map:
+            raise ValueError(
+                f"Unsupported source_format: '{source_format}'. "
+                f"Supported: {', '.join(ext.lstrip('.') for ext in format_map.keys())}"
+            )
+        source_mime_type = format_map[format_key]
+    else:
+        detection_name = file_path or file_name
+        if file_url is not None:
+            detection_name = urlparse(file_url).path or file_url
+        source_mime_type = _detect_source_format(detection_name, content, format_map)
+
+    logger.info(f"[{tool_name}] Detected source MIME type: {source_mime_type}")
+
+    file_data: bytes
+    remote_file_data: Optional[BinaryIO] = None
+
+    if content is not None:
+        if source_mime_type not in TEXT_BASED_IMPORT_MIME_TYPES:
+            raise ValueError(
+                f"[{tool_name}] 'content' is only valid for text-based source formats, "
+                f"but the source resolves to '{source_mime_type}' (a binary format). "
+                f"Provide a 'file_path' or 'file_url' for binary formats instead."
+            )
+        file_data = content.encode("utf-8")
+        logger.info(f"[{tool_name}] Using content: {len(file_data)} bytes")
+
+    elif file_path is not None:
+        parsed_url = urlparse(file_path)
+        if parsed_url.scheme == "file":
+            raw_path = parsed_url.path or ""
+            netloc = parsed_url.netloc
+            if netloc and netloc.lower() != "localhost":
+                raw_path = f"//{netloc}{raw_path}"
+            actual_path = url2pathname(raw_path)
+        elif parsed_url.scheme == "":
+            actual_path = file_path
+        else:
+            raise ValueError(
+                f"file_path should be a local path or file:// URL, got: {file_path}"
+            )
+
+        path_obj = validate_file_path(actual_path)
+        if not path_obj.exists():
+            raise FileNotFoundError(f"File not found: {actual_path}")
+        if not path_obj.is_file():
+            raise ValueError(f"Path is not a file: {actual_path}")
+
+        file_data = await asyncio.to_thread(path_obj.read_bytes)
+        logger.info(f"[{tool_name}] Read local file: {len(file_data)} bytes")
+
+        # Re-detect from the real file extension when no explicit hint was given.
+        if not source_format:
+            source_mime_type = _detect_source_format(actual_path, None, format_map)
+
+    else:  # file_url is not None
+        parsed_url = urlparse(file_url)
+        if parsed_url.scheme not in ("http", "https"):
+            raise ValueError(f"file_url must be http:// or https://, got: {file_url}")
+
+        remote_file_data, remote_content_type = await _download_url_to_bytes(file_url)
+
+        # Prefer the response Content-Type, falling back to URL-based detection.
+        if not source_format:
+            ct_base = (remote_content_type or "").split(";", 1)[0].strip()
+            if ct_base and ct_base in format_map.values():
+                source_mime_type = ct_base
+            else:
+                source_mime_type = _detect_source_format(
+                    parsed_url.path or file_url, None, format_map
+                )
+
+    # Enforce the allowlist on the final resolved MIME type so auto-detection can't
+    # upload an unsupported source (e.g. text/plain from an unknown extension).
+    if source_mime_type not in format_map.values():
+        if remote_file_data is not None:
+            remote_file_data.close()
+        raise ValueError(
+            f"[{tool_name}] Detected source MIME type '{source_mime_type}' is not "
+            f"supported by this tool. Supported source formats: "
+            f"{', '.join(ext.lstrip('.') for ext in sorted(format_map.keys()))}."
+        )
+
+    media = MediaIoBaseUpload(
+        remote_file_data if remote_file_data is not None else io.BytesIO(file_data),
+        mimetype=source_mime_type,  # Source format drives Drive's auto-conversion
+        resumable=True,
+        chunksize=UPLOAD_CHUNK_SIZE_BYTES,
+    )
+    return media, source_mime_type, remote_file_data

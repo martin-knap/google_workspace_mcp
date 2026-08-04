@@ -8,6 +8,7 @@ In stdio mode: Starts a minimal HTTP server just for OAuth callbacks
 import asyncio
 import errno
 import logging
+import os
 import threading
 import time
 import socket
@@ -17,6 +18,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from typing import Optional
 from urllib.parse import urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 from auth.scopes import SCOPES, get_current_scopes  # noqa
 from auth.oauth_responses import (
@@ -25,7 +28,11 @@ from auth.oauth_responses import (
     create_server_error_response,
 )
 from auth.google_auth import handle_auth_callback, check_client_secrets
-from auth.oauth_config import get_oauth_redirect_uri
+from auth.oauth_config import (
+    get_oauth_redirect_uri,
+    get_oauth_config,
+    get_transport_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +50,7 @@ class MinimalOAuthServer:
         self.server = None
         self.server_thread = None
         self.is_running = False
+        self._reusing_external_listener = False
 
         # Setup the callback route
         self._setup_callback_route()
@@ -91,6 +99,8 @@ class MinimalOAuthServer:
                     authorization_response=str(request.url),
                     redirect_uri=redirect_uri,
                     session_id=None,
+                    allow_missing_state_fallback=os.getenv("MCP_SINGLE_USER_MODE")
+                    == "1",
                 )
 
                 logger.info(
@@ -195,6 +205,42 @@ class MinimalOAuthServer:
         other_path = other_parsed.path.rstrip("/") or ""
         return self_path == other_path
 
+    def _callback_endpoint_looks_like_workspace(self, hostname: str) -> bool:
+        """
+        Probe an occupied callback port for this app's OAuth callback handler.
+
+        This is intentionally only used after bind returns EADDRINUSE in stdio
+        mode. A no-code request to our handler returns the shared
+        "Authentication Error" page with HTTP 400, which is enough to distinguish
+        the boot-time workspace callback listener from a random local process.
+        """
+        try:
+            parsed_uri = urlparse(self.base_uri)
+            scheme = parsed_uri.scheme or "http"
+            if scheme not in {"http", "https"}:
+                return False
+            probe_host = hostname
+            if probe_host in {"0.0.0.0", "::"}:
+                probe_host = "127.0.0.1"
+            if ":" in probe_host and not probe_host.startswith("["):
+                probe_host = f"[{probe_host}]"
+            base_path = parsed_uri.path.rstrip("/")
+            probe_url = f"{scheme}://{probe_host}:{self.port}{base_path}/oauth2callback"
+
+            try:
+                with urlopen(probe_url, timeout=1.0) as response:
+                    status_code = response.status
+                    body = response.read(4096).decode("utf-8", errors="replace")
+            except HTTPError as exc:
+                status_code = exc.code
+                body = exc.read(4096).decode("utf-8", errors="replace")
+
+            return status_code in {200, 400} and (
+                "Authentication Error" in body or "Authentication Successful" in body
+            )
+        except (OSError, URLError, ValueError):
+            return False
+
     def start(self) -> tuple[bool, str]:
         """
         Start the minimal OAuth server.
@@ -225,10 +271,24 @@ class MinimalOAuthServer:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((hostname, self.port))
-        except OSError:
+        except OSError as exc:
+            if (
+                exc.errno == errno.EADDRINUSE
+                and self._callback_endpoint_looks_like_workspace(hostname)
+            ):
+                logger.info(
+                    "OAuth callback server already available on %s:%s; reusing existing listener",
+                    hostname,
+                    self.port,
+                )
+                self.is_running = True
+                self._reusing_external_listener = True
+                return True, ""
             error_msg = f"Port {self.port} is already in use on {hostname}. Cannot start minimal OAuth server."
             logger.error(error_msg)
             return False, error_msg
+
+        self._reusing_external_listener = False
 
         def run_server():
             """Run the server in a separate thread."""
@@ -239,6 +299,10 @@ class MinimalOAuthServer:
                     port=self.port,
                     log_level="warning",
                     access_log=False,
+                    # Match FastMCP's own uvicorn config: uvicorn's "auto"
+                    # default resolves to the deprecated legacy-websockets
+                    # implementation whenever `websockets` is installed.
+                    ws="websockets-sansio",
                 )
                 self.server = uvicorn.Server(config)
                 asyncio.run(self.server.serve())
@@ -277,6 +341,12 @@ class MinimalOAuthServer:
         if not self.is_running:
             return
 
+        if self._reusing_external_listener:
+            self.is_running = False
+            self._reusing_external_listener = False
+            logger.info("Minimal OAuth server external listener reuse released")
+            return
+
         try:
             if self.server:
                 if hasattr(self.server, "should_exit"):
@@ -286,6 +356,7 @@ class MinimalOAuthServer:
                 self.server_thread.join(timeout=3.0)
 
             self.is_running = False
+            self._reusing_external_listener = False
             logger.info("Minimal OAuth server stopped")
 
         except Exception as e:
@@ -366,6 +437,24 @@ def ensure_oauth_callback_available(
         error_msg = f"Unknown transport mode: {transport_mode}"
         logger.error(error_msg)
         return False, error_msg
+
+
+def ensure_stdio_oauth_callback_available() -> tuple[bool, str]:
+    """
+    Lazily start the stdio OAuth-callback / attachment listener on demand.
+
+    Binding the callback port is deferred until it is actually needed — an auth
+    flow starting or an attachment URL being handed out — so short-lived stdio
+    spawns that do neither never occupy a port in the fallback range (issue #832).
+
+    No-op (returns success) outside stdio transport, where the main HTTP server
+    already serves these routes. Uses the active OAuth config so the listener
+    binds the same port the redirect and attachment URLs are composed from.
+    """
+    if get_transport_mode() != "stdio":
+        return True, ""
+    config = get_oauth_config()
+    return ensure_oauth_callback_available("stdio", config.port, config.base_uri)
 
 
 def cleanup_oauth_callback_server():

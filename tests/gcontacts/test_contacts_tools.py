@@ -9,10 +9,13 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+import pytest
+
 from gcontacts.contacts_tools import (
     _format_contact,
     _build_person_body,
 )
+from gcontacts.contacts_helpers import _parse_birthday
 
 
 class TestFormatContact:
@@ -347,3 +350,106 @@ class TestConstants:
         assert "name" in CONTACT_GROUP_FIELDS
         assert "groupType" in CONTACT_GROUP_FIELDS
         assert "memberCount" in CONTACT_GROUP_FIELDS
+
+
+class TestParseBirthday:
+    """Tests for _parse_birthday helper."""
+
+    def test_full_date(self):
+        """A full 'YYYY-MM-DD' string parses into a dated birthday object."""
+        result = _parse_birthday("1990-03-15")
+        assert result == {"date": {"year": 1990, "month": 3, "day": 15}}
+
+    def test_year_less_date(self):
+        """A year-less 'MM-DD' string parses without a year field."""
+        result = _parse_birthday("03-15")
+        assert result == {"date": {"month": 3, "day": 15}}
+
+    def test_strips_whitespace(self):
+        """Surrounding whitespace is trimmed before parsing."""
+        result = _parse_birthday("  1985-12-01  ")
+        assert result == {"date": {"year": 1985, "month": 12, "day": 1}}
+
+    def test_invalid_format_raises(self):
+        """An unrecognized date format raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid birthday format"):
+            _parse_birthday("15/03/1990")
+
+    def test_single_part_raises(self):
+        """A single-component string (no separator) raises ValueError."""
+        with pytest.raises(ValueError):
+            _parse_birthday("1990")
+
+    def test_non_numeric_raises_format_error(self):
+        """Non-numeric components raise the friendly format ValueError, not int()'s."""
+        with pytest.raises(ValueError, match="Invalid birthday format"):
+            _parse_birthday("1990-ab-15")
+
+    def test_out_of_range_month_raises(self):
+        """A month outside 1-12 raises a range ValueError."""
+        with pytest.raises(ValueError, match="month must be 1-12"):
+            _parse_birthday("1990-13-15")
+
+    def test_out_of_range_day_raises(self):
+        """A day outside 1-31 raises a range ValueError."""
+        with pytest.raises(ValueError, match="day must be 1-31"):
+            _parse_birthday("03-45")
+
+    def test_empty_string_raises(self):
+        """An empty string has no numeric parts and raises the format ValueError."""
+        with pytest.raises(ValueError, match="Invalid birthday format"):
+            _parse_birthday("")
+
+    def test_impossible_day_month_combo_raises(self):
+        """A well-formed but non-existent date (Feb 30) raises a calendar ValueError."""
+        with pytest.raises(ValueError, match="not a real calendar date"):
+            _parse_birthday("2000-02-30")
+
+    def test_feb_29_non_leap_year_raises(self):
+        """Feb 29 in a non-leap year is rejected."""
+        with pytest.raises(ValueError, match="not a real calendar date"):
+            _parse_birthday("1990-02-29")
+
+    def test_feb_29_leap_year_allowed(self):
+        """Feb 29 in a leap year is a valid full date."""
+        assert _parse_birthday("2000-02-29") == {
+            "date": {"year": 2000, "month": 2, "day": 29}
+        }
+
+    def test_yearless_feb_29_allowed(self):
+        """Year-less Feb 29 is valid (validated against a leap year)."""
+        assert _parse_birthday("02-29") == {"date": {"month": 2, "day": 29}}
+
+    def test_year_zero_raises(self):
+        """A non-positive year is not a real calendar date."""
+        with pytest.raises(ValueError, match="not a real calendar date"):
+            _parse_birthday("0000-05-15")
+
+
+class TestBuildPersonBodyBirthday:
+    """Tests for birthday support in _build_person_body."""
+
+    def test_set_full_birthday(self):
+        """A full date populates the birthdays field with year, month, and day."""
+        body = _build_person_body(given_name="Test", birthday="1990-03-15")
+        assert body["birthdays"] == [{"date": {"year": 1990, "month": 3, "day": 15}}]
+
+    def test_set_yearless_birthday(self):
+        """A year-less date populates birthdays without a year field."""
+        body = _build_person_body(given_name="Test", birthday="03-15")
+        assert body["birthdays"] == [{"date": {"month": 3, "day": 15}}]
+
+    def test_clear_birthday_sentinel(self):
+        """The 'clear' sentinel produces an empty birthdays list (clears the field)."""
+        body = _build_person_body(given_name="Test", birthday="clear")
+        assert body["birthdays"] == []
+
+    def test_clear_birthday_empty_string(self):
+        """An empty string also clears the birthday (empty birthdays list)."""
+        body = _build_person_body(given_name="Test", birthday="")
+        assert body["birthdays"] == []
+
+    def test_no_birthday_param_omits_key(self):
+        """Omitting the birthday param leaves the birthdays key absent from the body."""
+        body = _build_person_body(given_name="Test")
+        assert "birthdays" not in body

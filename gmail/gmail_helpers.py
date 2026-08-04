@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from collections import Counter
 from datetime import datetime, timezone
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastmcp.exceptions import ToolError as ToolExecutionError
 from googleapiclient.errors import HttpError
@@ -155,9 +156,10 @@ def _analyze_thread_ownership_impl(
 
     # Thread subject: first message's Subject header
     first_headers = {
-        h["name"]: h["value"] for h in messages[0].get("payload", {}).get("headers", [])
+        h["name"].lower(): h["value"]
+        for h in messages[0].get("payload", {}).get("headers", [])
     }
-    thread_subject = first_headers.get("Subject") or None
+    thread_subject = first_headers.get("subject") or None
 
     sender_counter: Counter[str] = Counter()
     participants: set[str] = set()
@@ -170,17 +172,21 @@ def _analyze_thread_ownership_impl(
         label_ids = message.get("labelIds", []) or []
         is_draft = "DRAFT" in label_ids
 
-        headers = {
-            h["name"]: h["value"] for h in message.get("payload", {}).get("headers", [])
-        }
+        raw_headers = message.get("payload", {}).get("headers", [])
+        headers = {h["name"].lower(): h["value"] for h in raw_headers}
 
-        from_addr = headers.get("From", "")
+        from_addr = headers.get("from", "")
         _name, from_email = parseaddr(from_addr)
         from_norm = _normalize_email(from_email) if from_email else ""
 
         # Collect participants from From/To/Cc using getaddresses (RFC-correct
-        # parsing of quoted display names with embedded commas).
-        header_values = [headers.get(hdr, "") for hdr in ("From", "To", "Cc")]
+        # parsing of quoted display names with embedded commas). Read the raw
+        # list so repeated fields are combined rather than silently overwritten.
+        header_values = [
+            h["value"]
+            for h in raw_headers
+            if h["name"].lower() in {"from", "to", "cc"} and h["value"]
+        ]
         message_participants = set()
         for _n, addr in getaddresses([v for v in header_values if v]):
             norm = _normalize_email(addr) if addr else ""
@@ -198,7 +204,7 @@ def _analyze_thread_ownership_impl(
             sender_counter[from_norm] += 1
 
         _iso, dt = _parse_date_header(
-            headers.get("Date", ""), message.get("internalDate")
+            headers.get("date", ""), message.get("internalDate")
         )
         if dt is not None:
             if last_non_draft is None or dt >= last_non_draft[0]:
@@ -219,7 +225,7 @@ def _analyze_thread_ownership_impl(
         }
 
     last_dt, _last_message, last_headers = last_non_draft
-    last_sender_raw = last_headers.get("From", "")
+    last_sender_raw = last_headers.get("from", "")
     _n, last_sender_email = parseaddr(last_sender_raw)
     last_sender_norm = _normalize_email(last_sender_email) if last_sender_email else ""
 
@@ -251,3 +257,77 @@ def _analyze_thread_ownership_impl(
         "excluded_drafts": excluded_drafts,
         "message_count": len(messages),
     }
+
+
+def _build_forward_content(
+    headers: dict[str, str],
+    bodies: dict[str, str],
+    forward_message: Optional[str],
+    forward_message_format: Literal["plain", "html"],
+    subject_override: Optional[str],
+) -> tuple[str, str, Literal["plain", "html"]]:
+    """Build the (subject, body, body_format) for a forwarded message.
+
+    Pure formatting kept out of the @server.tool wrapper so it is independently
+    testable: quotes the original headers/body and prepends an optional note.
+    An explicit subject_override wins over the derived 'Fwd: <subject>'.
+    """
+    original_subject = headers.get("Subject", "(no subject)")
+    original_from = headers.get("From", "(unknown sender)")
+    original_date = headers.get("Date", "(unknown date)")
+    original_to = headers.get("To", "")
+    original_text = bodies.get("text", "")
+    original_html = bodies.get("html", "")
+    has_html = bool(original_html.strip())
+
+    forward_header_text = (
+        "---------- Forwarded message ---------\n"
+        f"From: {original_from}\n"
+        f"Date: {original_date}\n"
+        f"Subject: {original_subject}\n"
+        f"To: {original_to}"
+    )
+    # Header values are escaped; they render as text but may carry markup.
+    forward_header_html = (
+        '<div style="color: #777;">'
+        "---------- Forwarded message ---------<br/>"
+        f"From: {html.escape(original_from)}<br/>"
+        f"Date: {html.escape(original_date)}<br/>"
+        f"Subject: {html.escape(original_subject)}<br/>"
+        f"To: {html.escape(original_to)}"
+        "</div>"
+    )
+
+    # Render as HTML when the original is HTML or the note is explicitly HTML.
+    if has_html or (forward_message and forward_message_format == "html"):
+        note_html = ""
+        if forward_message:
+            if forward_message_format == "html":
+                note_html = f"<div>{forward_message}</div><br/>"
+            else:
+                escaped = html.escape(forward_message).replace("\n", "<br/>")
+                note_html = f"<div>{escaped}</div><br/>"
+        original_body_html = (
+            original_html
+            if has_html
+            else html.escape(original_text).replace("\n", "<br/>")
+        )
+        forward_body = (
+            f"{note_html}"
+            '<div style="border-left: 1px solid #ccc; padding-left: 10px; margin-left: 10px;">'
+            f"{forward_header_html}<br/>{original_body_html}</div>"
+        )
+        body_format: Literal["plain", "html"] = "html"
+    else:
+        note = f"{forward_message}\n\n" if forward_message else ""
+        forward_body = f"{note}{forward_header_text}\n\n{original_text}"
+        body_format = "plain"
+
+    # Derive the subject, avoiding a double prefix for existing "Fwd:"/"FW:".
+    subject = subject_override or original_subject
+    if not subject_override and not subject.lower().lstrip().startswith(
+        ("fwd:", "fw:")
+    ):
+        subject = f"Fwd: {original_subject}"
+
+    return subject, forward_body, body_format

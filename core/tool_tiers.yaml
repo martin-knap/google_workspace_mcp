@@ -25,10 +25,13 @@ drive:
     - semantic_search_drive_docs
     - search_drive_files
     - get_drive_file_content
+    - extract_drive_document_markdown
     - get_drive_file_download_url
     - create_drive_file
     - create_drive_folder
     - import_to_google_doc
+    - import_to_google_slides
+    - import_to_google_sheets
     - get_drive_shareable_link
   extended:
     - list_drive_items
@@ -43,6 +46,8 @@ drive:
     - get_folder_statistics
     - get_recent_drive_activity
     - batch_get_file_metadata
+    - extract_drive_pdf_text
+    - extract_scanned_pdf_text_ocr
   complete:
     - get_drive_file_permissions
     - check_drive_file_public_access

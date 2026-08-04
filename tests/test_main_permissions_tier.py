@@ -59,6 +59,111 @@ def test_expand_related_tool_imports_loads_semantic_with_drive():
     assert main.expand_related_tool_imports(["gmail"]) == ["gmail"]
 
 
+def test_resolve_stdio_callback_port_marks_resolved_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_resolve_port() -> None:
+        calls.append("resolve")
+        monkeypatch.setenv("WORKSPACE_MCP_PORT", "8123")
+        monkeypatch.setenv("WORKSPACE_MCP_RESOLVED_PORT", "1")
+
+    monkeypatch.setattr("auth.port_resolver.resolve_port", fake_resolve_port)
+    monkeypatch.setattr(main, "reload_oauth_config", lambda: calls.append("reload"))
+
+    main.resolve_stdio_callback_port()
+
+    assert calls == ["resolve", "reload"]
+    assert os.environ["WORKSPACE_MCP_RESOLVED_PORT"] == "1"
+
+
+def test_resolve_callback_port_for_transport_skips_streamable_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called() -> None:
+        raise AssertionError("stdio port resolver must not run for streamable HTTP")
+
+    monkeypatch.setattr(main, "resolve_stdio_callback_port", fail_if_called)
+    monkeypatch.setenv("WORKSPACE_MCP_RESOLVED_PORT", "1")
+
+    main.resolve_callback_port_for_transport("streamable-http")
+
+    assert "WORKSPACE_MCP_RESOLVED_PORT" not in os.environ
+
+
+def test_resolve_bind_host_defaults_legacy_streamable_http_to_loopback(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: False,
+            is_configured=lambda: True,
+        ),
+    )
+    monkeypatch.delenv("WORKSPACE_MCP_HOST", raising=False)
+
+    assert main.resolve_bind_host_for_transport("streamable-http") == "127.0.0.1"
+
+
+def test_resolve_bind_host_preserves_explicit_legacy_streamable_http_host(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: False,
+            is_configured=lambda: True,
+        ),
+    )
+    monkeypatch.setenv("WORKSPACE_MCP_HOST", "0.0.0.0")
+
+    assert main.resolve_bind_host_for_transport("streamable-http") == "0.0.0.0"
+
+
+def test_resolve_bind_host_preserves_oauth21_streamable_http_default(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: True,
+        ),
+    )
+    monkeypatch.delenv("WORKSPACE_MCP_HOST", raising=False)
+
+    assert main.resolve_bind_host_for_transport("streamable-http") == "0.0.0.0"
+
+
+def test_validate_streamable_http_auth_rejects_unconfigured_oauth21(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: False,
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.validate_streamable_http_auth("streamable-http")
+
+    assert exc.value.code == 1
+    assert "requires GOOGLE_OAUTH_CLIENT_ID" in capsys.readouterr().err
+
+
+def test_validate_streamable_http_auth_allows_stdio(monkeypatch):
+    def fail_if_called():
+        raise AssertionError("stdio should not check OAuth 2.1 config")
+
+    monkeypatch.setattr(main, "get_oauth_config", fail_if_called)
+
+    main.validate_streamable_http_auth("stdio")
+
+
 def test_permissions_and_tools_flags_are_rejected(monkeypatch, capsys):
     monkeypatch.setattr(main, "configure_safe_logging", lambda: None)
     monkeypatch.setattr(

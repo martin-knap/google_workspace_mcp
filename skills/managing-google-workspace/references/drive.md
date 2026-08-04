@@ -29,6 +29,7 @@ Search for files and folders across My Drive and shared drives.
 | file_type | string | no | | Friendly name (`folder`, `document`/`doc`, `spreadsheet`/`sheet`, `presentation`/`slides`, `form`, `drawing`, `pdf`, `shortcut`, `script`, `site`, `jam`/`jamboard`) or raw MIME type |
 | detailed | boolean | no | true | Include size, modified time, and link |
 | order_by | string | no | | Sort order (see Sort Order below) |
+| include_trashed | boolean | no | false | Include files in the trash. A `trashed` clause (`=` or `!=`) written into `query` always wins over this flag |
 
 ### list_drive_items
 List files and folders in a specific folder.
@@ -60,7 +61,8 @@ Retrieve file content as text.
 
 Content handling:
 - Google Docs/Sheets/Slides: exported as text/CSV
-- Office files (.docx/.xlsx/.pptx): parsed to extract readable text
+- Office files (Word/Excel/PowerPoint/OpenDocument/RTF/CSV/EPUB): converted to Markdown with anydoc
+- PDFs: converted with pdf-inspector and report exact pages that need OCR
 - Other files: downloaded, UTF-8 decoded if possible
 
 ### get_drive_file_download_url
@@ -196,6 +198,8 @@ Search for a file by name and check if it has public link sharing enabled.
 ## Drive Search Query Operators
 
 The `query` parameter of `search_drive_files` uses Google Drive query syntax (e.g. `name contains`, `mimeType =`, `'id' in parents`, `modifiedTime >`, `trashed =`, `sharedWithMe`). Combine with `and`/`or`/`not`.
+
+**Trash:** both `search_drive_files` and `list_drive_items` exclude trashed files by default. To see trashed files, either pass `include_trashed=true` to `search_drive_files` or write an explicit `trashed = true` clause into `query` — an explicit clause always wins over the flag.
 
 ---
 
