@@ -130,6 +130,13 @@ async def twenty_query(
 def _mcp_payload(result: Any) -> Any:
     structured = getattr(result, "structured_content", None)
     if structured is not None:
+        if isinstance(structured, dict) and set(structured) == {"result"}:
+            nested = structured["result"]
+            if isinstance(nested, str):
+                try:
+                    return json.loads(nested)
+                except json.JSONDecodeError:
+                    return nested
         return structured
     content = getattr(result, "content", None) or []
     texts = [

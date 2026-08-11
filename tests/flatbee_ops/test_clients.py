@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from flatbee_ops.clients import _unwrap_records, twenty_query
+from flatbee_ops.clients import _mcp_payload, _unwrap_records, twenty_query
 
 
 def test_unwraps_twenty_rest_envelope():
@@ -30,6 +30,13 @@ def test_unwraps_top_level_twenty_total_count():
     )
     assert records == [{"id": "d1"}]
     assert page_info == {"hasNextPage": True, "totalCount": 57}
+
+
+def test_unwraps_legacy_mcp_structured_result():
+    result = type(
+        "Result", (), {"structured_content": {"result": '{"entities":[{"uuid":"n1"}]}'}}
+    )()
+    assert _mcp_payload(result) == {"entities": [{"uuid": "n1"}]}
 
 
 @pytest.mark.asyncio
