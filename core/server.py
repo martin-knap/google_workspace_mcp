@@ -37,7 +37,7 @@ from core.config import (
 )
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastmcp import FastMCP
-from fastmcp.server.auth.providers.google import GoogleProvider
+from auth.allowlisted_google_provider import AllowlistedGoogleProvider as GoogleProvider
 from mcp.types import ToolAnnotations, Icon
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
@@ -744,6 +744,11 @@ def configure_server_for_http():
                     client_storage=client_storage,
                     jwt_signing_key=jwt_signing_key,
                     allowed_client_redirect_uris=allowed_client_redirect_uris,
+                    allowed_emails=os.getenv("WORKSPACE_MCP_ALLOWED_EMAILS"),
+                    require_email_allowlist=os.getenv(
+                        "WORKSPACE_MCP_REQUIRE_EMAIL_ALLOWLIST", "false"
+                    ).lower()
+                    == "true",
                 )
                 if provider.client_registration_options is not None:
                     # Keep protocol-level auth limited to base identity scopes, but

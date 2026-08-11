@@ -116,7 +116,7 @@ def _store() -> OpsStore:
 
 
 def _allowed_emails() -> set[str]:
-    raw = os.getenv(
+    raw = os.getenv("WORKSPACE_MCP_ALLOWED_EMAILS", "").strip() or os.getenv(
         "FLATBEE_OPS_ALLOWED_EMAILS",
         "michal.kniha@flatbee.cz,ai@flatbee.cz,dusan.kniha@flatbee.cz,"
         "jakub.chodura@flatbee.cz,ludmila.slancova@flatbee.cz",
