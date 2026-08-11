@@ -31,4 +31,3 @@ def test_workflow_templates_only_exact_input_placeholders():
         "project_code": "P22",
         "query": "Review ${input.project_code}",
     }
-

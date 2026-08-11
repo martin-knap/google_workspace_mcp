@@ -65,9 +65,11 @@ def _unwrap_records(
     data = payload.get("data", payload) if isinstance(payload, dict) else payload
     if isinstance(data, dict):
         records = data.get(object_name, data.get("records", []))
-        page_info = data.get("pageInfo") or (
-            payload.get("pageInfo") if isinstance(payload, dict) else None
-        ) or {}
+        page_info = (
+            data.get("pageInfo")
+            or (payload.get("pageInfo") if isinstance(payload, dict) else None)
+            or {}
+        )
     else:
         records, page_info = data, {}
     page_info = dict(page_info) if isinstance(page_info, dict) else {}
@@ -131,9 +133,7 @@ def _mcp_payload(result: Any) -> Any:
         return structured
     content = getattr(result, "content", None) or []
     texts = [
-        getattr(item, "text", "")
-        for item in content
-        if getattr(item, "text", None)
+        getattr(item, "text", "") for item in content if getattr(item, "text", None)
     ]
     if len(texts) == 1:
         try:
@@ -146,9 +146,7 @@ def _mcp_payload(result: Any) -> Any:
 async def graphiti_search(
     query: str, project_code: str | None = None, limit: int = 10
 ) -> dict[str, Any]:
-    url = os.getenv(
-        "GRAPHITI_MCP_URL", "https://graphiti.flatbee.cz/mcp"
-    ).strip()
+    url = os.getenv("GRAPHITI_MCP_URL", "https://graphiti.flatbee.cz/mcp").strip()
     token = os.getenv("GRAPHITI_MCP_SERVICE_TOKEN", "").strip()
     if not token:
         raise RuntimeError("GRAPHITI_MCP_SERVICE_TOKEN is not configured")

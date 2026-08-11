@@ -37,9 +37,7 @@ def test_plan_is_actor_bound_single_use_and_versions_workflow(tmp_path):
     with pytest.raises(ValueError, match="exactly match"):
         store.execute_workflow_upsert(plan["id"], "ai@flatbee.cz", "yes")
 
-    result = store.execute_workflow_upsert(
-        plan["id"], "ai@flatbee.cz", plan["id"]
-    )
+    result = store.execute_workflow_upsert(plan["id"], "ai@flatbee.cz", plan["id"])
     assert result == {
         "ok": True,
         "plan_id": plan["id"],
@@ -49,9 +47,7 @@ def test_plan_is_actor_bound_single_use_and_versions_workflow(tmp_path):
     }
     assert store.get_workflow("project_review")["version"] == 1
     with pytest.raises(ValueError, match="completed"):
-        store.execute_workflow_upsert(
-            plan["id"], "ai@flatbee.cz", plan["id"]
-        )
+        store.execute_workflow_upsert(plan["id"], "ai@flatbee.cz", plan["id"])
 
     next_plan = store.prepare(
         "ai@flatbee.cz",
@@ -59,8 +55,5 @@ def test_plan_is_actor_bound_single_use_and_versions_workflow(tmp_path):
         "Update project_review",
         workflow_payload(),
     )
-    store.execute_workflow_upsert(
-        next_plan["id"], "ai@flatbee.cz", next_plan["id"]
-    )
+    store.execute_workflow_upsert(next_plan["id"], "ai@flatbee.cz", next_plan["id"])
     assert store.get_workflow("project_review")["version"] == 2
-

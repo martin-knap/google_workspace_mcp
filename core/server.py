@@ -16,7 +16,7 @@ from auth.auth_info_middleware import AuthInfoMiddleware
 from auth.google_auth import handle_auth_callback, start_auth_flow, check_client_secrets
 from auth.gateway_identity import get_verified_gateway_principal
 from auth.mcp_session_middleware import MCPSessionMiddleware
-from auth.oauth21_session_store import set_auth_provider
+from auth.oauth21_session_store import get_oauth21_session_store, set_auth_provider
 from auth.oauth_config import (
     is_oauth21_enabled,
     is_external_oauth21_provider,

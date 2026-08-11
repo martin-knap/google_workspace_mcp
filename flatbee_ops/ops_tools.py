@@ -152,9 +152,7 @@ def _validate_workflow_definition(steps: list[dict[str, Any]]) -> dict[str, Any]
             raise ValueError(f"Workflow step {index} must be an object")
         kind = str(raw.get("type") or "").strip()
         if kind not in ALLOWED_STEP_TYPES:
-            raise ValueError(
-                f"Workflow step {index} has unsupported type {kind!r}"
-            )
+            raise ValueError(f"Workflow step {index} has unsupported type {kind!r}")
         arguments = raw.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise ValueError(f"Workflow step {index} arguments must be an object")
@@ -304,9 +302,7 @@ async def ops_project_workspace(
     calls: list[Any] = [
         twenty_query("projects", {"projectCode": code}, 2),
         twenty_query("documents", {"projectCode": code}, min(100, bounded * 5)),
-        twenty_query(
-            "dataQualityIssues", {"projectCode": code}, min(100, bounded * 5)
-        ),
+        twenty_query("dataQualityIssues", {"projectCode": code}, min(100, bounded * 5)),
     ]
     labels = ["project", "documents", "data_quality"]
     if question:
@@ -446,4 +442,3 @@ async def ops_workflow_run(
         "definition_hash": workflow["definition_hash"],
         "results": results,
     }
-

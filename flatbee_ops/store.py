@@ -22,7 +22,9 @@ def _iso(value: datetime) -> str:
 
 
 def stable_hash(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -148,7 +150,10 @@ class OpsStore:
                 raise ValueError("Action plan was not found for this actor")
             if row["status"] != "pending":
                 raise ValueError(f"Action plan is {row['status']}, not pending")
-            if datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00")) <= _now():
+            if (
+                datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+                <= _now()
+            ):
                 connection.execute(
                     "UPDATE action_plans SET status='expired' WHERE id=?", (plan_id,)
                 )
@@ -180,7 +185,9 @@ class OpsStore:
                 (
                     payload["name"],
                     payload["description"],
-                    json.dumps(payload["definition"], ensure_ascii=False, sort_keys=True),
+                    json.dumps(
+                        payload["definition"], ensure_ascii=False, sort_keys=True
+                    ),
                     stable_hash(payload["definition"]),
                     version,
                     actor_email,
@@ -226,4 +233,3 @@ class OpsStore:
             "updated_by": row["updated_by"],
             "updated_at": row["updated_at"],
         }
-
