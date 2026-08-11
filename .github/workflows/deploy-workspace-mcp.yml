@@ -6,6 +6,7 @@ on:
     paths:
       - "auth/**"
       - "core/**"
+      - "flatbee_ops/**"
       - "semantic/**"
       - "g*/**"
       - "main.py"
