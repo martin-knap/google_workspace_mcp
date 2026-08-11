@@ -576,6 +576,16 @@ async def _enrich_rows_with_drive_metadata(
     rows: list[dict[str, Any]],
 ) -> None:
     """Add live Drive timestamps without changing trusted-account ACL behavior."""
+    # Internal DB-only smoke checks deliberately call the undecorated function
+    # without a Google service. Real MCP calls always receive one from the auth
+    # wrapper, so only the smoke path skips live metadata enrichment.
+    if service is None:
+        logger.info(
+            "semantic_search_drive_docs skipped Drive metadata enrichment "
+            "because no Drive service was supplied"
+        )
+        return
+
     metadata_cache: dict[str, Optional[dict[str, Any]]] = {}
     for row in rows:
         file_id = (row.get("drive_file_id") or "").strip()

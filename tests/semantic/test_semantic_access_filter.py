@@ -86,6 +86,15 @@ async def test_trusted_rows_are_enriched_without_filtering_missing_metadata():
     assert rows[1] == {"drive_file_id": "missing-file", "chunk_id": 2}
 
 
+@pytest.mark.asyncio
+async def test_internal_db_only_smoke_can_skip_drive_metadata_enrichment():
+    rows = [{"drive_file_id": "indexed-file", "chunk_id": 1}]
+
+    await _enrich_rows_with_drive_metadata(None, rows)
+
+    assert rows == [{"drive_file_id": "indexed-file", "chunk_id": 1}]
+
+
 def test_should_bypass_drive_acl_for_trusted_flatbee_accounts(monkeypatch):
     monkeypatch.delenv("SEMANTIC_SEARCH_ACL_BYPASS_EMAILS", raising=False)
 
