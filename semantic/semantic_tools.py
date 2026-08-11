@@ -504,42 +504,48 @@ def _metadata_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
-async def _drive_file_accessible(
+async def _drive_file_metadata(
     service: Any,
     file_id: str,
-    access_cache: dict[str, bool],
-) -> bool:
-    """Return whether the authenticated Drive user can read file metadata."""
+    metadata_cache: dict[str, Optional[dict[str, Any]]],
+) -> Optional[dict[str, Any]]:
+    """Return live Drive timestamps, or None when the file is inaccessible."""
     if not file_id:
-        return False
-    if file_id in access_cache:
-        return access_cache[file_id]
+        return None
+    if file_id in metadata_cache:
+        return metadata_cache[file_id]
 
     try:
-        await asyncio.to_thread(
+        metadata = await asyncio.to_thread(
             service.files()
             .get(
                 fileId=file_id,
-                fields="id",
+                fields="id,createdTime,modifiedTime",
                 supportsAllDrives=True,
             )
             .execute
         )
-        access_cache[file_id] = True
-        return True
+        normalized = metadata if isinstance(metadata, dict) else {"id": file_id}
+        metadata_cache[file_id] = normalized
+        return normalized
     except HttpError as exc:
         status = getattr(getattr(exc, "resp", None), "status", None)
         if status in {403, 404}:
             logger.info(
-                "semantic_search_drive_docs filtered inaccessible Drive file_id=%s status=%s",
+                "semantic_search_drive_docs Drive metadata unavailable file_id=%s status=%s",
                 file_id,
                 status,
             )
-            access_cache[file_id] = False
-            return False
+            metadata_cache[file_id] = None
+            return None
         raise ToolError(
             f"Drive access verification failed for an indexed result: HTTP {status or 'unknown'}"
         ) from exc
+
+
+def _attach_drive_metadata(row: dict[str, Any], metadata: dict[str, Any]) -> None:
+    row["drive_created_time"] = metadata.get("createdTime")
+    row["drive_modified_time"] = metadata.get("modifiedTime")
 
 
 async def _filter_rows_by_drive_access(
@@ -549,11 +555,13 @@ async def _filter_rows_by_drive_access(
 ) -> tuple[list[dict[str, Any]], int]:
     accessible: list[dict[str, Any]] = []
     filtered_count = 0
-    access_cache: dict[str, bool] = {}
+    metadata_cache: dict[str, Optional[dict[str, Any]]] = {}
 
     for row in rows:
         file_id = (row.get("drive_file_id") or "").strip()
-        if await _drive_file_accessible(service, file_id, access_cache):
+        metadata = await _drive_file_metadata(service, file_id, metadata_cache)
+        if metadata is not None:
+            _attach_drive_metadata(row, metadata)
             accessible.append(row)
             if len(accessible) >= limit:
                 break
@@ -561,6 +569,19 @@ async def _filter_rows_by_drive_access(
             filtered_count += 1
 
     return accessible, filtered_count
+
+
+async def _enrich_rows_with_drive_metadata(
+    service: Any,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Add live Drive timestamps without changing trusted-account ACL behavior."""
+    metadata_cache: dict[str, Optional[dict[str, Any]]] = {}
+    for row in rows:
+        file_id = (row.get("drive_file_id") or "").strip()
+        metadata = await _drive_file_metadata(service, file_id, metadata_cache)
+        if metadata is not None:
+            _attach_drive_metadata(row, metadata)
 
 
 SNIPPET_MAX_CHARS = 400
@@ -655,6 +676,14 @@ def _format_result(row: dict[str, Any], index: int, require_hard_verify: bool) -
     if twenty_url:
         lines.append(f"   twenty={twenty_url}")
 
+    timestamp_bits = []
+    if row.get("drive_created_time"):
+        timestamp_bits.append(f"createdTime={row['drive_created_time']}")
+    if row.get("drive_modified_time"):
+        timestamp_bits.append(f"modifiedTime={row['drive_modified_time']}")
+    if timestamp_bits:
+        lines.append("   " + " ".join(timestamp_bits))
+
     flag_bits = [f"project={project_code}"]
     if (
         metadata.get("current_version") is not None
@@ -727,7 +756,8 @@ async def semantic_search_drive_docs(
 ) -> str:
     """
     Search the indexed Flatbee Drive/OCR corpus using OpenAI embeddings plus
-    Postgres full-text ranking.
+    Postgres full-text ranking. Every accessible result includes live Google
+    Drive createdTime and modifiedTime metadata for deterministic recency checks.
 
     Args:
         query: Natural-language search query.
@@ -768,6 +798,7 @@ async def semantic_search_drive_docs(
     if acl_bypassed:
         rows = candidate_rows[:safe_limit]
         filtered_count = 0
+        await _enrich_rows_with_drive_metadata(service, rows)
     else:
         rows, filtered_count = await _filter_rows_by_drive_access(
             service,

@@ -37,6 +37,8 @@ def _mock_row(idx: int) -> dict:
             f"https://drive.google.com/file/d/1abcDEF{idx}xyz0123456789ABCDEF/view"
         ),
         "drive_file_id": f"1abcDEF{idx}xyz0123456789ABCDEF",
+        "drive_created_time": "2025-01-02T03:04:05Z",
+        "drive_modified_time": "2026-08-11T12:34:56Z",
         "chunk_id": 10000 + idx,
         "document_id": 5000 + idx,
         "canonical_document_id": 5000 + idx,
@@ -112,6 +114,8 @@ def test_formatted_result_drops_verbose_debug_fields():
     assert "canonical=True" in payload
     assert "current=True" in payload
     assert "url=" in payload
+    assert "createdTime=2025-01-02T03:04:05Z" in payload
+    assert "modifiedTime=2026-08-11T12:34:56Z" in payload
     assert "page=4" in payload
     assert "snippet:" in payload
 

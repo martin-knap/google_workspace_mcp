@@ -52,7 +52,7 @@ OPS_CAPABILITIES = [
     {
         "tool": "ops_semantic_search",
         "mode": "read",
-        "purpose": "Search governed Drive/OCR evidence with project filters.",
+        "purpose": "Search governed Drive/OCR evidence with project filters and live Drive timestamps.",
     },
     {
         "tool": "ops_document_read",
@@ -240,7 +240,7 @@ async def ops_semantic_search(
     limit: int = 5,
     require_hard_verify: bool = False,
 ) -> str:
-    """Search governed Drive/OCR evidence; exact counts must still come from Twenty."""
+    """Search Drive/OCR evidence with live timestamps; exact counts still come from Twenty."""
     await _actor("ops_semantic_search")
     code = _validate_project_code(project_code) if project_code else None
     return await semantic_search_drive_docs(
