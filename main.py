@@ -205,6 +205,7 @@ SERVICE_MODULES = {
     "excel": "gexcel.excel_tools",
     "word": "gword.word_tools",
     "semantic": "semantic.semantic_tools",
+    "flatbee_ops": "flatbee_ops.ops_tools",
 }
 VALID_SERVICES = frozenset(SERVICE_MODULES)
 
@@ -223,6 +224,7 @@ SERVICE_ICONS = {
     "contacts": "👤",
     "search": "🔍",
     "appscript": "📜",
+    "flatbee_ops": "🐝",
 }
 
 
