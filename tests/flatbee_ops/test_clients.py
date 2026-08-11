@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from flatbee_ops.clients import _mcp_payload, _unwrap_records, twenty_query
+from flatbee_ops.clients import (
+    _mcp_payload,
+    _scope_graphiti_payload,
+    _unwrap_records,
+    twenty_query,
+)
 
 
 def test_unwraps_twenty_rest_envelope():
@@ -37,6 +42,32 @@ def test_unwraps_legacy_mcp_structured_result():
         "Result", (), {"structured_content": {"result": '{"entities":[{"uuid":"n1"}]}'}}
     )()
     assert _mcp_payload(result) == {"entities": [{"uuid": "n1"}]}
+
+
+def test_graphiti_project_scope_drops_cross_project_hits():
+    payload = {
+        "entities": [
+            {"name": "P22 Pobrezni"},
+            {"name": "PERN22 Pernerova"},
+            {"name": "unscoped bank"},
+        ],
+        "relationships": [
+            {"fact": "Material for project P22 was delivered."},
+            {"fact": "H83 lease ended."},
+        ],
+        "message": "hybrid results",
+    }
+
+    scoped, dropped = _scope_graphiti_payload(payload, "P22")
+
+    assert scoped == {
+        "entities": [{"name": "P22 Pobrezni"}],
+        "relationships": [
+            {"fact": "Material for project P22 was delivered."}
+        ],
+        "message": "hybrid results",
+    }
+    assert dropped == {"entities": 2, "relationships": 1}
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 import httpx
@@ -100,7 +101,9 @@ async def twenty_query(
         for key, value in filters.items()
         if value is not None and str(value).strip()
     }
-    params: dict[str, Any] = {"limit": max(1, min(int(limit), 100)), "depth": 1}
+    # Keep the agent-facing response bounded. Depth 1 expands every relation
+    # and can turn a small query into hundreds of kilobytes of nested records.
+    params: dict[str, Any] = {"limit": max(1, min(int(limit), 100)), "depth": 0}
     if clean:
         params["filter"] = ",".join(
             f"{key}[eq]:{value}" for key, value in clean.items()
@@ -170,4 +173,46 @@ async def graphiti_search(
                 "include_communities": False,
             },
         )
-    return {"query": routed_query, "result": _mcp_payload(result)}
+    payload = _mcp_payload(result)
+    if not project_code:
+        return {"query": routed_query, "result": payload}
+
+    scoped, dropped = _scope_graphiti_payload(payload, project_code)
+    return {
+        "query": routed_query,
+        "project_scope": project_code,
+        "scope_mode": "explicit_project_token",
+        "dropped_out_of_scope": dropped,
+        "result": scoped,
+    }
+
+
+def _scope_graphiti_payload(
+    payload: Any, project_code: str
+) -> tuple[Any, dict[str, int]]:
+    """Keep only Graphiti hits that explicitly carry the requested project code.
+
+    The current graph uses one shared group id, so query relevance alone is not
+    a hard project boundary. Precision is safer than returning plausible but
+    unrelated context in a project workspace.
+    """
+    if not isinstance(payload, dict):
+        return payload, {}
+
+    code = project_code.strip().upper()
+    token = re.compile(rf"(?<![A-Z0-9]){re.escape(code)}(?![A-Z0-9])")
+    scoped: dict[str, Any] = {}
+    dropped: dict[str, int] = {}
+    for category, value in payload.items():
+        if not isinstance(value, list):
+            scoped[category] = value
+            continue
+        kept = [
+            item
+            for item in value
+            if token.search(json.dumps(item, ensure_ascii=False).upper())
+        ]
+        scoped[category] = kept
+        if len(kept) != len(value):
+            dropped[category] = len(value) - len(kept)
+    return scoped, dropped
