@@ -106,7 +106,6 @@ flatbee_ops:
   core:
     - ops_capabilities
     - ops_doctor
-    - ops_project_workspace
     - ops_semantic_search
     - ops_document_read
     - ops_twenty_query

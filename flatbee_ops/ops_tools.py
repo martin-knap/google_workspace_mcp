@@ -50,11 +50,6 @@ OPS_CAPABILITIES = [
         "purpose": "Check configured backends and authenticated actor.",
     },
     {
-        "tool": "ops_project_workspace",
-        "mode": "read",
-        "purpose": "Combine current Twenty state, Drive evidence and Graphiti context for one project.",
-    },
-    {
         "tool": "ops_semantic_search",
         "mode": "read",
         "purpose": "Search governed Drive/OCR evidence with project filters.",
@@ -289,57 +284,6 @@ async def ops_graph_search(
     await _actor("ops_graph_search")
     code = _validate_project_code(project_code) if project_code else None
     return await graphiti_search(query, code, limit)
-
-
-@server.tool(annotations=READ_ANNOTATIONS)
-async def ops_project_workspace(
-    project_code: str, question: str | None = None, limit: int = 10
-) -> dict[str, Any]:
-    """Open one project workspace across Twenty, Drive evidence and Graphiti context."""
-    await _actor("ops_project_workspace")
-    code = _validate_project_code(project_code)
-    bounded = max(1, min(int(limit), 20))
-    calls: list[Any] = [
-        twenty_query("projects", {"projectCode": code}, 2),
-        twenty_query("documents", {"projectCode": code}, min(100, bounded * 5)),
-        twenty_query("dataQualityIssues", {"projectCode": code}, min(100, bounded * 5)),
-    ]
-    labels = ["project", "documents", "data_quality"]
-    if question:
-        calls.extend(
-            [
-                semantic_search_drive_docs(
-                    query=question,
-                    project_code=code,
-                    limit=bounded,
-                    prefer_authoritative=True,
-                    deduplicate=True,
-                ),
-                graphiti_search(question, code, bounded),
-            ]
-        )
-        labels.extend(["drive_evidence", "graph_context"])
-    results = await asyncio.gather(*calls, return_exceptions=True)
-    sources: dict[str, Any] = {}
-    errors: list[dict[str, str]] = []
-    for label, result in zip(labels, results, strict=True):
-        if isinstance(result, Exception):
-            sources[label] = None
-            errors.append({"source": label, "error": str(result)})
-        else:
-            sources[label] = result
-    return {
-        "ok": not errors,
-        "project_code": code,
-        "question": question,
-        "sources": sources,
-        "errors": errors,
-        "authority": {
-            "current_state": "Twenty",
-            "document_evidence": "Google Drive/OCR",
-            "relationships_and_history": "Graphiti",
-        },
-    }
 
 
 @server.tool(annotations=READ_ANNOTATIONS)

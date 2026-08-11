@@ -3,10 +3,17 @@ from __future__ import annotations
 import pytest
 
 from flatbee_ops.ops_tools import (
+    OPS_CAPABILITIES,
     _template,
     _validate_project_code,
     _validate_workflow_definition,
 )
+
+
+def test_surface_has_no_embedded_natural_language_router():
+    names = {item["tool"] for item in OPS_CAPABILITIES}
+    assert "ops_project_workspace" not in names
+    assert {"ops_twenty_query", "ops_semantic_search", "ops_graph_search"} <= names
 
 
 def test_project_code_is_canonicalized_and_bounded():

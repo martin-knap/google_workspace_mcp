@@ -14,6 +14,11 @@ steps. Creating or updating a workflow uses an actor-bound, expiring immutable
 plan and exact plan-ID confirmation. Arbitrary MCP tool execution is not part of
 the DSL.
 
+Natural-language source selection belongs to the calling model. This server
+does not inspect keywords, classify user intent, or expose a broad composite
+question tool. The model composes the narrow deterministic tools and verifies
+their results according to the documented source authorities.
+
 Runtime settings:
 
 - `FLATBEE_OPS_ALLOWED_EMAILS`: exact comma-separated allowlist;
@@ -27,4 +32,3 @@ Load only this curated service with:
 ```bash
 workspace-mcp --transport streamable-http --tools flatbee_ops --tool-tier core
 ```
-
