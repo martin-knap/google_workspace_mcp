@@ -22,7 +22,7 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "caio", version = "0.9.25", source = { registry = "https://pypi.org/simple" } },
+    { name = "caio", version = "0.9.25", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/67/e2/d7cb819de8df6b5c1968a2756c3cb4122d4fa2b8fc768b53b7c9e5edb646/aiofile-3.9.0.tar.gz", hash = "sha256:e5ad718bb148b265b6df1b3752c4d1d83024b93da9bd599df74b9d9ffcf7919b", size = 17943, upload-time = "2024-10-08T10:39:35.846Z" }
 wheels = [
@@ -39,7 +39,7 @@ resolution-markers = [
     "python_full_version >= '3.11' and python_full_version < '3.13'",
 ]
 dependencies = [
-    { name = "caio", version = "0.12.2", source = { registry = "https://pypi.org/simple" } },
+    { name = "caio", version = "0.12.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/59/d9/eddc8a0ed487d7e635af0a8748b09cfac38e246cfe01ab245bfc159dce08/aiofile-3.12.1.tar.gz", hash = "sha256:d0949082c814bce07966ab34cdc497f96c27ce5e4305da86eeabf5e56eccea1e", size = 20346, upload-time = "2026-08-04T15:39:42.387Z" }
 wheels = [
@@ -730,17 +730,17 @@ server = [
 
 [[package]]
 name = "firecrawl-anydoc"
-version = "0.1.2"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1f/65/2a58f85793afe3220713a83efc19281715ab07df4793d06e42d9391417d4/firecrawl_anydoc-0.1.2.tar.gz", hash = "sha256:803fcd38115cb348b72039e3cb1b8f90e6c354be57a4bd9dbfd1d61771a34df0", size = 182678, upload-time = "2026-08-04T16:31:05.177Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/94/483d05b49c06dc1291ebb443395ca87df450047a7a5fde3401a390a85ebf/firecrawl_anydoc-0.2.3.tar.gz", hash = "sha256:53d25d319169bb373e15669b4647ee2bf476c55bfb12018a48959816649031c1", size = 266695, upload-time = "2026-08-20T23:56:26.505Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/34/12b935215f1f22bf813e2360f89d9028ecb6c7d792de1aa26d50b17b2255/firecrawl_anydoc-0.1.2-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:a11e52f8c3b0324ddfb9ca084da1726aa94c7edd3e0be8861054a78148817e5a", size = 3511079, upload-time = "2026-08-04T16:30:52.139Z" },
-    { url = "https://files.pythonhosted.org/packages/a2/47/8a69965d9fa80bf59ab8d1b3f094d24f28d0ce52b156946da41639897964/firecrawl_anydoc-0.1.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:64e31b157c5e6fd207873dbcbc976f6edc4206f8c568b95c9a1b36288b6e13c5", size = 3299018, upload-time = "2026-08-04T16:30:53.886Z" },
-    { url = "https://files.pythonhosted.org/packages/5a/ce/523f82ca634a884b22893e9880981244c028e76ff84a5e3cdf95f01f2464/firecrawl_anydoc-0.1.2-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3608efc231079d02296cce7ea9221a7f9035cb18b25733aa690aa893551cc5c0", size = 3373989, upload-time = "2026-08-04T16:30:55.739Z" },
-    { url = "https://files.pythonhosted.org/packages/5e/19/99ec27c23bd4c84605689b95c076c2ef77b692a68b9de505f310988ec058/firecrawl_anydoc-0.1.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ddf470ec9d5c7871cd71fde0446938523699233c167311997b05aee84f978bf1", size = 3605113, upload-time = "2026-08-04T16:30:57.595Z" },
-    { url = "https://files.pythonhosted.org/packages/9f/1a/abcb8ee628faaf1d10b4f92794996196f6ebd93f93b966940a64966f099d/firecrawl_anydoc-0.1.2-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:60b3afcbb7edc8d206dedd0db4d3a1219425041986d80a95637cdc6aaaceacf2", size = 3555503, upload-time = "2026-08-04T16:30:59.377Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/f0/0c306b5a550102ea74fa1356579370a592eca29ecc949abdd687b3e16a80/firecrawl_anydoc-0.1.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:3465caf796ebbd774607c56229c3c188fc1562a1add5c25efc54ad8da336fa11", size = 3844917, upload-time = "2026-08-04T16:31:01.186Z" },
-    { url = "https://files.pythonhosted.org/packages/df/55/7b634a1c7963b1cbb45214e2bcf70cc3b7885710826f54b8d4bd149461ed/firecrawl_anydoc-0.1.2-cp310-abi3-win_amd64.whl", hash = "sha256:dcb20ff01a7874acd3397903271da64e0cc966d2a516afff54527df8dc58ba30", size = 3630743, upload-time = "2026-08-04T16:31:03.609Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/f2/62fbfab5868f0b4f99adbdf2f755909f18960bcd71ee9645a7ff36bacf03/firecrawl_anydoc-0.2.3-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:7d725df61989d3ada64e3b0ef7f124f2505c028a49ebd412a23200d51b8740f7", size = 3431216, upload-time = "2026-08-20T23:56:14.917Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/62/4a6f45b4a18d0676e02e7a2c2a384791d515fef6404363cbccc632f65e8e/firecrawl_anydoc-0.2.3-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:bf70163c8ee346036bdf0e6fab45de0f5f380c00bcd95227e7e5744d1f2a22b2", size = 3252566, upload-time = "2026-08-20T23:56:16.624Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/80/fe44b0784c3e5ce7a87811ac10c193b89a18ac25d30fc37b825c7284e15d/firecrawl_anydoc-0.2.3-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9cdc9b26436fd360712f3db5eea92a708ef776d250d5357c0529854044896982", size = 3255755, upload-time = "2026-08-20T23:56:18.351Z" },
+    { url = "https://files.pythonhosted.org/packages/43/b1/8c6749e71b9e9f8f026d2bc898c9b1ac4d26234bb99112bd10e572eca3e9/firecrawl_anydoc-0.2.3-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d945165080917c7206273d9bc4eeda19b549b765d7ed7612e06f279bab791d6a", size = 3494811, upload-time = "2026-08-20T23:56:20.05Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/91/1d89e2cea05d978b1fb31a626c2efe48da71924e4762f60ed32d3a85aa5a/firecrawl_anydoc-0.2.3-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:678859f15e2d88c500846b65b2a765a0f3d31ec7e2dd1fa68600febc0d695e4d", size = 3432467, upload-time = "2026-08-20T23:56:21.584Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/93/92d861f45b8b9424fa9a2daad4a98fd8e0feb774ebb2a4b33007c5edd6b4/firecrawl_anydoc-0.2.3-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:bc06d387da3f58ccf894cc69df7ee3755534ab09b8e08b1c14378e63396b32f4", size = 3732212, upload-time = "2026-08-20T23:56:23.484Z" },
+    { url = "https://files.pythonhosted.org/packages/31/e3/dc9de1c5c3e3738dafb80f0e202860e58adda7b9f88cb3ce6e03527266ce/firecrawl_anydoc-0.2.3-cp310-abi3-win_amd64.whl", hash = "sha256:9b26035192d9927e04d7c93d5ed597c9efd0844ec978325c5a36bbb3c3da665b", size = 3576175, upload-time = "2026-08-20T23:56:25.043Z" },
 ]
 
 [[package]]
@@ -1122,7 +1122,7 @@ name = "importlib-metadata"
 version = "9.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp" },
+    { name = "zipp", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/01/15bb152d77b21318514a96f43af312635eb2500c96b55398d020c93d86ea/importlib_metadata-9.0.0.tar.gz", hash = "sha256:a4f57ab599e6a2e3016d7595cfd72eb4661a5106e787a95bcc90c7105b831efc", size = 56405, upload-time = "2026-03-20T06:42:56.999Z" }
 wheels = [
@@ -1519,15 +1519,15 @@ wheels = [
 
 [[package]]
 name = "pdf-inspector"
-version = "0.2.6"
+version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8d/7a/525ee06cad5c46d8aa7357c15b8f72c60e803246f3b7e24523e602f01f6d/pdf_inspector-0.2.6.tar.gz", hash = "sha256:5bb387f39bf7a93b02b49188b670b9798f8ccc7e58f68eee5883a512aa05ceb2", size = 1481660, upload-time = "2026-07-31T23:16:55.116Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f0/0c/83033698e9c1a89323209d99b6709c3c542ba8cffb556effd2d7cb86df54/pdf_inspector-1.17.0.tar.gz", hash = "sha256:2494bf571df419c17bcdb3651c0b7a648e1615cc6ee997d51ed9d75505789cd4", size = 1717688, upload-time = "2026-08-21T20:57:51.621Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/dc/9963c292151dd82678dddb63e1c640ec420e37d400f304dca2780c6d11a3/pdf_inspector-0.2.6-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:c935a354facbfb935e88cb4f3f60fd158402f2af661c1a25a3da328eb21f19fb", size = 2719559, upload-time = "2026-07-31T23:16:46.721Z" },
-    { url = "https://files.pythonhosted.org/packages/72/70/2049766fec20c2ee6c01776cc2b7b8599fc9cf2d48e8940419600f65d4a0/pdf_inspector-0.2.6-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:d2b2aaa95b242da38630bbd0644ffe9a929466f9c4e6406d6f1957b59b413d08", size = 2630319, upload-time = "2026-07-31T23:16:48.871Z" },
-    { url = "https://files.pythonhosted.org/packages/45/f3/be670e07df2eb57a1adaeb63b1011d17061fd3036370d9f903984eda94e4/pdf_inspector-0.2.6-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:79ba33b224029b68edbd30e7f6dc034f730663749ba0bea12e5873b31435ca28", size = 2808903, upload-time = "2026-07-31T23:16:50.368Z" },
-    { url = "https://files.pythonhosted.org/packages/59/af/be72ab2bd310b6532e4311cf06175eb722802ccea29dbd9281f66c645bd8/pdf_inspector-0.2.6-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:df76dd100504b705ce92ef2c668f152f05277d942abd94a7d3f252cb5448d56d", size = 2903593, upload-time = "2026-07-31T23:16:51.906Z" },
-    { url = "https://files.pythonhosted.org/packages/84/8a/22e2bf7413444036138f55a0c9f2b6420f7ef54b6a044755f4dbb3a7395b/pdf_inspector-0.2.6-cp38-abi3-win_amd64.whl", hash = "sha256:89814af887c5ff90f013702ba285ec8a4c5ae4e2ccbdb948f3e421f7c4b4f89d", size = 2550798, upload-time = "2026-07-31T23:16:53.64Z" },
+    { url = "https://files.pythonhosted.org/packages/83/af/6c1e5ffe1fc8a41705b07053adf28b20cd10ccbd67d4f0437b3390304904/pdf_inspector-1.17.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:8012c877900d7872dcc49aa4d83a60b14475540e97cae80c79f5d2e4f0c113d9", size = 4820371, upload-time = "2026-08-21T20:57:41.138Z" },
+    { url = "https://files.pythonhosted.org/packages/58/d9/f49a1de9b6871c1b11c0aa4c184a295fb141605e0f5ba746a6fbae8b8ce1/pdf_inspector-1.17.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:05845dcf5af014787b50e16e38fe13409e95d6c40abff9372b0b358154bd3318", size = 4590233, upload-time = "2026-08-21T20:57:43.189Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/55/14c205ee0896738a7a48fd759dd295b9b2513668f2664fb8f1173d2dde71/pdf_inspector-1.17.0-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:40b759e37c70708563f30ba5ba879e654308538584c3696d67cf0cecaaed0c05", size = 5111667, upload-time = "2026-08-21T20:57:45.142Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/26/2fe9f8a620d1c86742c27a87fe5fd15ef5dd8d1c95704223642037b16161/pdf_inspector-1.17.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1bf93070239efbf781e96930c8389d04fde41a48125ceec2c08e6867acb63176", size = 5347989, upload-time = "2026-08-21T20:57:47.758Z" },
+    { url = "https://files.pythonhosted.org/packages/94/f1/2b8843c594c27f9e7e8e552be4d9901a0c0eee78d93524be56916c4e3b8c/pdf_inspector-1.17.0-cp38-abi3-win_amd64.whl", hash = "sha256:bbe731d39eb620a03e4b79afd6e620dca824f22571560508caab97492a016578", size = 4696320, upload-time = "2026-08-21T20:57:49.704Z" },
 ]
 
 [[package]]
@@ -3227,7 +3227,7 @@ requires-dist = [
     { name = "email-validator", specifier = ">=2.0.0" },
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "fastmcp", specifier = ">=3.4.4" },
-    { name = "firecrawl-anydoc", specifier = "==0.1.2" },
+    { name = "firecrawl-anydoc", specifier = ">=0.2.3,<0.3" },
     { name = "google-api-python-client", specifier = ">=2.168.0" },
     { name = "google-auth-httplib2", specifier = ">=0.2.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.2.2" },
@@ -3245,7 +3245,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'test'", specifier = ">=1.20.0" },
-    { name = "pdf-inspector", specifier = ">=0.2.6,<0.3" },
+    { name = "pdf-inspector", specifier = ">=1.17,<2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "py-key-value-aio", specifier = ">=0.3.0" },
     { name = "py-key-value-aio", extras = ["filetree"], marker = "extra == 'disk'", specifier = ">=0.3.0" },

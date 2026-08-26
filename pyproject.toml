@@ -28,8 +28,8 @@ dependencies = [
  "pymupdf>=1.26.6",
  "email-validator>=2.0.0",
  "pypdf>=6.14.2",
- "pdf-inspector>=0.2.6,<0.3",
- "firecrawl-anydoc==0.1.2",
+ "pdf-inspector>=1.17,<2",
+ "firecrawl-anydoc>=0.2.3,<0.3",
  "pytz>=2026.1.post1",
  "markdown-it-py>=3.0.0",
  "psycopg[binary]>=3.2.0",
@@ -169,6 +169,11 @@ filterwarnings = [
 core = ["tool_tiers.yaml"]
 
 [tool.uv]
+# OAuth client_storage=postgresql needs the postgresql extra, and `uv run` installs no
+# extras by default — so without this every service start silently drops to in-memory
+# client storage and forgets its registered OAuth clients.
+default-extras = ["postgresql"]
+
 # Security floors for transitively-pulled deps (not direct dependencies).
 # These are constraints only: they force a patched version *if* the package is
 # pulled in (mcp via fastmcp, pyasn1 via google-auth/pyasn1-modules) without
