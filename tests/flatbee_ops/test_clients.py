@@ -62,9 +62,7 @@ def test_graphiti_project_scope_drops_cross_project_hits():
 
     assert scoped == {
         "entities": [{"name": "P22 Pobrezni"}],
-        "relationships": [
-            {"fact": "Material for project P22 was delivered."}
-        ],
+        "relationships": [{"fact": "Material for project P22 was delivered."}],
         "message": "hybrid results",
     }
     assert dropped == {"entities": 2, "relationships": 1}

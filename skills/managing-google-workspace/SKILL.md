@@ -168,6 +168,7 @@ For parameters: [references/sheets.md](references/sheets.md)
 | Get slide thumbnail | `get_page_thumbnail` |
 | Create presentation | `create_presentation` |
 | Batch update | `batch_update_presentation` |
+| Speaker notes | `get_presentation` (`include_speaker_notes`) + `batch_update_presentation` |
 | Comments | `manage_presentation_comment` / `list_presentation_comments` |
 
 For parameters: [references/slides.md](references/slides.md)
@@ -267,7 +268,7 @@ Parameters: `user_google_email` (string, optional), `service_name` (string, requ
 ### Reply to an email
 1. `search_gmail_messages` -- find the email
 2. `get_gmail_message_content` -- read it (get `message_id` and `thread_id`)
-3. `send_gmail_message` -- reply using `in_reply_to` and `thread_id`
+3. `send_gmail_message` -- reply using `thread_id`; omit reply headers to target the latest non-draft, non-trash message with an RFC `Message-ID`
 
 ### Find and share a file
 1. `search_drive_files` -- find the file

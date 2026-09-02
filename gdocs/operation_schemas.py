@@ -13,6 +13,10 @@ from typing import Annotated, Any, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, BeforeValidator, model_validator
 
 
+ParagraphBorderEdge = Literal["top", "bottom", "left", "right", "between"]
+TableBorderEdge = Literal["top", "bottom", "left", "right"]
+
+
 def _coerce_json_str_to_list(v: Any) -> Any:
     """Accept JSON-encoded lists for MCP clients that serialize arrays as strings."""
     if not isinstance(v, str):
@@ -89,7 +93,7 @@ class FormatTextOperation(SegmentTargetDocOperation):
     italic: Optional[bool] = None
     underline: Optional[bool] = None
     strikethrough: Optional[bool] = None
-    font_size: Optional[int] = None
+    font_size: Optional[float] = None
     font_family: Optional[str] = None
     font_weight: Optional[int] = None
     text_color: Optional[str] = None
@@ -120,6 +124,15 @@ class UpdateParagraphStyleOperation(SegmentTargetDocOperation):
     page_break_before: Optional[bool] = None
     spacing_mode: Optional[str] = None
     shading_color: Optional[str] = None
+    border_edges: Optional[list[ParagraphBorderEdge]] = Field(
+        default=None,
+        min_length=1,
+        description="Paragraph border edges to update; omit to update top, bottom, left, and right.",
+    )
+    border_color: Optional[str] = None
+    border_width: Optional[float] = None
+    border_padding: Optional[float] = None
+    border_dash: Optional[str] = None
 
 
 class UpdateTableCellStyleOperation(StrictDocOperation):
@@ -137,6 +150,11 @@ class UpdateTableCellStyleOperation(StrictDocOperation):
     column_index: Optional[int] = None
     row_span: Optional[int] = None
     column_span: Optional[int] = None
+    border_edges: Optional[list[TableBorderEdge]] = Field(
+        default=None,
+        min_length=1,
+        description="Table-cell border edges to update; omit to update all four edges.",
+    )
 
 
 class InsertTableOperation(SegmentTargetDocOperation):

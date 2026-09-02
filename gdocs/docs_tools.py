@@ -60,7 +60,7 @@ from gdocs.docs_markdown import (
     parse_drive_comments,
 )
 from gdocs.docs_markdown_writer import markdown_to_docs_requests
-from gdocs.operation_schemas import BatchDocOperations
+from gdocs.operation_schemas import BatchDocOperations, ParagraphBorderEdge
 
 # Import operation managers for complex business logic
 from gdocs.managers import (
@@ -98,7 +98,8 @@ async def search_docs(
     Returns:
         str: A formatted list of Google Docs matching the search query.
     """
-    logger.info(f"[search_docs] Email={user_google_email}, Query='{query}'")
+    logger.info(f"[search_docs] Email={user_google_email}, query_len={len(query)}")
+    logger.debug(f"[search_docs] Query='{query}'")
 
     escaped_query = query.replace("'", "\\'")
 
@@ -411,7 +412,9 @@ async def create_doc(
     Returns:
         str: Confirmation message with document ID, link, and initial document state.
     """
-    logger.info(f"[create_doc] Invoked. Email: '{user_google_email}', Title='{title}'")
+    logger.info(
+        f"[create_doc] Invoked. Email: '{user_google_email}', title_len={len(title)}"
+    )
 
     doc = await asyncio.to_thread(
         service.documents().create(body={"title": title}).execute
@@ -436,7 +439,7 @@ async def create_doc(
         f"Link: {link}"
     )
     logger.info(
-        f"Successfully created Google Doc '{title}' (ID: {doc_id}) for {user_google_email}. Link: {link}"
+        f"Successfully created Google Doc (ID: {doc_id}) for {user_google_email}. Link: {link}"
     )
     return msg
 
@@ -466,7 +469,7 @@ async def modify_doc_text(
     italic: bool = None,
     underline: bool = None,
     strikethrough: bool = None,
-    font_size: int = None,
+    font_size: float = None,
     font_family: str = None,
     font_weight: int = None,
     text_color: str = None,
@@ -768,8 +771,9 @@ async def find_and_replace_doc(
         str: Confirmation message with replacement count
     """
     logger.info(
-        f"[find_and_replace_doc] Doc={document_id}, find='{find_text}', replace='{replace_text}', tab='{tab_id}'"
+        f"[find_and_replace_doc] Doc={document_id}, find_len={len(find_text)}, replace_len={len(replace_text)}, tab='{tab_id}'"
     )
+    logger.debug(f"[find_and_replace_doc] find='{find_text}', replace='{replace_text}'")
 
     requests = [
         create_find_replace_request(find_text, replace_text, match_case, tab_id)
@@ -1165,14 +1169,17 @@ async def batch_update_doc(
                                    space_above, space_below, named_style_type,
                                    direction, keep_lines_together, keep_with_next,
                                    avoid_widow_and_orphan, page_break_before,
-                                   spacing_mode, shading_color, tab_id, segment_id
+                                   spacing_mode, shading_color, border_edges,
+                                   border_color, border_width, border_padding,
+                                   border_dash, tab_id, segment_id
       update_table_cell_style
                        - required: table_start_index (int)
                          optional: background_color, border_color, border_width,
                                    padding_top, padding_bottom, padding_left,
                                    padding_right (float, points),
                                    content_alignment ("TOP"|"MIDDLE"|"BOTTOM"),
-                                   row_index, column_index, row_span, column_span
+                                   row_index, column_index, row_span, column_span,
+                                   border_edges ("top"|"bottom"|"left"|"right")
                          Use inspect_doc_structure to find table_start_index from
                          table_details[].start_index. If row/column values are
                          omitted, the style is applied to the entire table.
@@ -1992,7 +1999,7 @@ async def export_doc_to_pdf(
     if mime_type != "application/vnd.google-apps.document":
         return f"Error: File '{original_name}' is not a Google Doc (MIME type: {mime_type}). Only native Google Docs can be exported to PDF."
 
-    logger.info(f"[export_doc_to_pdf] Exporting '{original_name}' to PDF")
+    logger.info(f"[export_doc_to_pdf] Exporting doc {document_id} to PDF")
 
     # Export the document as PDF
     try:
@@ -2135,6 +2142,11 @@ async def update_paragraph_style(
     page_break_before: bool = None,
     spacing_mode: str = None,
     shading_color: str = None,
+    border_edges: list[ParagraphBorderEdge] = None,
+    border_color: str = None,
+    border_width: float = None,
+    border_padding: float = None,
+    border_dash: str = None,
     list_type: str = None,
     list_nesting_level: int = None,
     bullet_preset: str = None,
@@ -2174,6 +2186,12 @@ async def update_paragraph_style(
         page_break_before: Start the paragraph on a new page
         spacing_mode: 'NEVER_COLLAPSE' or 'COLLAPSE_LISTS'
         shading_color: Paragraph shading/background color (#RRGGBB)
+        border_edges: Paragraph border edges to update ('top', 'bottom', 'left',
+                      'right', or 'between'); omit to update all four outer edges
+        border_color: Border color (#RRGGBB; defaults to black)
+        border_width: Border width in points (defaults to 1)
+        border_padding: Border padding in points (defaults to 4)
+        border_dash: Border dash style ('SOLID', 'DOT', or 'DASH'; defaults to 'SOLID')
         list_type: Create a list from existing paragraphs ('UNORDERED' for bullets, 'ORDERED' for numbers, 'CHECKBOX' for checklists)
         list_nesting_level: Nesting level for lists (0-8, where 0 is top level, default is 0)
                            Use higher levels for nested/indented list items
@@ -2237,6 +2255,30 @@ async def update_paragraph_style(
     if named_style_type is not None and heading_level is not None:
         return "Error: heading_level and named_style_type are mutually exclusive; provide only one"
 
+    paragraph_style_params = [
+        heading_level,
+        alignment,
+        line_spacing,
+        indent_first_line,
+        indent_start,
+        indent_end,
+        space_above,
+        space_below,
+        named_style_type,
+        direction,
+        keep_lines_together,
+        keep_with_next,
+        avoid_widow_and_orphan,
+        page_break_before,
+        spacing_mode,
+        shading_color,
+        border_edges,
+        border_color,
+        border_width,
+        border_padding,
+        border_dash,
+    ]
+
     validator = ValidationManager()
     is_valid, error_msg = validator.validate_paragraph_style_params(
         heading_level=heading_level,
@@ -2255,8 +2297,14 @@ async def update_paragraph_style(
         page_break_before=page_break_before,
         spacing_mode=spacing_mode,
         shading_color=shading_color,
+        border_edges=border_edges,
+        border_color=border_color,
+        border_width=border_width,
+        border_padding=border_padding,
+        border_dash=border_dash,
     )
-    if not is_valid and list_type_value is None:
+    has_paragraph_style = any(param is not None for param in paragraph_style_params)
+    if not is_valid and (has_paragraph_style or list_type_value is None):
         return f"Error: {error_msg}"
 
     # Create batch update requests
@@ -2284,6 +2332,11 @@ async def update_paragraph_style(
         page_break_before,
         spacing_mode,
         shading_color,
+        border_edges,
+        border_color,
+        border_width,
+        border_padding,
+        border_dash,
     )
     if paragraph_style_request:
         requests.append(paragraph_style_request)
@@ -2347,6 +2400,11 @@ async def update_paragraph_style(
             ("page_break_before", page_break_before),
             ("spacing_mode", spacing_mode),
             ("shading_color", shading_color),
+            ("border_edges", border_edges),
+            ("border_color", border_color),
+            ("border_width", border_width),
+            ("border_padding", border_padding),
+            ("border_dash", border_dash),
         ]
         if value is not None
     ]

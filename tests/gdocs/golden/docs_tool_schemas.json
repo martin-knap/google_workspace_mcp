@@ -61,7 +61,7 @@
       },
       "font_size": {
         "default": null,
-        "type": "integer",
+        "type": "number",
         "description": "Font size in points"
       },
       "font_family": {
@@ -606,7 +606,7 @@
           "font_size": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -1752,6 +1752,73 @@
               }
             ],
             "default": null
+          },
+          "border_edges": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "top",
+                    "bottom",
+                    "left",
+                    "right",
+                    "between"
+                  ],
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Paragraph border edges to update; omit to update top, bottom, left, and right."
+          },
+          "border_color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "border_width": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "border_padding": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "border_dash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -2098,6 +2165,28 @@
               }
             ],
             "default": null
+          },
+          "border_edges": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "top",
+                    "bottom",
+                    "left",
+                    "right"
+                  ],
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Table-cell border edges to update; omit to update all four edges."
           }
         },
         "required": [
