@@ -377,6 +377,17 @@ server = SecureFastMCP(
 auth_info_middleware = AuthInfoMiddleware()
 server.add_middleware(auth_info_middleware)
 
+# Curated per-user tool surface: users listed in WORKSPACE_MCP_OPS_ONLY_EMAILS see
+# only the `ops_*` tools (plus WORKSPACE_MCP_OPS_ONLY_EXTRA_TOOLS). Chat clients that
+# load every tool schema up front choose tools better from a small catalog.
+if os.getenv("WORKSPACE_MCP_OPS_ONLY_EMAILS", "").strip():
+    from fastmcp.server.middleware.authorization import AuthMiddleware
+
+    from core.ops_surface import make_ops_surface_check, ops_only_emails
+
+    server.add_middleware(AuthMiddleware(auth=make_ops_surface_check()))
+    logger.info("Ops-only tool surface enabled for %d user(s)", len(ops_only_emails()))
+
 
 def _parse_bool_env(value: str) -> bool:
     """Parse environment variable string to boolean."""
