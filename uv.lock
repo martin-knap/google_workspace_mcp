@@ -1610,15 +1610,15 @@ wheels = [
 
 [[package]]
 name = "pdf-inspector"
-version = "0.2.7"
+version = "1.23.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/29/96/8c3f0ec2e6cfece773851c921d9711e9f782de479776db0ab6ab36869dca/pdf_inspector-0.2.7.tar.gz", hash = "sha256:a8f489c6510809788ca57a510e440f7be7a6743e8845ab2aa9a32a918db8a6cb", size = 1554211, upload-time = "2026-08-10T21:38:02.162Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/08/979e1d8d5f99e967389af7a7d33c98dadee57a09f8e6f6eb6a5a5f64f1bc/pdf_inspector-1.23.0.tar.gz", hash = "sha256:40892c0c5141947947a2ce217bb88fd7b7ad6f9f7038909289243277640e5014", size = 2080994, upload-time = "2026-09-22T01:19:50.139Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/89/48/f0c647da22ff722801b7cc0a22c860216a36d11123df8893ef451f3f9e26/pdf_inspector-0.2.7-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:10d0f376516079e28d4ec0019cb05bd3cc44ef3ca26d6930e533b34568a01824", size = 2842614, upload-time = "2026-08-10T21:37:54.623Z" },
-    { url = "https://files.pythonhosted.org/packages/88/9f/a285b3df8671bffa0786c18561582e57f6739516d244e53dc21d6120217a/pdf_inspector-0.2.7-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:403b06d9c0f79d9726d79a5e2fd4040e4b94d40c6934b29011970ae74f8aef7d", size = 2748553, upload-time = "2026-08-10T21:37:56.19Z" },
-    { url = "https://files.pythonhosted.org/packages/57/a3/f48d011edb877ec9efd6dbc6735657e79851a8880692ae3e9c76f93b4030/pdf_inspector-0.2.7-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:698da59a485046738a6d4e4f2b66d6d8fd1d4e5d7c0080b2f62aa9d9aa33d020", size = 2926727, upload-time = "2026-08-10T21:37:57.72Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/f2/1ac674e0867ed43d0f6e77507967f745af1d2f38fbced715dfbf51601a61/pdf_inspector-0.2.7-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d78158f687a44c692779dbfa6dd93fdb7e6f6b51a9f00b5fb354d4b586378ee7", size = 3030065, upload-time = "2026-08-10T21:37:59.029Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/77/a8540401c9817d7364a3f0eb066927eb0a49f979e4e46a5a002ebf8b7706/pdf_inspector-0.2.7-cp38-abi3-win_amd64.whl", hash = "sha256:189adb697198778723874deb04fe6d0c1915aa00484d91fe77ad327e4d14cddb", size = 2674260, upload-time = "2026-08-10T21:38:00.704Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/fe/b7ca0e3f2a198fe497fd4e3e10e54ae5da316ad26ea746ea316beb83c048/pdf_inspector-1.23.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:afc607413993872987723cc1a6c86266d0a90513b30c6e109defd8cb0063c63e", size = 6312437, upload-time = "2026-09-22T01:19:39.378Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/32/74a6d11a163198fd99d9260fc1d9e997d311474029e03d03378302f0e26d/pdf_inspector-1.23.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:142e6aa376f7d8f4a8ff7484f94949ae170a48ae664a5e8232bc0bec082908aa", size = 6012988, upload-time = "2026-09-22T01:19:41.751Z" },
+    { url = "https://files.pythonhosted.org/packages/05/7f/df58ed175582033c4b8b81a0f442f18d3beeac66760c6d87207b9b3a2ce8/pdf_inspector-1.23.0-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:30de7d2e2ffd8bedde4e5755306ed92342444e245d08d3d354c4355ae8f8e30c", size = 6581164, upload-time = "2026-09-22T01:19:43.609Z" },
+    { url = "https://files.pythonhosted.org/packages/96/f3/0b05aeeff019ea6c891180bbb40edc8fe15d3041278e9dbfb408242eba13/pdf_inspector-1.23.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d60ccd0c059fd5295887101c467c78630d0afbc77be76f0470be37db28ea332c", size = 6843628, upload-time = "2026-09-22T01:19:45.699Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/4b/0dc2197bca6dc1739c5c8ea2f593d5214ecc6504cf545295a95269a1d092/pdf_inspector-1.23.0-cp38-abi3-win_amd64.whl", hash = "sha256:04da6d45603091cfd970f42c464ee5dd3b5756a00eb19a0c718b2ade8ee2503e", size = 6147901, upload-time = "2026-09-22T01:19:48.019Z" },
 ]
 
 [[package]]
@@ -3380,7 +3380,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'test'", specifier = ">=1.20.0" },
-    { name = "pdf-inspector", specifier = ">=0.2.6,<0.3" },
+    { name = "pdf-inspector", specifier = ">=1.17,<2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "py-key-value-aio", specifier = ">=0.3.0" },
     { name = "py-key-value-aio", extras = ["filetree"], marker = "extra == 'disk'", specifier = ">=0.3.0" },
