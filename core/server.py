@@ -435,7 +435,6 @@ if os.getenv("WORKSPACE_MCP_OPS_ONLY_EMAILS", "").strip():
     logger.info("Ops-only tool surface enabled for %d user(s)", len(ops_only_emails()))
 
 
-
 def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
     """Parse a comma-separated list of OAuth client redirect URIs.
 
