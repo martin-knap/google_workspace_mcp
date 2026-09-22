@@ -359,14 +359,23 @@ scored AS (
               WHEN COALESCE((d.metadata->>'canonical_document')::boolean, d.is_canonical, true) THEN 0.0015
               ELSE -0.0060
             END
+            -- extraction_quality is the structured extractor's confidence in
+            -- its own fields, not evidence that a document is current or
+            -- authoritative. Treat any successful extraction as a mild
+            -- "business document" prior; a high/medium split used to swing
+            -- scores more than the explicit current-version signal did.
             + CASE
-              WHEN d.metadata->>'extraction_quality' = 'high' THEN 0.0030
-              WHEN d.metadata->>'extraction_quality' = 'medium' THEN -0.0030
-              WHEN d.metadata->>'extraction_quality' = 'low' THEN -0.0060
+              WHEN d.metadata->>'extraction_quality' IN ('high', 'medium') THEN 0.0030
+              ELSE 0
+            END
+            -- Copies kept in archive folders (ARCHIV, 99_ARCHIV, 98_ARCHIVE)
+            -- are superseded working material; prefer the live folder copy.
+            + CASE
+              WHEN d.folder_path ~* '(^|/)[0-9]*_?archiv' THEN -0.0040
               ELSE 0
             END
             + CASE
-              WHEN d.file_name ~* '\\mdraft\\M' THEN -0.0060
+              WHEN d.file_name ~* '\\mdraft\\M|neaktu' THEN -0.0060
               ELSE 0
             END
           )
@@ -376,7 +385,10 @@ scored AS (
         -- overpowering semantic/text relevance for ordinary questions.
         LEAST(
           GREATEST(
-            word_similarity(lower(COALESCE(d.file_name, '')), lower(%s)) - 0.25,
+            word_similarity(
+              lower(normalize(COALESCE(d.file_name, ''), NFC)),
+              lower(normalize(%s, NFC))
+            ) - 0.25,
             0
           ) * 0.02,
           0.008
