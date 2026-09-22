@@ -15,7 +15,8 @@ from core.server import server
 from gdrive.drive_tools import get_drive_file_content
 from semantic.semantic_tools import semantic_search_drive_docs
 
-from .clients import graphiti_search, twenty_query
+from .clients import TWENTY_OBJECT_FILTERS, graphiti_search, twenty_query
+from .project_brief import compose_project_brief
 from .store import OpsStore
 
 
@@ -48,6 +49,11 @@ OPS_CAPABILITIES = [
         "tool": "ops_doctor",
         "mode": "read",
         "purpose": "Check configured backends and authenticated actor.",
+    },
+    {
+        "tool": "ops_project_brief",
+        "mode": "read",
+        "purpose": "One-call project card: Twenty project, financings, leases, sales, units, open DQ, milestones.",
     },
     {
         "tool": "ops_semantic_search",
@@ -180,7 +186,13 @@ async def _run_step(kind: str, arguments: dict[str, Any]) -> Any:
 
 @server.tool(annotations=READ_ANNOTATIONS)
 async def ops_capabilities() -> dict[str, Any]:
-    """List the curated Flatbee Ops tools and source-of-truth routing rules."""
+    """List the Flatbee Ops tools and which source is authoritative for what.
+
+    Call once when unsure which Flatbee tool answers a question. Routing rule:
+    ops_project_brief / ops_twenty_query for current structured facts and counts,
+    ops_semantic_search + ops_document_read for what a contract or document says,
+    ops_graph_search for who-is-who and relationships.
+    """
     await _actor("ops_capabilities")
     return {
         "ok": True,
@@ -192,12 +204,20 @@ async def ops_capabilities() -> dict[str, Any]:
             "graphiti": "relationships, aliases and temporal context",
             "writes": "immutable actor-bound plan, exact plan-id confirmation, read-back",
         },
+        "twenty_objects": {
+            name: sorted(filters)
+            for name, filters in sorted(TWENTY_OBJECT_FILTERS.items())
+        },
     }
 
 
 @server.tool(annotations=READ_ANNOTATIONS)
 async def ops_doctor(live: bool = False) -> dict[str, Any]:
-    """Check Flatbee Ops configuration; optional live calls are read-only."""
+    """Diagnose the Flatbee backends (Twenty, Graphiti) and show who you are authenticated as.
+
+    Use only when another Flatbee tool fails or returns nothing; `live=True` makes one
+    read-only call per backend.
+    """
     actor = await _actor("ops_doctor")
     configured = {
         "twenty": bool(os.getenv("TWENTY_BASE_URL") and os.getenv("TWENTY_API_KEY")),
@@ -233,6 +253,25 @@ async def ops_doctor(live: bool = False) -> dict[str, Any]:
 
 
 @server.tool(annotations=READ_ANNOTATIONS)
+async def ops_project_brief(project_code: str) -> dict[str, Any]:
+    """Load the current card of one Flatbee project in a single call. Call this FIRST
+    whenever a project code or building is mentioned (P22 / Pobřežní, H83 and H92 /
+    Hartigova, NS6 / Na Švihance, PERN22 / Pernerova, NP8 / Nad Panenskou …) before
+    answering, negotiating, drafting an update or modelling anything.
+
+    Returns from Twenty: project status and lifecycle phase, financings (loans, investor
+    and bank facilities with principal, rate, maturity, counterparty), leases and rent
+    roll, unit sales, units, document counts by type, open data-quality issues and
+    current/upcoming milestones, each with a Twenty link and the source file id. Use these
+    numbers instead of asking the user to dictate them. Then follow up with
+    ops_semantic_search for contract wording and ops_twenty_query for full lists.
+    """
+    await _actor("ops_project_brief")
+    code = _validate_project_code(project_code)
+    return await compose_project_brief(code, twenty_query)
+
+
+@server.tool(annotations=READ_ANNOTATIONS)
 async def ops_semantic_search(
     query: str,
     project_code: str | None = None,
@@ -240,7 +279,17 @@ async def ops_semantic_search(
     limit: int = 5,
     require_hard_verify: bool = False,
 ) -> str:
-    """Search Drive/OCR evidence with live timestamps; exact counts still come from Twenty."""
+    """Find what Flatbee documents say: contracts, amendments, bank offers, permits, minutes.
+
+    Hybrid semantic + full-text search over the OCR-indexed Google Drive archive of all
+    Flatbee projects. Use it for questions like "what does the PERN22 purchase contract say
+    about the contractual penalty", "escrow conditions", "bank covenants in the Trinity
+    offer", "which permits were issued for H83". Always pass `project_code` (P22, H83, H92,
+    NS6, PERN22, NP8 …) when the project is known; it sharply improves precision. Results
+    are evidence candidates with snippets, Drive links and a Twenty document link; when the
+    snippet is not enough, read the whole file with ops_document_read(file_id). Do not use
+    it for counts or lists of records, that is ops_twenty_query / ops_project_brief.
+    """
     await _actor("ops_semantic_search")
     code = _validate_project_code(project_code) if project_code else None
     return await semantic_search_drive_docs(
@@ -256,7 +305,11 @@ async def ops_semantic_search(
 
 @server.tool(annotations=READ_ANNOTATIONS)
 async def ops_document_read(file_id: str) -> str:
-    """Read one Drive document through the Workspace PDF/AnyDoc parser."""
+    """Read the full text of one Drive document (PDF via OCR router, Office via AnyDoc).
+
+    `file_id` is the Drive file id returned by ops_semantic_search or stored in Twenty as
+    sourceFileId. Use after a search hit when you need the exact clause, table or date.
+    """
     await _actor("ops_document_read")
     return await get_drive_file_content(file_id=file_id)
 
@@ -268,7 +321,19 @@ async def ops_twenty_query(
     project_code: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Read an approved Twenty object with bounded exact-match filters."""
+    """Exact current records and counts from Twenty CRM, Flatbee's source of truth.
+
+    Objects and their allowed exact-match filters: projects (projectCode, businessStatus,
+    lifecyclePhase, documentControlState); documents (projectCode, sourceFileId, docType,
+    docFamily, processState, lifecyclePhase); dataQualityIssues (projectCode, status,
+    severity, issueType); lifecycleMilestones / lifecycleTasks (projectCode, code, status,
+    phase); units (projectCode, unitNumber, unitType, status); leases (projectCode, status,
+    tenantName, unitNumber); invoices (projectCode, status, invoiceNumber); financings
+    (projectCode, status, financingType); unitSales (projectCode, status, unitNumber).
+    Pass `project_code` (P22, H83, PERN22 …) instead of a projectCode filter. The response
+    carries the authoritative `total_count`; never count a truncated page yourself. For a
+    whole-project overview call ops_project_brief first.
+    """
     await _actor("ops_twenty_query")
     clean = dict(filters or {})
     if project_code:
@@ -280,7 +345,14 @@ async def ops_twenty_query(
 async def ops_graph_search(
     query: str, project_code: str | None = None, limit: int = 10
 ) -> dict[str, Any]:
-    """Search Graphiti for relationships and temporal context, including source episodes."""
+    """Who-is-who across Flatbee: people, companies, aliases, roles and how they relate.
+
+    Knowledge graph built from documents and emails. Use for "who is Tatýrek", "which
+    company owns unit 9 in H83", "who signed for the seller", name variants and
+    timeline context. Facts here are orientation, not proof: confirm legal or financial
+    statements in Twenty (ops_project_brief / ops_twenty_query) or in the source document
+    (ops_semantic_search) before quoting them.
+    """
     await _actor("ops_graph_search")
     code = _validate_project_code(project_code) if project_code else None
     return await graphiti_search(query, code, limit)
