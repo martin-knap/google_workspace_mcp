@@ -15,6 +15,8 @@ from core.server import server
 from gdrive.drive_tools import get_drive_file_content
 from semantic.semantic_tools import semantic_search_drive_docs
 
+from core.skills_provider import skill_main_file
+
 from .clients import TWENTY_OBJECT_FILTERS, graphiti_search, twenty_query
 from .project_brief import compose_project_brief
 from .store import OpsStore
@@ -49,6 +51,11 @@ OPS_CAPABILITIES = [
         "tool": "ops_doctor",
         "mode": "read",
         "purpose": "Check configured backends and authenticated actor.",
+    },
+    {
+        "tool": "ops_playbook",
+        "mode": "read",
+        "purpose": "Read the Flatbee operating playbook: which tool answers what, source authority, deliverable formats.",
     },
     {
         "tool": "ops_project_brief",
@@ -250,6 +257,29 @@ async def ops_doctor(live: bool = False) -> dict[str, Any]:
         "configured": configured,
         "live": checks,
     }
+
+
+PLAYBOOK_SKILL = "flatbee-ops"
+
+
+@server.tool(annotations=READ_ANNOTATIONS)
+async def ops_playbook() -> str:
+    """Read the Flatbee operating playbook before starting Flatbee work in a conversation.
+
+    Returns the `flatbee-ops` skill (SKILL.md): which Flatbee tool answers which kind of
+    question, which source is authoritative (Twenty vs. source document vs. graph), how to
+    handle dictated names and figures, and the expected shape of partner updates,
+    negotiation prep and model inputs. Same content as the `skill://flatbee-ops/SKILL.md`
+    resource, for clients that do not read MCP resources.
+    """
+    await _actor("ops_playbook")
+    path = skill_main_file(PLAYBOOK_SKILL)
+    if path is None:
+        return (
+            "Playbook not configured on this server (WORKSPACE_MCP_SKILLS_DIR has no "
+            f"{PLAYBOOK_SKILL}/SKILL.md). Use ops_capabilities for the routing rules."
+        )
+    return path.read_text(encoding="utf-8")
 
 
 @server.tool(annotations=READ_ANNOTATIONS)

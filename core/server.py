@@ -377,6 +377,11 @@ server = SecureFastMCP(
 auth_info_middleware = AuthInfoMiddleware()
 server.add_middleware(auth_info_middleware)
 
+# Agent Skills served over MCP (skill://{name}/SKILL.md) from WORKSPACE_MCP_SKILLS_DIR.
+from core.skills_provider import register_skills_provider
+
+register_skills_provider(server)
+
 # Curated per-user tool surface: users listed in WORKSPACE_MCP_OPS_ONLY_EMAILS see
 # only the `ops_*` tools (plus WORKSPACE_MCP_OPS_ONLY_EXTRA_TOOLS). Chat clients that
 # load every tool schema up front choose tools better from a small catalog.
