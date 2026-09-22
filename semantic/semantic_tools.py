@@ -3,8 +3,10 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -33,6 +35,86 @@ DEFAULT_ACL_BYPASS_EMAILS = {
     "dusan.kniha@flatbee.cz",
 }
 DEFAULT_TWENTY_RECORD_URL_TEMPLATE = "{base}/object/document/{id}"
+
+# Full-text branch of the hybrid search. "legacy" is the original
+# websearch_to_tsquery AND-of-all-words match, which almost never fires for
+# sentence-shaped questions. "idf" ORs the informative query words, weights
+# them by inverse document frequency from agent_retrieval.term_stats, and
+# matches accent-insensitively with a cheap prefix stand-in for Czech/Slovak
+# inflection.
+TEXT_BRANCH_ENV = "SEMANTIC_TEXT_BRANCH"
+TEXT_BRANCH_MODES = ("legacy", "idf")
+# Stays "legacy" until idf matches it on every original retrieval_eval case:
+# on 2026-09-22 idf passed 39/40 original (legacy 38/40) and 10/12
+# natural-language cases (legacy 9/12), but lost h92_lizalek_share_source.
+DEFAULT_TEXT_BRANCH = "legacy"
+# Reciprocal-rank-fusion weights (vector, text) per text branch mode.
+RRF_WEIGHTS = {
+    "legacy": (0.72, 0.28),
+    "idf": (0.72, 0.28),
+}
+# Words present in more than this share of documents carry no signal
+# ("smlouva", "praha", "dne") and would only flood the OR query.
+IDF_MAX_DOC_FRACTION = 0.30
+IDF_MIN_TERM_LENGTH = 3
+IDF_MAX_QUERY_TERMS = 12
+# Accent/inflection variants resolved per query word, most frequent first.
+IDF_MAX_TERM_VARIANTS = 24
+# Question and function words (unaccented, 3+ letters; "byt" stays searchable
+# because it means "apartment" far more often than "to be" here). Corpus IDF rates them
+# as rare because contracts seldom ask questions, so without this list
+# "jaká"/"kolik"/"which" would outweigh the words that carry the question.
+QUERY_STOPWORDS = frozenset(
+    """
+    aka ake akej aku aky akych ako ale ano bol bola bolo byl byla byli bylo
+    jak jaka jake jakem jakou jaky jakych jako jeho jej jeji jsem jsme jsou
+    kde kdo koho kolik kolko komu kdy kedy kto ktera ktere kterou ktery kterych
+    ktora ktore ktoru ktory ktorych mam mame maji mat muze mozu moze mozno nebo
+    alebo pod nad pre pri pro proc preco kvuli podle podla mezi medzi tak tam
+    tedy ten tento tato toto tyto teda uz jiz vsak vsech vsetky ktorom ktorem
+    najdi najdite najit najst dokument dokumentu dokumenty dokumente
+    the and are was were for from with that this these those into about what
+    which who whom whose when where why how does did doing has have had can
+    could should would will any all each every find show list give document
+    documents
+    """.split()
+)
+PREFIX_MIN_TERM_LENGTH = 5
+PREFIX_MIN_STEM_LENGTH = 4
+# After stripping an ending, long stems are cut to leave out the last few
+# letters of the word as well: Czech/Slovak stems alternate there
+# (Lízálek/Lízálka, výpověď/výpovědní), so a shorter prefix still matches.
+PREFIX_TRUNCATE_TAIL = 3
+PREFIX_TRUNCATE_MIN_LENGTH = 5
+# How a term's document frequency is estimated from its variants: "max"
+# assumes inflected forms co-occur in the same documents (a lower bound on
+# the union), "sum" assumes they never do (an upper bound).
+IDF_GROUP_DF = "max"
+# Common Czech/Slovak inflectional endings (unaccented), longest first. Only
+# one is stripped, and only while the stem keeps PREFIX_MIN_STEM_LENGTH chars.
+PREFIX_STRIP_SUFFIXES = (
+    "iach",
+    "eho",
+    "emu",
+    "ych",
+    "ymi",
+    "ami",
+    "ach",
+    "ho",
+    "mu",
+    "ou",
+    "em",
+    "ej",
+    "om",
+    "ov",
+    "ch",
+    "a",
+    "e",
+    "i",
+    "o",
+    "u",
+    "y",
+)
 
 
 def _database_url() -> str:
@@ -252,6 +334,279 @@ def _add_filter(
     params.extend(clean_values)
 
 
+@dataclass(frozen=True)
+class QueryTerm:
+    """One informative query word: its unaccented form and optional prefix stem."""
+
+    term: str
+    stem: Optional[str]
+
+
+@dataclass(frozen=True)
+class IdfTextPlan:
+    """Resolved full-text query for the idf branch.
+
+    ``match_query`` ORs every term group and drives the GIN candidate lookup;
+    ``term_queries``/``idfs`` score each matching chunk as
+    SUM(idf_t * ts_rank_cd(chunk_tsv, term_query_t)).
+    """
+
+    match_query: str
+    term_queries: tuple[str, ...]
+    idfs: tuple[float, ...]
+    terms: tuple[str, ...]
+
+
+def _text_branch_mode() -> str:
+    raw = os.getenv(TEXT_BRANCH_ENV, "").strip().lower()
+    if not raw:
+        return DEFAULT_TEXT_BRANCH
+    if raw not in TEXT_BRANCH_MODES:
+        logger.warning(
+            "Unknown %s=%r; using %s", TEXT_BRANCH_ENV, raw, DEFAULT_TEXT_BRANCH
+        )
+        return DEFAULT_TEXT_BRANCH
+    return raw
+
+
+def _prefix_stem(term: str) -> Optional[str]:
+    """Return a prefix stem for inflected words, or None to match exactly.
+
+    Czech and Slovak inflect heavily (pokuta/pokuty/pokutou, úvěr/úvěru) and
+    the 'simple' text search config does no stemming. Stripping one common
+    ending from words of PREFIX_MIN_TERM_LENGTH+ letters, shortening long
+    stems by PREFIX_TRUNCATE_TAIL letters and matching the rest as a prefix is
+    a cheap approximation that needs no dictionary. The term_stats variant
+    lookup (capped at IDF_MAX_TERM_VARIANTS, IDF-weighted) bounds the noise a
+    short prefix brings in.
+    """
+    if len(term) < PREFIX_MIN_TERM_LENGTH or not term.isalpha():
+        return None
+    stem = term
+    for suffix in PREFIX_STRIP_SUFFIXES:
+        if term.endswith(suffix) and len(term) - len(suffix) >= PREFIX_MIN_STEM_LENGTH:
+            stem = term[: -len(suffix)]
+            break
+    if PREFIX_TRUNCATE_TAIL:
+        keep = max(PREFIX_TRUNCATE_MIN_LENGTH, len(term) - PREFIX_TRUNCATE_TAIL)
+        stem = stem[:keep]
+    return stem
+
+
+def _select_query_terms(
+    lexemes: list[str], exclude: frozenset[str] = frozenset()
+) -> list[QueryTerm]:
+    """Pick candidate terms from unaccented query lexemes, in query order.
+
+    ``exclude`` holds words a SQL filter already enforces (the project code):
+    inside the filtered scope they match nearly everything, yet corpus-wide
+    IDF rates them as informative.
+    """
+    seen: set[str] = set(exclude)
+    terms: list[QueryTerm] = []
+    for lexeme in lexemes:
+        term = (lexeme or "").strip().lower()
+        if len(term) < IDF_MIN_TERM_LENGTH or term in seen or term in QUERY_STOPWORDS:
+            continue
+        # Pure punctuation or numbers with separators ("285/8") rarely occur
+        # verbatim in OCR text; plain numbers ("2023") are kept.
+        if not re.fullmatch(r"[\w.]+", term):
+            continue
+        seen.add(term)
+        terms.append(QueryTerm(term=term, stem=_prefix_stem(term)))
+    return terms
+
+
+def _term_resolution_sql(terms: list[QueryTerm]) -> tuple[str, list[Any]]:
+    """Build one UNION ALL lookup of term_stats variants per query term.
+
+    Each branch uses the text_pattern_ops index on lexeme_unaccent for both the
+    exact (accent-insensitive) match and the prefix match. Stems are alphabetic
+    only, so they need no LIKE escaping.
+    """
+    parts: list[str] = []
+    params: list[Any] = []
+    for index, term in enumerate(terms):
+        params.append(index)
+        if term.stem:
+            condition = "(s.lexeme_unaccent = %s OR s.lexeme_unaccent LIKE %s)"
+            params.extend([term.term, term.stem + "%"])
+        else:
+            condition = "s.lexeme_unaccent = %s"
+            params.append(term.term)
+        params.append(term.term)
+        parts.append(
+            f"""(
+    SELECT %s::int AS term_index, s.lexeme, s.doc_count, s.total_docs
+    FROM agent_retrieval.term_stats s
+    WHERE {condition}
+    ORDER BY (s.lexeme_unaccent = %s) DESC, s.doc_count DESC, s.lexeme
+    LIMIT {IDF_MAX_TERM_VARIANTS}
+)"""
+        )
+    return "\nUNION ALL\n".join(parts), params
+
+
+def _tsquery_lexeme(lexeme: str, *, prefix: bool = False) -> str:
+    escaped = lexeme.replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'" + (":*" if prefix else "")
+
+
+def _idf(doc_count: int, total_docs: int) -> float:
+    return math.log((total_docs + 1) / (doc_count + 1)) + 1.0
+
+
+def _plan_idf_text_query(
+    terms: list[QueryTerm], rows: list[dict[str, Any]]
+) -> Optional[IdfTextPlan]:
+    """Turn resolved term_stats variants into weighted per-term tsqueries.
+
+    A term's document frequency is estimated from its variants' frequencies
+    (see IDF_GROUP_DF), capped at the corpus size.
+    """
+    variants: dict[int, list[tuple[str, int]]] = {}
+    total_docs = 0
+    for row in rows:
+        index = int(row["term_index"])
+        variants.setdefault(index, []).append(
+            (str(row["lexeme"]), int(row["doc_count"]))
+        )
+        total_docs = max(total_docs, int(row["total_docs"] or 0))
+    if total_docs <= 0:
+        return None
+
+    max_doc_count = IDF_MAX_DOC_FRACTION * total_docs
+    weighted: list[tuple[float, int, str, str]] = []
+    for index, term in enumerate(terms):
+        term_variants = variants.get(index)
+        if not term_variants:
+            continue
+        counts = [count for _, count in term_variants]
+        doc_count = max(counts) if IDF_GROUP_DF == "max" else sum(counts)
+        doc_count = min(total_docs, doc_count)
+        if doc_count > max_doc_count:
+            continue
+        lexemes = [_tsquery_lexeme(lexeme) for lexeme, _ in term_variants]
+        if term.stem:
+            # Native prefix match also covers lexemes indexed after the last
+            # term_stats refresh (unaccented spellings only).
+            lexemes.append(_tsquery_lexeme(term.stem, prefix=True))
+        weighted.append(
+            (_idf(doc_count, total_docs), index, term.term, " | ".join(lexemes))
+        )
+
+    if not weighted:
+        return None
+    weighted.sort(key=lambda item: (-item[0], item[1]))
+    kept = sorted(weighted[:IDF_MAX_QUERY_TERMS], key=lambda item: item[1])
+    return IdfTextPlan(
+        match_query=" | ".join(f"({query})" for _, _, _, query in kept),
+        term_queries=tuple(query for _, _, _, query in kept),
+        idfs=tuple(round(idf, 6) for idf, _, _, _ in kept),
+        terms=tuple(term for _, _, term, _ in kept),
+    )
+
+
+def _resolve_idf_text_plan(
+    cur: Any, query: str, project_code: Optional[str] = None
+) -> Optional[IdfTextPlan]:
+    """Tokenize the query in Postgres and resolve its terms against term_stats."""
+    cur.execute(
+        """
+SELECT l.lexeme
+FROM unnest(to_tsvector('simple', unaccent(%s))) AS l(lexeme, positions, weights)
+ORDER BY l.positions[1]
+""",
+        [query],
+    )
+    exclude = (
+        frozenset({project_code.strip().lower()})
+        if project_code and project_code.strip()
+        else frozenset()
+    )
+    terms = _select_query_terms([row["lexeme"] for row in cur.fetchall()], exclude)
+    if not terms:
+        return None
+    sql, params = _term_resolution_sql(terms)
+    cur.execute(sql, params)
+    return _plan_idf_text_query(terms, list(cur.fetchall()))
+
+
+def _text_ranked_cte(
+    *,
+    mode: str,
+    query: str,
+    where_sql: str,
+    where_params: list[Any],
+    candidate_limit: int,
+    plan: Optional[IdfTextPlan],
+) -> tuple[str, list[Any]]:
+    """SQL and parameters for the text_ranked CTE of the hybrid search."""
+    if mode == "legacy":
+        sql = f"""text_ranked AS (
+    SELECT
+        c.chunk_id,
+        row_number() OVER (
+            ORDER BY ts_rank_cd(c.chunk_tsv, websearch_to_tsquery('simple', %s)) DESC
+        ) AS text_rank,
+        ts_rank_cd(c.chunk_tsv, websearch_to_tsquery('simple', %s)) AS text_score
+    FROM agent_retrieval.document_chunks c
+    JOIN agent_retrieval.documents d ON d.document_id = c.document_id
+    WHERE {where_sql}
+      AND c.chunk_tsv @@ websearch_to_tsquery('simple', %s)
+    ORDER BY ts_rank_cd(c.chunk_tsv, websearch_to_tsquery('simple', %s)) DESC
+    LIMIT %s
+)"""
+        return sql, [query, query, *where_params, query, query, candidate_limit]
+
+    if plan is None:
+        # Nothing informative to match; the vector branch carries the query.
+        return (
+            """text_ranked AS (
+    SELECT NULL::bigint AS chunk_id, NULL::bigint AS text_rank, NULL::float8 AS text_score
+    WHERE false
+)""",
+            [],
+        )
+
+    # ts_rank_cd normalization 32 maps a rank r to r/(r+1): a saturating
+    # term-frequency curve, so repeating one word cannot outweigh matching a
+    # second, rarer word.
+    sql = f"""text_matches AS (
+    SELECT c.chunk_id, c.chunk_tsv
+    FROM agent_retrieval.document_chunks c
+    JOIN agent_retrieval.documents d ON d.document_id = c.document_id
+    WHERE {where_sql}
+      AND c.chunk_tsv @@ %s::tsquery
+),
+text_scored AS (
+    SELECT
+        m.chunk_id,
+        SUM(t.idf * ts_rank_cd(m.chunk_tsv, t.term_query, 32)) AS text_score
+    FROM text_matches m
+    CROSS JOIN unnest(%s::tsquery[], %s::float8[]) AS t(term_query, idf)
+    WHERE m.chunk_tsv @@ t.term_query
+    GROUP BY m.chunk_id
+),
+text_ranked AS (
+    SELECT
+        chunk_id,
+        row_number() OVER (ORDER BY text_score DESC, chunk_id) AS text_rank,
+        text_score
+    FROM text_scored
+    ORDER BY text_score DESC, chunk_id
+    LIMIT %s
+)"""
+    params = [
+        *where_params,
+        plan.match_query,
+        list(plan.term_queries),
+        list(plan.idfs),
+        candidate_limit,
+    ]
+    return sql, params
+
+
 def _search_rows(
     *,
     query: str,
@@ -294,8 +649,50 @@ def _search_rows(
 
     where_sql = " AND ".join(where)
     candidate_limit = min(max(limit * 6, 40), MAX_CANDIDATES)
+    mode = _text_branch_mode()
 
-    sql = f"""
+    with psycopg.connect(_database_url(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            plan: Optional[IdfTextPlan] = None
+            if mode == "idf":
+                try:
+                    plan = _resolve_idf_text_plan(cur, query, project_code)
+                except psycopg.errors.UndefinedTable:
+                    # term_stats not created yet: degrade to the legacy match.
+                    conn.rollback()
+                    logger.warning(
+                        "agent_retrieval.term_stats missing; using legacy text branch"
+                    )
+                    mode = "legacy"
+            text_ranked_sql, text_params = _text_ranked_cte(
+                mode=mode,
+                query=query,
+                where_sql=where_sql,
+                where_params=params,
+                candidate_limit=candidate_limit,
+                plan=plan,
+            )
+            sql = _hybrid_search_sql(
+                where_sql=where_sql, text_ranked_sql=text_ranked_sql, mode=mode
+            )
+            sql_params = _hybrid_search_params(
+                query=query,
+                query_vector=query_vector,
+                where_params=params,
+                candidate_limit=candidate_limit,
+                text_params=text_params,
+                prefer_authoritative=prefer_authoritative,
+                deduplicate=deduplicate,
+                require_hard_verify=require_hard_verify,
+                limit=limit,
+            )
+            cur.execute(sql, sql_params)
+            return list(cur.fetchall())
+
+
+def _hybrid_search_sql(*, where_sql: str, text_ranked_sql: str, mode: str) -> str:
+    vector_weight, text_weight = (float(weight) for weight in RRF_WEIGHTS[mode])
+    return f"""
 WITH vector_ranked AS (
     SELECT
         c.chunk_id,
@@ -308,20 +705,7 @@ WITH vector_ranked AS (
     ORDER BY c.embedding <=> %s::vector
     LIMIT %s
 ),
-text_ranked AS (
-    SELECT
-        c.chunk_id,
-        row_number() OVER (
-            ORDER BY ts_rank_cd(c.chunk_tsv, websearch_to_tsquery('simple', %s)) DESC
-        ) AS text_rank,
-        ts_rank_cd(c.chunk_tsv, websearch_to_tsquery('simple', %s)) AS text_score
-    FROM agent_retrieval.document_chunks c
-    JOIN agent_retrieval.documents d ON d.document_id = c.document_id
-    WHERE {where_sql}
-      AND c.chunk_tsv @@ websearch_to_tsquery('simple', %s)
-    ORDER BY ts_rank_cd(c.chunk_tsv, websearch_to_tsquery('simple', %s)) DESC
-    LIMIT %s
-),
+{text_ranked_sql},
 ranked AS (
     SELECT
         COALESCE(v.chunk_id, t.chunk_id) AS chunk_id,
@@ -329,8 +713,8 @@ ranked AS (
         v.vector_score,
         t.text_rank,
         t.text_score,
-        COALESCE(1.0 / (60 + v.vector_rank), 0) * 0.72
-          + COALESCE(1.0 / (60 + t.text_rank), 0) * 0.28 AS combined_score
+        COALESCE(1.0 / (60 + v.vector_rank), 0) * {vector_weight}
+          + COALESCE(1.0 / (60 + t.text_rank), 0) * {text_weight} AS combined_score
     FROM vector_ranked v
     FULL OUTER JOIN text_ranked t USING (chunk_id)
 ),
@@ -476,17 +860,27 @@ WHERE (NOT %s OR (dd.canonical_group_rank = 1 AND dd.version_group_rank = 1))
 ORDER BY combined_score DESC, dd.combined_score DESC, dd.vector_score DESC NULLS LAST
 LIMIT %s;
 """
+
+
+def _hybrid_search_params(
+    *,
+    query: str,
+    query_vector: str,
+    where_params: list[Any],
+    candidate_limit: int,
+    text_params: list[Any],
+    prefer_authoritative: bool,
+    deduplicate: bool,
+    require_hard_verify: bool,
+    limit: int,
+) -> list[Any]:
     sql_params: list[Any] = [query_vector, query_vector]
-    sql_params.extend(params)
+    sql_params.extend(where_params)
     sql_params.append(query_vector)
     sql_params.append(candidate_limit)
-    sql_params.extend([query, query])
-    sql_params.extend(params)
+    sql_params.extend(text_params)
     sql_params.extend(
         [
-            query,
-            query,
-            candidate_limit,
             prefer_authoritative,
             query,
             deduplicate,
@@ -497,11 +891,7 @@ LIMIT %s;
             limit,
         ]
     )
-
-    with psycopg.connect(_database_url(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, sql_params)
-            return list(cur.fetchall())
+    return sql_params
 
 
 def _metadata_dict(value: Any) -> dict[str, Any]:
