@@ -312,6 +312,52 @@ if USER_GOOGLE_EMAIL and not is_trust_gateway_identity():
 When using Google Workspace tools, always use `{USER_GOOGLE_EMAIL}` as the `user_google_email` parameter. Do not ask the user for their email address."""
     logger.info(f"Server instructions configured for user: {USER_GOOGLE_EMAIL}")
 
+
+def _load_operator_instructions() -> str | None:
+    """Operator-supplied server instructions for MCP clients (claude.ai, Claude Code, …).
+
+    The MCP `initialize` result carries `instructions` that clients place in the model's
+    context regardless of how many tools are exposed or deferred. Multi-user deployments
+    use this to say which curated tools to prefer and how sources relate. Set either
+    WORKSPACE_MCP_SERVER_INSTRUCTIONS (inline text) or
+    WORKSPACE_MCP_SERVER_INSTRUCTIONS_FILE (path to a UTF-8 text/markdown file).
+    """
+    inline = os.getenv("WORKSPACE_MCP_SERVER_INSTRUCTIONS", "").strip()
+    path = os.getenv("WORKSPACE_MCP_SERVER_INSTRUCTIONS_FILE", "").strip()
+    text = inline
+    if path:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read().strip() or text
+        except OSError as exc:
+            logger.warning(
+                "WORKSPACE_MCP_SERVER_INSTRUCTIONS_FILE %r could not be read: %s",
+                path,
+                exc,
+            )
+    if not text:
+        return None
+    limit = 8000
+    if len(text) > limit:
+        logger.warning(
+            "Server instructions truncated from %d to %d characters", len(text), limit
+        )
+        text = text[:limit]
+    return text
+
+
+_operator_instructions = _load_operator_instructions()
+if _operator_instructions:
+    _server_instructions = (
+        f"{_operator_instructions}\n\n{_server_instructions}"
+        if _server_instructions
+        else _operator_instructions
+    )
+    logger.info(
+        "Operator server instructions configured (%d characters)",
+        len(_operator_instructions),
+    )
+
 # Branding for the OAuth consent page: FastMCP's OAuth proxy renders the server's
 # name / icon / website on the consent screen (auth/oauth_config reads the env vars).
 _brand_config = get_oauth_config()
