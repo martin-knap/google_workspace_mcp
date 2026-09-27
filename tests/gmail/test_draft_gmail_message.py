@@ -996,8 +996,9 @@ async def test_draft_gmail_message_autofills_reply_headers_from_thread():
     assert thread_get_kwargs["userId"] == "me"
     assert thread_get_kwargs["id"] == "thread123"
     assert thread_get_kwargs["format"] == "full"
-    assert "mimeType" in thread_get_kwargs["fields"]
-    assert "body" not in thread_get_kwargs["fields"]
+    assert thread_get_kwargs["fields"] == (
+        "messages(labelIds,payload(headers,mimeType,parts(mimeType,parts(mimeType,parts))))"
+    )
 
     assert "Draft created! Draft ID: draft_reply" in result
 
@@ -1152,8 +1153,9 @@ async def test_draft_gmail_message_uses_selected_parent_rfc_ancestry(
     assert parsed["References"] == expected
 
 
+@pytest.mark.parametrize("reaction_depth", [0, 1, 2, 3, 5])
 @pytest.mark.asyncio
-async def test_draft_gmail_message_skips_emoji_reaction_as_reply_parent():
+async def test_draft_gmail_message_skips_emoji_reaction_as_reply_parent(reaction_depth):
     mock_service = _mock_gmail_service()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
     reaction = _thread_message(
@@ -1161,10 +1163,13 @@ async def test_draft_gmail_message_skips_emoji_reaction_as_reply_parent():
         in_reply_to="<latest@example.com>",
         references="<root@example.com> <latest@example.com>",
     )
-    reaction["payload"]["parts"] = [
-        {"mimeType": "text/plain"},
-        {"mimeType": "text/vnd.google.email-reaction+json"},
-    ]
+    reaction_part = {"mimeType": "text/vnd.google.email-reaction+json"}
+    for _ in range(reaction_depth):
+        reaction_part = {
+            "mimeType": "multipart/mixed",
+            "parts": [{"mimeType": "text/plain"}, reaction_part],
+        }
+    reaction["payload"].update(reaction_part)
     mock_service.users().threads().get().execute.return_value = {
         "messages": [
             _thread_message("<root@example.com>"),
