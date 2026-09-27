@@ -9,10 +9,11 @@ import logging
 import asyncio
 import re
 import ssl
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import httpx
 from googleapiclient.errors import HttpError
+from pydantic.json_schema import SkipJsonSchema
 
 from mcp.types import ToolAnnotations
 
@@ -24,6 +25,26 @@ from core.utils import TransientNetworkError, UserInputError, handle_http_errors
 from gchat.chat_helpers import _name_spaces, _resolve_sender
 
 logger = logging.getLogger(__name__)
+
+# Keep ``None`` valid at runtime without publishing a nullable ``anyOf`` branch
+# that strict MCP client bridges reject when optional string parameters are
+# omitted or coerced to the literal string ``"null"``.
+_OptionalStr = Union[str, SkipJsonSchema[None]]
+
+
+def _normalize_optional_chat_param(
+    value: Optional[str], *, treat_empty_as_none: bool = True
+) -> Optional[str]:
+    """Normalize optional string tool inputs, treating coerced 'null' as None."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if stripped.lower() == "null":
+        return None
+    if treat_empty_as_none and not stripped:
+        return None
+    return value
+
 
 _SEARCH_MESSAGES_MAX_CONCURRENT_SPACE_FETCHES = 1
 _SEARCH_MESSAGES_SSL_RETRIES = 3
@@ -286,9 +307,9 @@ async def send_message(
     user_google_email: str,
     space_id: str,
     message_text: str,
-    thread_key: Optional[str] = None,
-    thread_name: Optional[str] = None,
-    message_name: Optional[str] = None,
+    thread_key: _OptionalStr = None,
+    thread_name: _OptionalStr = None,
+    message_name: _OptionalStr = None,
 ) -> str:
     """
     Sends a message to a Google Chat space, or edits a message already sent there.
@@ -305,6 +326,12 @@ async def send_message(
         str: Confirmation message with the sent or updated message details.
     """
     logger.info(f"[send_message] Email: '{user_google_email}', Space: '{space_id}'")
+
+    thread_key = _normalize_optional_chat_param(thread_key)
+    thread_name = _normalize_optional_chat_param(thread_name)
+    message_name = _normalize_optional_chat_param(
+        message_name, treat_empty_as_none=False
+    )
 
     if message_name is not None:
         if thread_name or thread_key:
