@@ -63,6 +63,8 @@ async def list_spreadsheets(
     service,
     user_google_email: str,
     max_results: int = 25,
+    corpora: Optional[str] = None,
+    drive_id: Optional[str] = None,
 ) -> str:
     """
     Lists spreadsheets from Google Drive that the user has access to.
@@ -70,6 +72,9 @@ async def list_spreadsheets(
     Args:
         user_google_email (str): The user's Google email address. Required.
         max_results (int): Maximum number of spreadsheets to return. Defaults to 25.
+        corpora (Optional[str]): Corpus to search ('user', 'domain', 'drive', 'allDrives').
+            Defaults to 'drive' when drive_id is set, otherwise 'allDrives'.
+        drive_id (Optional[str]): Shared drive ID to search.
 
     Returns:
         str: A formatted list of spreadsheet files (name, ID, modified time).
@@ -85,7 +90,8 @@ async def list_spreadsheets(
             orderBy="modifiedTime desc",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
-            corpora="allDrives",
+            corpora=corpora or ("drive" if drive_id else "allDrives"),
+            driveId=drive_id,
         )
         .execute
     )

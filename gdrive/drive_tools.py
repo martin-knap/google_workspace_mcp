@@ -205,10 +205,10 @@ async def search_drive_files(
 
     results = await asyncio.to_thread(service.files().list(**list_params).execute)
     files = results.get("files", [])
-    if not files:
+    next_token = results.get("nextPageToken")
+    if not files and not next_token:
         return flag_incomplete_search(f"No files found for '{query}'.", results)
 
-    next_token = results.get("nextPageToken")
     header = f"Found {len(files)} files for {user_google_email} matching '{query}':"
     formatted_files_text_parts = [header]
     for item in files:
@@ -692,12 +692,12 @@ async def list_drive_items(
 
     results = await asyncio.to_thread(service.files().list(**list_params).execute)
     files = results.get("files", [])
-    if not files:
+    next_token = results.get("nextPageToken")
+    if not files and not next_token:
         return flag_incomplete_search(
             f"No items found in folder '{folder_id}'.", results
         )
 
-    next_token = results.get("nextPageToken")
     header = (
         f"Found {len(files)} items in folder '{folder_id}' for {user_google_email}:"
     )
