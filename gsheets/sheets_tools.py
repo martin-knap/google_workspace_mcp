@@ -63,6 +63,7 @@ async def list_spreadsheets(
     service,
     user_google_email: str,
     max_results: int = 25,
+    page_token: Optional[str] = None,
     corpora: Optional[str] = None,
     drive_id: Optional[str] = None,
 ) -> str:
@@ -72,12 +73,14 @@ async def list_spreadsheets(
     Args:
         user_google_email (str): The user's Google email address. Required.
         max_results (int): Maximum number of spreadsheets to return. Defaults to 25.
+        page_token (Optional[str]): Page token from a previous response's nextPageToken to retrieve the next page of results.
         corpora (Optional[str]): Corpus to search ('user', 'domain', 'drive', 'allDrives').
             Defaults to 'drive' when drive_id is set, otherwise 'allDrives'.
         drive_id (Optional[str]): Shared drive ID to search.
 
     Returns:
         str: A formatted list of spreadsheet files (name, ID, modified time).
+             Includes a nextPageToken line when more results are available.
     """
     logger.info(f"[list_spreadsheets] Invoked. Email: '{user_google_email}'")
 
@@ -86,7 +89,8 @@ async def list_spreadsheets(
         .list(
             q="mimeType='application/vnd.google-apps.spreadsheet'",
             pageSize=max_results,
-            fields="incompleteSearch, files(id,name,modifiedTime,webViewLink)",
+            pageToken=page_token,
+            fields="nextPageToken, incompleteSearch, files(id,name,modifiedTime,webViewLink)",
             orderBy="modifiedTime desc",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
@@ -97,7 +101,8 @@ async def list_spreadsheets(
     )
 
     files = files_response.get("files", [])
-    if not files:
+    next_token = files_response.get("nextPageToken")
+    if not files and not next_token:
         return flag_incomplete_search(
             f"No spreadsheets found for {user_google_email}.", files_response
         )
@@ -111,6 +116,8 @@ async def list_spreadsheets(
         f"Successfully listed {len(files)} spreadsheets for {user_google_email}:\n"
         + "\n".join(spreadsheets_list)
     )
+    if next_token:
+        text_output += f"\nnextPageToken: {next_token}"
 
     logger.info(
         f"Successfully listed {len(files)} spreadsheets for {user_google_email}."
