@@ -5,6 +5,8 @@ Tests the batch_update_form tool with mocked API responses
 """
 
 import pytest
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 from unittest.mock import Mock
 import sys
 import os
@@ -460,3 +462,29 @@ async def test_create_form_without_description_skips_batch_update():
     _, create_kwargs = mock_service.forms().create.call_args
     assert create_kwargs["body"] == {"info": {"title": "Title Only"}}
     mock_service.forms().batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_form_description_failure_returns_created_form_id():
+    """A failed description update must still report the created form's ID."""
+    mock_service = Mock()
+    mock_service.forms().create().execute.return_value = {
+        "formId": "form_999",
+        "info": {"title": "Partial"},
+    }
+    mock_service.forms().batchUpdate().execute.side_effect = HttpError(
+        Response({"status": "500"}), b"backend error"
+    )
+
+    result = await create_form.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "Partial",
+        description="Will fail",
+    )
+
+    mock_service.forms().create().execute.assert_called_once()
+    assert "Successfully created form 'Partial'" in result
+    assert "Form ID: form_999" in result
+    assert "description was not applied" in result
+    assert "batch_update_form on form ID form_999" in result

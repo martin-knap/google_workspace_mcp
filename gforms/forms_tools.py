@@ -10,6 +10,7 @@ import json
 from typing import List, Optional, Dict, Any
 
 
+from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
@@ -162,24 +163,6 @@ async def create_form(
     )
 
     form_id = created_form.get("formId")
-    if description:
-        await asyncio.to_thread(
-            service.forms()
-            .batchUpdate(
-                formId=form_id,
-                body={
-                    "requests": [
-                        {
-                            "updateFormInfo": {
-                                "info": {"description": description},
-                                "updateMask": "description",
-                            }
-                        }
-                    ]
-                },
-            )
-            .execute
-        )
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
     responder_url = created_form.get(
         "responderUri", f"https://docs.google.com/forms/d/{form_id}/viewform"
@@ -187,6 +170,33 @@ async def create_form(
 
     confirmation_message = f"Successfully created form '{created_form.get('info', {}).get('title', title)}' for {user_google_email}. Form ID: {form_id}. Edit URL: {edit_url}. Responder URL: {responder_url}"
     logger.info(f"Form created successfully for {user_google_email}. ID: {form_id}")
+
+    if description:
+        # The form already exists, so surface its ID rather than inviting a duplicate create.
+        try:
+            await asyncio.to_thread(
+                service.forms()
+                .batchUpdate(
+                    formId=form_id,
+                    body={
+                        "requests": [
+                            {
+                                "updateFormInfo": {
+                                    "info": {"description": description},
+                                    "updateMask": "description",
+                                }
+                            }
+                        ]
+                    },
+                )
+                .execute
+            )
+        except HttpError as error:
+            logger.error(
+                f"[create_form] Description update failed for {form_id}: {error}"
+            )
+            return f"{confirmation_message}. Warning: the description was not applied ({error}). Set it with batch_update_form on form ID {form_id} instead of calling create_form again."
+
     return confirmation_message
 
 
