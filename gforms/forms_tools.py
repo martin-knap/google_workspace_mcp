@@ -154,17 +154,32 @@ async def create_form(
 
     form_body: Dict[str, Any] = {"info": {"title": title}}
 
-    if description:
-        form_body["info"]["description"] = description
-
     if document_title:
-        form_body["info"]["document_title"] = document_title
+        form_body["info"]["documentTitle"] = document_title
 
     created_form = await asyncio.to_thread(
         service.forms().create(body=form_body).execute
     )
 
     form_id = created_form.get("formId")
+    if description:
+        await asyncio.to_thread(
+            service.forms()
+            .batchUpdate(
+                formId=form_id,
+                body={
+                    "requests": [
+                        {
+                            "updateFormInfo": {
+                                "info": {"description": description},
+                                "updateMask": "description",
+                            }
+                        }
+                    ]
+                },
+            )
+            .execute
+        )
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
     responder_url = created_form.get(
         "responderUri", f"https://docs.google.com/forms/d/{form_id}/viewform"
