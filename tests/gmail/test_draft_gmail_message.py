@@ -996,7 +996,7 @@ async def test_draft_gmail_message_autofills_reply_headers_from_thread():
     assert thread_get_kwargs["userId"] == "me"
     assert thread_get_kwargs["id"] == "thread123"
     assert thread_get_kwargs["format"] == "full"
-    assert "text/" not in thread_get_kwargs["fields"]
+    assert "mimeType" in thread_get_kwargs["fields"]
     assert "body" not in thread_get_kwargs["fields"]
 
     assert "Draft created! Draft ID: draft_reply" in result

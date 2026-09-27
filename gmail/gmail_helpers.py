@@ -44,6 +44,13 @@ GMAIL_METADATA_HEADERS = [
     "List-Id",
 ]
 
+EMAIL_REACTION_MIME_TYPE = "text/vnd.google.email-reaction+json"
+# Headers plus MIME types without bodies: a reaction is identifiable only by
+# its MIME part, which format=metadata omits.
+THREAD_REPLY_CONTEXT_FIELDS = (
+    "messages(labelIds,payload(headers,parts(mimeType,parts(mimeType))))"
+)
+
 # Gmail accepts label colors only from a fixed palette, and rejects anything else
 # with an opaque 400. Both backgroundColor and textColor draw from this same set.
 # https://developers.google.com/gmail/api/reference/rest/v1/users.labels#Label
@@ -366,6 +373,14 @@ def _parse_message_id_chain(header_value: Optional[str]) -> list[str]:
 
     message_ids = re.findall(r"<[^>]+>", header_value)
     return message_ids or header_value.split()
+
+
+def _is_email_reaction(payload: Mapping[str, Any]) -> bool:
+    """Return True if a message payload is a Gmail emoji reaction."""
+    return any(
+        part.get("mimeType") == EMAIL_REACTION_MIME_TYPE or _is_email_reaction(part)
+        for part in payload.get("parts") or []
+    )
 
 
 def _derive_reply_headers(

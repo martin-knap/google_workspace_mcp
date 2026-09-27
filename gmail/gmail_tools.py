@@ -66,6 +66,7 @@ from auth.scopes import (
 from gmail.gmail_helpers import (
     GMAIL_METADATA_HEADERS,
     RAW_BODY_TRUNCATE_LIMIT,
+    THREAD_REPLY_CONTEXT_FIELDS,
     _analyze_thread_ownership_impl,
     _build_forward_content,
     _derive_reply_all_recipients,
@@ -74,6 +75,7 @@ from gmail.gmail_helpers import (
     _get_send_as_identity_and_signature,
     _get_send_as_signature_html_for_tool,
     _http_error_status,
+    _is_email_reaction,
     _retryable_result_ids,
     _signature_html_to_text,
     _wrap_signature_html,
@@ -960,22 +962,6 @@ def _extract_headers(payload: dict, header_names: List[str]) -> Dict[str, str]:
     return headers
 
 
-EMAIL_REACTION_MIME_TYPE = "text/vnd.google.email-reaction+json"
-# Headers plus MIME types without bodies: a reaction is identifiable only by
-# its MIME part, which format=metadata omits.
-_THREAD_REPLY_CONTEXT_FIELDS = (
-    "messages(labelIds,payload(headers,parts(mimeType,parts(mimeType))))"
-)
-
-
-def _is_email_reaction(payload: dict) -> bool:
-    """Return True if a message payload is a Gmail emoji reaction."""
-    return any(
-        part.get("mimeType") == EMAIL_REACTION_MIME_TYPE or _is_email_reaction(part)
-        for part in payload.get("parts") or []
-    )
-
-
 async def _fetch_thread_reply_context(
     service,
     thread_id: str,
@@ -998,7 +984,7 @@ async def _fetch_thread_reply_context(
     try:
         request_kwargs = {"userId": "me", "id": thread_id, "format": "full"}
         if not include_bodies:
-            request_kwargs["fields"] = _THREAD_REPLY_CONTEXT_FIELDS
+            request_kwargs["fields"] = THREAD_REPLY_CONTEXT_FIELDS
 
         request = service.users().threads().get(**request_kwargs)
         thread = await asyncio.to_thread(request.execute)
