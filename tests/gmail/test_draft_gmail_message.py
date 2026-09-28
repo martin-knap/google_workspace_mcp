@@ -995,8 +995,10 @@ async def test_draft_gmail_message_autofills_reply_headers_from_thread():
     )
     assert thread_get_kwargs["userId"] == "me"
     assert thread_get_kwargs["id"] == "thread123"
-    assert thread_get_kwargs["format"] == "metadata"
-    assert "Message-ID" in thread_get_kwargs["metadataHeaders"]
+    assert thread_get_kwargs["format"] == "full"
+    assert thread_get_kwargs["fields"] == (
+        "messages(labelIds,payload(headers,mimeType,parts(mimeType,parts(mimeType,parts))))"
+    )
 
     assert "Draft created! Draft ID: draft_reply" in result
 
@@ -1149,6 +1151,54 @@ async def test_draft_gmail_message_uses_selected_parent_rfc_ancestry(
 
     assert parsed["In-Reply-To"] == "<latest@example.com>"
     assert parsed["References"] == expected
+
+
+@pytest.mark.parametrize("reaction_depth", [0, 1, 2, 3, 5])
+@pytest.mark.asyncio
+async def test_draft_gmail_message_skips_emoji_reaction_as_reply_parent(reaction_depth):
+    mock_service = _mock_gmail_service()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    reaction = _thread_message(
+        "<reaction@example.com>",
+        in_reply_to="<latest@example.com>",
+        references="<root@example.com> <latest@example.com>",
+    )
+    reaction_part = {"mimeType": "text/vnd.google.email-reaction+json"}
+    for _ in range(reaction_depth):
+        reaction_part = {
+            "mimeType": "multipart/mixed",
+            "parts": [{"mimeType": "text/plain"}, reaction_part],
+        }
+    reaction["payload"].update(reaction_part)
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message("<root@example.com>"),
+            _thread_message(
+                "<latest@example.com>",
+                in_reply_to="<root@example.com>",
+                references="<root@example.com>",
+            ),
+            reaction,
+        ]
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        to="recipient@example.com",
+        subject="Meeting tomorrow",
+        body="Thanks for the update.",
+        thread_id="thread123",
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+
+    assert parsed["In-Reply-To"] == "<latest@example.com>"
+    assert parsed["References"] == "<root@example.com> <latest@example.com>"
 
 
 @pytest.mark.asyncio
