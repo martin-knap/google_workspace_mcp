@@ -1,11 +1,13 @@
 """
 Google Chat Helper Functions
 
-Name resolution for Chat senders and spaces via the People API.
+Request execution, argument normalization, message parsing, and name
+resolution for Chat senders and spaces via the People API.
 """
 
 import asyncio
 import logging
+import ssl
 from typing import Dict, List, Optional
 
 from googleapiclient.errors import HttpError
@@ -21,6 +23,7 @@ _UNNAMED_SPACE_FALLBACKS = {
 _SPACE_NAME_MAX_MEMBERS = 3
 _PEOPLE_BATCH_SIZE = 200  # people.getBatchGet limit
 _MAX_CONSECUTIVE_MEMBER_LOOKUP_FAILURES = 2
+_SEARCH_MESSAGES_RETRY_BASE_DELAY_SECONDS = 1
 
 
 def _cache_sender(user_id: str, name: str) -> None:
@@ -202,3 +205,62 @@ async def _name_spaces(
             label += f" and {remaining} other{'s' if remaining > 1 else ''}"
         labels[space_name] = label
     return labels
+
+
+def _none_if_null_sentinel(value: Optional[str]) -> Optional[str]:
+    """Map the literal "null"/"None" some clients send for an omitted arg to None."""
+    if value is not None and value.strip().lower() in ("null", "none"):
+        return None
+    return value
+
+
+def _none_if_blank(value: Optional[str]) -> Optional[str]:
+    """Treat a null sentinel or whitespace-only string as an omitted arg."""
+    value = _none_if_null_sentinel(value)
+    return value if value and value.strip() else None
+
+
+async def _execute_chat_request(
+    request_factory,
+    *,
+    request_label: str,
+    retries: int = 1,
+    semaphore: Optional[asyncio.Semaphore] = None,
+):
+    """Execute a Chat API request in a worker thread with optional SSL retries."""
+    for attempt in range(retries):
+        try:
+            if semaphore is None:
+                return await asyncio.to_thread(lambda: request_factory().execute())
+            async with semaphore:
+                return await asyncio.to_thread(lambda: request_factory().execute())
+        except ssl.SSLError as e:
+            if attempt == retries - 1:
+                raise
+            delay = _SEARCH_MESSAGES_RETRY_BASE_DELAY_SECONDS * (2**attempt)
+            logger.warning(
+                "[search_messages] SSL error during %s on attempt %s/%s: %s. Retrying in %s seconds.",
+                request_label,
+                attempt + 1,
+                retries,
+                e,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+
+def _extract_rich_links(msg: dict) -> List[str]:
+    """Extract URLs from RICH_LINK annotations (smart chips).
+
+    When a user pastes a Google Workspace URL in Chat and it renders as a
+    smart chip, the URL is NOT in the text field; it's only available in
+    the annotations array as a RICH_LINK with richLinkMetadata.uri.
+    """
+    text = msg.get("text", "")
+    urls = []
+    for ann in msg.get("annotations", []):
+        if ann.get("type") == "RICH_LINK":
+            uri = ann.get("richLinkMetadata", {}).get("uri", "")
+            if uri and uri not in text:
+                urls.append(uri)
+    return urls
