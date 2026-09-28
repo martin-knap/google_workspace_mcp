@@ -377,13 +377,14 @@ def test_configure_server_for_http_passes_expiry_config_to_external_provider(
     assert captured["fallback_refresh_token_expiry_seconds"] == 2592000
 
 
-def test_configure_server_for_http_passes_token_validation_cache_ttl(monkeypatch):
+def test_configure_server_for_http_passes_token_validation_settings(monkeypatch):
     captured = {}
 
     class FakeExternalOAuthProvider:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
+    monkeypatch.setenv("WORKSPACE_MCP_TOKEN_VALIDATION_WORKERS", "32")
     monkeypatch.setenv("WORKSPACE_MCP_TOKEN_VALIDATION_CACHE_TTL", "45")
     monkeypatch.setattr(server_module, "get_transport_mode", lambda: "streamable-http")
     monkeypatch.setattr(
@@ -410,4 +411,5 @@ def test_configure_server_for_http_passes_token_validation_cache_ttl(monkeypatch
 
     server_module.configure_server_for_http()
 
+    assert captured["token_validation_workers"] == 32
     assert captured["token_validation_cache_ttl"] == 45
