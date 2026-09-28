@@ -18,7 +18,7 @@ from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import handle_http_errors, UserInputError, StringList
 from core.comments import create_comment_tools
-from gdrive.drive_helpers import move_new_file_to_folder
+from gdrive.drive_helpers import flag_incomplete_search, move_new_file_to_folder
 from gsheets.sheets_helpers import (
     CONDITION_TYPES,
     MAX_READ_SHEET_ROWS,
@@ -63,6 +63,9 @@ async def list_spreadsheets(
     service,
     user_google_email: str,
     max_results: int = 25,
+    page_token: Optional[str] = None,
+    corpora: Optional[str] = None,
+    drive_id: Optional[str] = None,
 ) -> str:
     """
     Lists spreadsheets from Google Drive that the user has access to.
@@ -70,9 +73,14 @@ async def list_spreadsheets(
     Args:
         user_google_email (str): The user's Google email address. Required.
         max_results (int): Maximum number of spreadsheets to return. Defaults to 25.
+        page_token (Optional[str]): Page token from a previous response's nextPageToken to retrieve the next page of results.
+        corpora (Optional[str]): Corpus to search ('user', 'domain', 'drive', 'allDrives').
+            Defaults to 'drive' when drive_id is set, otherwise 'allDrives'.
+        drive_id (Optional[str]): Shared drive ID to search.
 
     Returns:
         str: A formatted list of spreadsheet files (name, ID, modified time).
+             Includes a nextPageToken line when more results are available.
     """
     logger.info(f"[list_spreadsheets] Invoked. Email: '{user_google_email}'")
 
@@ -81,17 +89,23 @@ async def list_spreadsheets(
         .list(
             q="mimeType='application/vnd.google-apps.spreadsheet'",
             pageSize=max_results,
-            fields="files(id,name,modifiedTime,webViewLink)",
+            pageToken=page_token,
+            fields="nextPageToken, incompleteSearch, files(id,name,modifiedTime,webViewLink)",
             orderBy="modifiedTime desc",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
+            corpora=corpora or ("drive" if drive_id else "allDrives"),
+            driveId=drive_id,
         )
         .execute
     )
 
     files = files_response.get("files", [])
-    if not files:
-        return f"No spreadsheets found for {user_google_email}."
+    next_token = files_response.get("nextPageToken")
+    if not files and not next_token:
+        return flag_incomplete_search(
+            f"No spreadsheets found for {user_google_email}.", files_response
+        )
 
     spreadsheets_list = [
         f'- "{file["name"]}" (ID: {file["id"]}) | Modified: {file.get("modifiedTime", "Unknown")} | Link: {file.get("webViewLink", "No link")}'
@@ -102,11 +116,13 @@ async def list_spreadsheets(
         f"Successfully listed {len(files)} spreadsheets for {user_google_email}:\n"
         + "\n".join(spreadsheets_list)
     )
+    if next_token:
+        text_output += f"\nnextPageToken: {next_token}"
 
     logger.info(
         f"Successfully listed {len(files)} spreadsheets for {user_google_email}."
     )
-    return text_output
+    return flag_incomplete_search(text_output, files_response)
 
 
 @server.tool(
