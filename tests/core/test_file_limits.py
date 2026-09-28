@@ -9,12 +9,15 @@ import pytest
 
 from core.file_limits import (
     DEFAULT_MAX_OFFICE_XML_BYTES,
+    DEFAULT_STATELESS_INLINE_MAX_BYTES,
     FileTooLargeError,
     download_http_url_bytes,
     download_media_bytes,
     ensure_within_file_size_limit,
     get_max_file_bytes,
     get_max_office_xml_bytes,
+    get_stateless_inline_max_bytes,
+    validate_file_limit_settings,
 )
 
 
@@ -292,3 +295,36 @@ def test_get_max_office_xml_bytes_rejects_invalid(monkeypatch, raw):
     monkeypatch.setenv("WORKSPACE_MCP_MAX_OFFICE_XML_BYTES", raw)
     with pytest.raises(ValueError, match="WORKSPACE_MCP_MAX_OFFICE_XML_BYTES"):
         get_max_office_xml_bytes()
+
+
+@pytest.mark.parametrize(
+    ("inline", "file_cap", "expected"),
+    [
+        (None, None, DEFAULT_STATELESS_INLINE_MAX_BYTES),
+        ("", "", DEFAULT_STATELESS_INLINE_MAX_BYTES),
+        ("0", None, 0),
+        (" 4096 ", "0", 4096),
+        ("4096", "100", 100),
+        (None, "100", 100),
+    ],
+)
+def test_get_stateless_inline_max_bytes(monkeypatch, inline, file_cap, expected):
+    """Inlining buffers the file, so the in-memory download cap bounds it too."""
+    for name, raw in (
+        ("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", inline),
+        ("WORKSPACE_MCP_MAX_FILE_BYTES", file_cap),
+    ):
+        if raw is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, raw)
+    assert get_stateless_inline_max_bytes() == expected
+
+
+@pytest.mark.parametrize("raw", ["-1", "10MB"])
+def test_get_stateless_inline_max_bytes_rejects_invalid(monkeypatch, raw):
+    monkeypatch.setenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", raw)
+    with pytest.raises(ValueError, match="WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES"):
+        get_stateless_inline_max_bytes()
+    with pytest.raises(ValueError, match="WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES"):
+        validate_file_limit_settings()
