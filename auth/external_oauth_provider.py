@@ -275,12 +275,14 @@ class ExternalOAuthProvider(GoogleProvider):
                     logger.info(
                         f"Validated external access token for: {user_info['email']}"
                     )
-                    self._remember_identity(
-                        cache_key, user_info["email"], user_info.get("id")
-                    )
-                    return self._build_access_token(
+                    access_token = self._build_access_token(
                         token, user_info["email"], user_info.get("id")
                     )
+                    if self._token_validation_executor is not None:
+                        self._remember_identity(
+                            cache_key, access_token.email, access_token.sub
+                        )
+                    return access_token
                 else:
                     logger.error("Could not get user info from access token")
                     return None

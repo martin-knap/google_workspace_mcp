@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import threading
 
 import pytest
@@ -226,6 +227,10 @@ async def test_cached_token_skips_userinfo_and_keeps_its_identity(monkeypatch):
         first = await provider.verify_token("ya29.alice")
         second = await provider.verify_token("ya29.alice")
         other = await provider.verify_token("ya29.bob")
+        assert set(provider._validated_identities) == {
+            hashlib.sha256(token.encode()).hexdigest()
+            for token in ("ya29.alice", "ya29.bob")
+        }
     finally:
         provider.close()
 
@@ -233,7 +238,6 @@ async def test_cached_token_skips_userinfo_and_keeps_its_identity(monkeypatch):
     assert second.token == "ya29.alice"
     assert (second.email, second.sub) == (first.email, first.sub)
     assert other.email == "ya29.bob@example.com"
-    assert "ya29.alice" not in provider._validated_identities
 
 
 @pytest.mark.asyncio
@@ -350,3 +354,55 @@ async def test_close_clears_cached_identities(monkeypatch):
     provider.close()
 
     assert provider._validated_identities == {}
+
+
+@pytest.mark.asyncio
+async def test_validation_finishing_after_close_does_not_repopulate_cache(monkeypatch):
+    provider = _make_provider(cache_ttl=60)
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+
+    def get_user_info(credentials, *, skip_valid_check=False):
+        validation_started.set()
+        assert release_validation.wait(timeout=2)
+        return {"email": "user@example.com", "id": "user-id"}
+
+    monkeypatch.setattr("auth.google_auth.get_user_info", get_user_info)
+    validation = asyncio.create_task(provider.verify_token("ya29.in-flight"))
+    try:
+        await _wait_for_thread_event(validation_started)
+        provider.close()
+        release_validation.set()
+        result = await asyncio.wait_for(validation, timeout=1)
+
+        assert result is not None
+        assert result.email == "user@example.com"
+        assert provider._validated_identities == {}
+        assert await provider.verify_token("ya29.in-flight") is None
+    finally:
+        release_validation.set()
+        await asyncio.wait_for(validation, timeout=1)
+        provider.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_identity_is_not_cached(monkeypatch):
+    provider = _make_provider(cache_ttl=60)
+    results = iter(
+        [
+            {"email": "user@example.com", "id": {"unexpected": "object"}},
+            {"email": "user@example.com", "id": "user-id"},
+        ]
+    )
+
+    def get_user_info(credentials, *, skip_valid_check=False):
+        return next(results)
+
+    monkeypatch.setattr("auth.google_auth.get_user_info", get_user_info)
+    try:
+        assert await provider.verify_token("ya29.retry") is None
+        result = await provider.verify_token("ya29.retry")
+        assert result is not None
+        assert result.sub == "user-id"
+    finally:
+        provider.close()
