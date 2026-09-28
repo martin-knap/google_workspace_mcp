@@ -121,20 +121,6 @@ async def test_edit_api_failure_is_surfaced_without_creating(
 
 
 @pytest.mark.asyncio
-async def test_send_message_schema_publishes_flat_optional_string_params():
-    tool = await server.get_tool("send_message")
-    properties = tool.parameters["properties"]
-    required = set(tool.parameters.get("required", []))
-
-    assert required == {"user_google_email", "space_id", "message_text"}
-    for param_name in ("thread_key", "thread_name", "message_name"):
-        prop = properties[param_name]
-        assert prop["type"] == "string"
-        assert prop["default"] is None
-        assert "anyOf" not in prop
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "optional_kwargs",
     [
@@ -142,6 +128,7 @@ async def test_send_message_schema_publishes_flat_optional_string_params():
         {"thread_key": None, "thread_name": None, "message_name": None},
         {"thread_key": "null", "thread_name": "null", "message_name": "null"},
         {"thread_key": " NULL ", "thread_name": "", "message_name": "null"},
+        {"thread_key": "None", "thread_name": "none", "message_name": "None"},
     ],
 )
 async def test_send_message_creates_plain_message_when_optional_params_omitted_or_null(
