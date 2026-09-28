@@ -55,6 +55,7 @@ async def test_send_message_advertises_destructive_updates():
     "message_name",
     [
         "",
+        "   ",
         "M",
         "spaces/S/messages/",
         "spaces/S/messages/M/extra",
@@ -129,6 +130,7 @@ async def test_edit_api_failure_is_surfaced_without_creating(
         {"thread_key": "null", "thread_name": "null", "message_name": "null"},
         {"thread_key": " NULL ", "thread_name": "", "message_name": "null"},
         {"thread_key": "None", "thread_name": "none", "message_name": "None"},
+        {"thread_key": "   ", "thread_name": "\t\n"},
     ],
 )
 async def test_send_message_creates_plain_message_when_optional_params_omitted_or_null(

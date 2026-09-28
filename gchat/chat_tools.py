@@ -33,6 +33,12 @@ def _none_if_null_sentinel(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def _none_if_blank(value: Optional[str]) -> Optional[str]:
+    """Treat a null sentinel or whitespace-only string as an omitted arg."""
+    value = _none_if_null_sentinel(value)
+    return value if value and value.strip() else None
+
+
 _SEARCH_MESSAGES_MAX_CONCURRENT_SPACE_FETCHES = 1
 _SEARCH_MESSAGES_SSL_RETRIES = 3
 _SEARCH_MESSAGES_RETRY_BASE_DELAY_SECONDS = 1
@@ -314,8 +320,8 @@ async def send_message(
     """
     logger.info(f"[send_message] Email: '{user_google_email}', Space: '{space_id}'")
 
-    thread_key = _none_if_null_sentinel(thread_key)
-    thread_name = _none_if_null_sentinel(thread_name)
+    thread_key = _none_if_blank(thread_key)
+    thread_name = _none_if_blank(thread_name)
     message_name = _none_if_null_sentinel(message_name)
 
     if message_name is not None:
