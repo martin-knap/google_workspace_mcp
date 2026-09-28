@@ -65,6 +65,7 @@ from auth.scopes import (
     has_required_scopes,
 )
 from gmail.gmail_helpers import (
+    FILTER_APPLY_DEFAULT_MAX_MESSAGES,
     GMAIL_METADATA_HEADERS,
     RAW_BODY_TRUNCATE_LIMIT,
     THREAD_REPLY_CONTEXT_FIELDS,
@@ -80,13 +81,12 @@ from gmail.gmail_helpers import (
     _retryable_result_ids,
     _signature_html_to_text,
     _wrap_signature_html,
-    FILTER_APPLY_DEFAULT_MAX_MESSAGES,
     apply_gmail_filter_to_existing,
     build_label_color,
     format_filter_apply_result,
-    update_gmail_filter,
     html_newlines_to_br,
     html_to_text_preserving_breaks,
+    update_gmail_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -4098,11 +4098,12 @@ async def manage_gmail_filter(
     Manages Gmail filters: create, delete, update, and apply to existing mail.
 
     - update: Gmail has no filter update API, so the filter is recreated (new
-      one first, then the old one is deleted) and its ID changes. Omitted
-      criteria / filter_action are kept from the old filter.
+      one first, then the old one is deleted) and its ID changes. A passed
+      criteria or filter_action replaces that whole object; omit one to keep
+      the old filter's.
     - apply: runs a filter's label actions on mail ALREADY in the mailbox
-      (Gmail filters only act on new mail; this is the web UI's "also apply
-      filter to matching conversations"). Use filter_id, or criteria +
+      (Gmail filters only act on new mail). Only matching messages change,
+      not whole conversations as in the web UI. Use filter_id, or criteria +
       filter_action for an ad-hoc run. Forwarding is never applied. Use
       dry_run=true first to see the search query and the match count.
       Needs the gmail.modify scope in addition to gmail.settings.basic.
@@ -4166,7 +4167,7 @@ async def manage_gmail_filter(
                 "criteria and/or filter_action are required for update action"
             )
         logger.info(f"[manage_gmail_filter] Updating filter {filter_id}")
-        _, created = await update_gmail_filter(
+        created = await update_gmail_filter(
             service, filter_id, criteria=criteria, filter_action=filter_action
         )
         return (
@@ -4177,9 +4178,8 @@ async def manage_gmail_filter(
             f"Action: {created.get('action') or '(none)'}"
         )
     elif action_lower == "apply":
-        # The decorator only asks for gmail.settings.basic, so create/delete/
-        # update keep working with a filters-only grant; apply also reads and
-        # relabels messages.
+        # Checked here, not in the decorator, so the other actions work with
+        # only gmail.settings.basic.
         credentials = getattr(getattr(service, "_http", None), "credentials", None)
         granted = getattr(credentials, "scopes", None)
         if isinstance(granted, (list, tuple, set, frozenset)) and not (
@@ -4189,6 +4189,8 @@ async def manage_gmail_filter(
                 "apply needs the gmail.modify scope to change existing messages; "
                 "re-authenticate with Gmail modify access."
             )
+        if max_messages < 1:
+            raise ValueError("max_messages must be at least 1")
         if filter_id:
             existing = await asyncio.to_thread(
                 service.users()
@@ -4203,8 +4205,6 @@ async def manage_gmail_filter(
             raise ValueError(
                 "apply needs filter_id, or both criteria and filter_action"
             )
-        if max_messages < 1:
-            raise ValueError("max_messages must be at least 1")
         logger.info(
             f"[manage_gmail_filter] Applying filter to existing mail (dry_run={dry_run})"
         )

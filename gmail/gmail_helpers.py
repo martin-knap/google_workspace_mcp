@@ -1058,20 +1058,15 @@ async def _get_send_as_signature_html_for_tool(
     return await _get_send_as_signature_html(service, from_email=from_email)
 
 
-# ---------------------------------------------------------------------------
-# Filters: update and apply to existing mail
-# ---------------------------------------------------------------------------
-
 # users.messages.batchModify accepts at most 1000 IDs per call.
 GMAIL_BATCH_MODIFY_LIMIT = 1000
-# Default safety cap for applying a filter to existing mail.
 FILTER_APPLY_DEFAULT_MAX_MESSAGES = 5000
 
 
 def _quote_search_term(value: Any) -> str:
     """Group a multi-word value so Gmail search treats it as one operand."""
     text = str(value).strip()
-    if " " in text and not text.startswith("("):
+    if " " in text:
         return f"({text})"
     return text
 
@@ -1112,12 +1107,12 @@ async def update_gmail_filter(
     filter_id: str,
     criteria: Optional[Mapping[str, Any]] = None,
     filter_action: Optional[Mapping[str, Any]] = None,
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
+) -> Dict[str, Any]:
     """Replace a filter, keeping the parts the caller did not pass.
 
     Gmail has no filter update endpoint, so the new filter is created FIRST and
     the old one deleted afterwards: a failure never leaves the mailbox without
-    the rule. Returns ``(old_filter, new_filter)``; the filter ID changes.
+    the rule. Returns the new filter; the filter ID changes.
     """
     filters = service.users().settings().filters()
     old = await asyncio.to_thread(filters.get(userId="me", id=filter_id).execute)
@@ -1136,7 +1131,7 @@ async def update_gmail_filter(
         ) from error
     created.setdefault("criteria", body["criteria"])
     created.setdefault("action", body["action"])
-    return old, created
+    return created
 
 
 async def apply_gmail_filter_to_existing(
@@ -1148,8 +1143,9 @@ async def apply_gmail_filter_to_existing(
 ) -> Dict[str, Any]:
     """Apply a filter's label actions to messages already in the mailbox.
 
-    Gmail filters only act on new mail; this is the web UI's "also apply filter
-    to matching conversations". Forwarding is never applied retroactively.
+    Gmail filters only act on new mail. Only matching messages change, not the
+    rest of their threads, mirroring how the filter treats incoming mail.
+    Forwarding is never applied retroactively.
     Returns a summary dict (query, matched, truncated, applied, notes).
     """
     query = filter_criteria_to_query(criteria)
@@ -1212,7 +1208,7 @@ def format_filter_apply_result(result: Mapping[str, Any], dry_run: bool) -> str:
     """Human-readable summary for apply_gmail_filter_to_existing."""
     matched = f"{result['matched']}{'+' if result['truncated'] else ''}"
     lines = [
-        "DRY RUN — nothing changed."
+        "DRY RUN: nothing changed."
         if dry_run
         else f"Applied to {result['applied']} messages.",
         f"Query: {result['query']}",

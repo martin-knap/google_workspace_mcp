@@ -140,6 +140,17 @@ def test_filter_criteria_to_query_translates_all_supported_fields():
     )
 
 
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        ("(urgent) invoice", "subject:((urgent) invoice)"),
+        ("(a) OR (b)", "subject:((a) OR (b))"),
+    ],
+)
+def test_filter_criteria_to_query_groups_values_starting_with_paren(subject, expected):
+    assert filter_criteria_to_query({"subject": subject}) == expected
+
+
 def test_filter_criteria_to_query_empty():
     assert filter_criteria_to_query({}) == ""
 
