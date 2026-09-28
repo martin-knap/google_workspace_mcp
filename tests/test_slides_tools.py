@@ -812,6 +812,20 @@ class TestStyleAndTableReporting:
         assert any("placeholder: TITLE index=0 parent=lay_t" in line for line in lines)
         assert any("frame: autofit=NONE" in line for line in lines)
 
+    def test_explicitly_disabled_flag_is_reported(self):
+        assert slides_tools._describe_run_style({"bold": False}) == "bold=false"
+        assert slides_tools._describe_run_style({}) == "inherited"
+
+    def test_text_autofit_reports_font_scale(self):
+        shape = {
+            "shapeProperties": {
+                "autofit": {"autofitType": "TEXT_AUTOFIT", "fontScale": 0.85}
+            }
+        }
+        assert slides_tools._describe_shape_frame(shape, "") == [
+            "  frame: autofit=TEXT_AUTOFIT fontScale=0.85"
+        ]
+
     def test_table_geometry_and_cells(self):
         lines = slides_tools._describe_elements([self.TABLE], include_geometry=True)
         assert any("columns (EMU): 2000000, 2100000" in line for line in lines)

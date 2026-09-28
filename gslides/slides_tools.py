@@ -144,8 +144,8 @@ def _describe_run_style(style: Dict[str, Any]) -> str:
     if "magnitude" in size:
         parts.append(f"{size['magnitude']}{size.get('unit', 'PT').lower()}")
     for flag in ("bold", "italic", "underline", "strikethrough", "smallCaps"):
-        if style.get(flag):
-            parts.append(flag)
+        if flag in style:
+            parts.append(flag if style[flag] else f"{flag}=false")
     fg = _describe_color(style.get("foregroundColor"))
     if fg:
         parts.append(f"color={fg}")
@@ -262,9 +262,13 @@ def _describe_shape_frame(shape: Dict[str, Any], indent: str) -> List[str]:
         )
     props = shape.get("shapeProperties") or {}
     frame: List[str] = []
-    autofit = (props.get("autofit") or {}).get("autofitType")
-    if autofit:
-        frame.append(f"autofit={autofit}")
+    autofit = props.get("autofit") or {}
+    autofit_type = autofit.get("autofitType")
+    if autofit_type:
+        frame.append(f"autofit={autofit_type}")
+    # Slides renders TEXT_AUTOFIT runs at fontSize * fontScale.
+    if autofit_type == "TEXT_AUTOFIT" and "fontScale" in autofit:
+        frame.append(f"fontScale={autofit['fontScale']}")
     if props.get("contentAlignment"):
         frame.append(f"vAlign={props['contentAlignment']}")
     background = props.get("shapeBackgroundFill") or {}

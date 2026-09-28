@@ -120,6 +120,23 @@ def _stateless_too_large_message(
     )
 
 
+def _stateless_inline_disabled_message(
+    file_name: str, file_id: str, mime_type: str
+) -> str:
+    """Explain that stateless-mode downloads are not returned inline at all."""
+    return "\n".join(
+        [
+            f"File: {file_name}",
+            f"File ID: {file_id}",
+            f"MIME Type: {mime_type}",
+            "",
+            "Not returned: stateless mode has no file storage, and inline "
+            "returns are disabled (WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES=0). "
+            "Use get_drive_file_content for its text, or raise the limit.",
+        ]
+    )
+
+
 @server.tool(
     title="Search Drive Files",
     annotations=ToolAnnotations(
@@ -541,6 +558,8 @@ async def get_drive_file_download_url(
     # Stateless mode has no attachment storage to hand out a URL from, so the
     # file itself goes back as an embedded resource, up to inline_max_bytes.
     inline_max_bytes = get_stateless_inline_max_bytes() if is_stateless_mode() else None
+    if inline_max_bytes == 0:
+        return _stateless_inline_disabled_message(file_name, file_id, output_mime_type)
     # Drive's declared size is the download size only for binary files; an
     # export's size is unknown until it has been downloaded.
     declared_size = int(file_metadata.get("size") or 0)

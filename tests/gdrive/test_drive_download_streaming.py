@@ -295,6 +295,30 @@ async def test_download_url_stateless_mode_refuses_declared_oversize_before_down
 
 
 @pytest.mark.asyncio
+async def test_download_url_stateless_mode_zero_limit_skips_download(
+    mock_resolve, monkeypatch
+):
+    """A zero limit disables inlining, even for an empty file."""
+    monkeypatch.setenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", "0")
+    mock_service = Mock()
+
+    with (
+        _patch_downloader(b""),
+        patch("gdrive.drive_tools.is_stateless_mode", return_value=True),
+    ):
+        result = await _unwrap(get_drive_file_download_url)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="file123",
+        )
+
+    assert isinstance(result, str)
+    assert "inline returns are disabled" in result
+    assert _FakeDownloader.handles == []
+    mock_service.files().get_media.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_download_url_stateless_mode_ignores_declared_size_of_exports(
     mock_resolve, monkeypatch
 ):
