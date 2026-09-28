@@ -62,8 +62,10 @@ from auth.scopes import (
     GMAIL_COMPOSE_SCOPE,
     GMAIL_MODIFY_SCOPE,
     GMAIL_LABELS_SCOPE,
+    has_required_scopes,
 )
 from gmail.gmail_helpers import (
+    FILTER_APPLY_DEFAULT_MAX_MESSAGES,
     GMAIL_METADATA_HEADERS,
     RAW_BODY_TRUNCATE_LIMIT,
     THREAD_REPLY_CONTEXT_FIELDS,
@@ -79,9 +81,12 @@ from gmail.gmail_helpers import (
     _retryable_result_ids,
     _signature_html_to_text,
     _wrap_signature_html,
+    apply_gmail_filter_to_existing,
     build_label_color,
+    format_filter_apply_result,
     html_newlines_to_br,
     html_to_text_preserving_breaks,
+    update_gmail_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -4086,16 +4091,31 @@ async def manage_gmail_filter(
     criteria: Optional[JsonDict] = None,
     filter_action: Optional[JsonDict] = None,
     filter_id: Optional[str] = None,
+    dry_run: bool = False,
+    max_messages: int = FILTER_APPLY_DEFAULT_MAX_MESSAGES,
 ) -> str:
     """
-    Manages Gmail filters. Supports creating and deleting filters.
+    Manages Gmail filters: create, delete, update, and apply to existing mail.
+
+    - update: Gmail has no filter update API, so the filter is recreated (new
+      one first, then the old one is deleted) and its ID changes. A passed
+      criteria or filter_action replaces that whole object; omit one to keep
+      the old filter's.
+    - apply: runs a filter's label actions on mail ALREADY in the mailbox
+      (Gmail filters only act on new mail). Only matching messages change,
+      not whole conversations as in the web UI. Use filter_id, or criteria +
+      filter_action for an ad-hoc run. Forwarding is never applied. Use
+      dry_run=true first to see the search query and the match count.
+      Needs the gmail.modify scope in addition to gmail.settings.basic.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
-        action (str): Action to perform - "create" or "delete".
-        criteria (Optional[Dict[str, Any]]): Filter criteria object (required for create).
-        filter_action (Optional[Dict[str, Any]]): Filter action object (required for create). Named 'filter_action' to avoid shadowing the 'action' parameter.
-        filter_id (Optional[str]): ID of the filter to delete (required for delete).
+        action (str): "create", "delete", "update" or "apply".
+        criteria (Optional[Dict[str, Any]]): Filter criteria object (required for create; optional for update/apply).
+        filter_action (Optional[Dict[str, Any]]): Filter action object (required for create; optional for update/apply). Named 'filter_action' to avoid shadowing the 'action' parameter.
+        filter_id (Optional[str]): ID of the filter (required for delete and update; optional for apply).
+        dry_run (bool): apply only: count matches without changing anything.
+        max_messages (int): apply only: safety cap on messages changed (default 5000).
 
     Returns:
         str: Confirmation message with filter details.
@@ -4139,9 +4159,67 @@ async def manage_gmail_filter(
             f"Criteria: {criteria_info or '(none)'}\n"
             f"Action: {action_info or '(none)'}"
         )
+    elif action_lower == "update":
+        if not filter_id:
+            raise ValueError("filter_id is required for update action")
+        if not criteria and not filter_action:
+            raise ValueError(
+                "criteria and/or filter_action are required for update action"
+            )
+        logger.info(f"[manage_gmail_filter] Updating filter {filter_id}")
+        created = await update_gmail_filter(
+            service, filter_id, criteria=criteria, filter_action=filter_action
+        )
+        return (
+            "Filter updated successfully (Gmail recreates filters on update).\n"
+            f"Old filter ID: {filter_id} (deleted)\n"
+            f"New filter ID: {created.get('id', '(unknown)')}\n"
+            f"Criteria: {created.get('criteria') or '(none)'}\n"
+            f"Action: {created.get('action') or '(none)'}"
+        )
+    elif action_lower == "apply":
+        # Checked here, not in the decorator, so the other actions work with
+        # only gmail.settings.basic.
+        credentials = getattr(getattr(service, "_http", None), "credentials", None)
+        granted = getattr(credentials, "scopes", None)
+        if isinstance(granted, (list, tuple, set, frozenset)) and not (
+            has_required_scopes(granted, [GMAIL_MODIFY_SCOPE])
+        ):
+            raise ToolExecutionError(
+                "apply needs the gmail.modify scope to change existing messages; "
+                "re-authenticate with Gmail modify access."
+            )
+        if max_messages < 1:
+            raise ValueError("max_messages must be at least 1")
+        if filter_id:
+            existing = await asyncio.to_thread(
+                service.users()
+                .settings()
+                .filters()
+                .get(userId="me", id=filter_id)
+                .execute
+            )
+            criteria = existing.get("criteria", {})
+            filter_action = existing.get("action", {})
+        if not criteria or not filter_action:
+            raise ValueError(
+                "apply needs filter_id, or both criteria and filter_action"
+            )
+        logger.info(
+            f"[manage_gmail_filter] Applying filter to existing mail (dry_run={dry_run})"
+        )
+        result = await apply_gmail_filter_to_existing(
+            service,
+            criteria,
+            filter_action,
+            dry_run=dry_run,
+            max_messages=max_messages,
+        )
+        return format_filter_apply_result(result, dry_run)
     else:
         raise ValueError(
-            f"Invalid action '{action_lower}'. Must be 'create' or 'delete'."
+            f"Invalid action '{action_lower}'. Must be 'create', 'delete', "
+            "'update' or 'apply'."
         )
 
 
