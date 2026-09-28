@@ -55,6 +55,7 @@ async def test_send_message_advertises_destructive_updates():
     "message_name",
     [
         "",
+        "   ",
         "M",
         "spaces/S/messages/",
         "spaces/S/messages/M/extra",
@@ -116,5 +117,72 @@ async def test_edit_api_failure_is_surfaced_without_creating(
     assert api_message in str(exc_info.value)
     assert exc_info.value.__cause__ is error
     messages.patch.return_value.execute.assert_called_once_with()
+    messages.create.assert_not_called()
+    chat_service.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "optional_kwargs",
+    [
+        {},
+        {"thread_key": None, "thread_name": None, "message_name": None},
+        {"thread_key": "null", "thread_name": "null", "message_name": "null"},
+        {"thread_key": " NULL ", "thread_name": "", "message_name": "null"},
+        {"thread_key": "None", "thread_name": "none", "message_name": "None"},
+        {"thread_key": "   ", "thread_name": "\t\n"},
+    ],
+)
+async def test_send_message_creates_plain_message_when_optional_params_omitted_or_null(
+    chat_service, optional_kwargs
+):
+    messages = chat_service.spaces.return_value.messages.return_value
+    messages.create.return_value.execute.return_value = {
+        "name": "spaces/S/messages/NEW",
+        "createTime": "2025-01-01T00:00:00Z",
+    }
+
+    public_fn = getattr(send_message, "fn", send_message)
+    result = await public_fn(
+        user_google_email="test@example.com",
+        space_id="spaces/S",
+        message_text="hello world",
+        **optional_kwargs,
+    )
+
+    assert "Message sent to space 'spaces/S'" in result
+    messages.create.assert_called_once_with(
+        parent="spaces/S",
+        body={"text": "hello world"},
+    )
+    messages.patch.assert_not_called()
+    chat_service.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_send_message_allows_edit_when_thread_params_coerced_to_null_string(
+    chat_service,
+):
+    message_name = "spaces/S/messages/M"
+    messages = chat_service.spaces.return_value.messages.return_value
+    messages.patch.return_value.execute.return_value = {
+        "name": message_name,
+        "lastUpdateTime": "2025-01-01T00:00:00Z",
+    }
+
+    public_fn = getattr(send_message, "fn", send_message)
+    result = await public_fn(
+        user_google_email="test@example.com",
+        space_id="spaces/S",
+        message_text="updated text",
+        thread_key="null",
+        thread_name="null",
+        message_name=message_name,
+    )
+
+    assert "Message updated" in result
+    messages.patch.assert_called_once_with(
+        name=message_name, updateMask="text", body={"text": "updated text"}
+    )
     messages.create.assert_not_called()
     chat_service.close.assert_called_once_with()
