@@ -22,7 +22,8 @@ from gsheets.sheets_helpers import (
 )
 from gsheets.sheets_tools import (
     MAX_DRIVE_CHIPS_PER_BATCH,
-    _insert_smart_chips_impl,
+    _write_smart_chips,
+    modify_sheet_values,
     read_sheet_values,
 )
 
@@ -343,13 +344,13 @@ def test_normalize_chips_2d_flat_overflow_raises_error():
 
 
 # ---------------------------------------------------------------------------
-# Tests for _insert_smart_chips_impl (Batching & Execution)
+# Tests for _write_smart_chips (Batching & Execution)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("chip_count", [3, 4])
-async def test_insert_smart_chips_row_only_range_capacity(chip_count):
+async def test_write_smart_chips_row_only_range_capacity(chip_count):
     service = create_mock_sheets_service()
     kwargs = dict(
         service=service,
@@ -361,10 +362,10 @@ async def test_insert_smart_chips_row_only_range_capacity(chip_count):
 
     if chip_count > 3:
         with pytest.raises(UserInputError, match="exceeds 2D range capacity"):
-            await _insert_smart_chips_impl(**kwargs)
+            await _write_smart_chips(**kwargs)
         service.spreadsheets().batchUpdate.assert_not_called()
     else:
-        await _insert_smart_chips_impl(**kwargs)
+        await _write_smart_chips(**kwargs)
         requests = service.spreadsheets().batchUpdate.call_args.kwargs["body"][
             "requests"
         ]
@@ -379,7 +380,7 @@ async def test_insert_smart_chips_row_only_range_capacity(chip_count):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("preceding_cells", [0, 9])
 @pytest.mark.parametrize("extra_chips", [0, 1])
-async def test_insert_smart_chips_per_cell_limit(preceding_cells, extra_chips):
+async def test_write_smart_chips_per_cell_limit(preceding_cells, extra_chips):
     service = create_mock_sheets_service()
     cell_chips = [
         f"https://drive.google.com/file_{i}"
@@ -395,10 +396,10 @@ async def test_insert_smart_chips_per_cell_limit(preceding_cells, extra_chips):
 
     if extra_chips:
         with pytest.raises(UserInputError, match="exceeds.*per-batch limit"):
-            await _insert_smart_chips_impl(**kwargs)
+            await _write_smart_chips(**kwargs)
         service.spreadsheets().batchUpdate.assert_not_called()
     else:
-        result = await _insert_smart_chips_impl(**kwargs)
+        result = await _write_smart_chips(**kwargs)
         assert (
             f"Successfully inserted {preceding_cells + len(cell_chips)} smart chip(s)"
             in result
@@ -412,12 +413,12 @@ async def test_insert_smart_chips_per_cell_limit(preceding_cells, extra_chips):
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_single():
+async def test_write_smart_chips_single():
     """Test inserting a single chip into a cell."""
     service = create_mock_sheets_service()
     url = "https://drive.google.com/drive/folders/0Bz_I3qW-b3gTRGdwQzhHTUFoWUk"
 
-    result = await _insert_smart_chips_impl(
+    result = await _write_smart_chips(
         service=service,
         user_google_email="user@example.com",
         spreadsheet_id="test_sheet_id",
@@ -440,12 +441,12 @@ async def test_insert_smart_chips_single():
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_single_dict():
+async def test_write_smart_chips_single_dict():
     """Test inserting a single dict chip."""
     service = create_mock_sheets_service()
     chip_dict = {"type": "drive", "uri": "https://drive.google.com/folders/0Bz_I3qW"}
 
-    result = await _insert_smart_chips_impl(
+    result = await _write_smart_chips(
         service=service,
         user_google_email="user@example.com",
         spreadsheet_id="test_sheet_id",
@@ -458,12 +459,12 @@ async def test_insert_smart_chips_single_dict():
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_batches_over_limit():
+async def test_write_smart_chips_batches_over_limit():
     """Test inserting 19 chips chunks them into batches of <= 8."""
     service = create_mock_sheets_service()
     urls = [f"https://drive.google.com/folder_{i}" for i in range(19)]
 
-    result = await _insert_smart_chips_impl(
+    result = await _write_smart_chips(
         service=service,
         user_google_email="user@example.com",
         spreadsheet_id="test_sheet_id",
@@ -482,7 +483,7 @@ async def test_insert_smart_chips_batches_over_limit():
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_reports_partial_write_on_later_batch_failure():
+async def test_write_smart_chips_reports_partial_write_on_later_batch_failure():
     """A failure after a committed batch reports how many cells were already written."""
     service = create_mock_sheets_service()
     service.spreadsheets().batchUpdate.return_value.execute.side_effect = [
@@ -492,7 +493,7 @@ async def test_insert_smart_chips_reports_partial_write_on_later_batch_failure()
     urls = [f"https://drive.google.com/folder_{i}" for i in range(19)]
 
     with pytest.raises(ToolError, match="Wrote smart chips to 8 of 19 cells"):
-        await _insert_smart_chips_impl(
+        await _write_smart_chips(
             service=service,
             user_google_email="user@example.com",
             spreadsheet_id="test_sheet_id",
@@ -502,7 +503,7 @@ async def test_insert_smart_chips_reports_partial_write_on_later_batch_failure()
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_first_batch_failure_propagates_http_error():
+async def test_write_smart_chips_first_batch_failure_propagates_http_error():
     """With nothing written yet, the HttpError reaches handle_http_errors unchanged."""
     service = create_mock_sheets_service()
     service.spreadsheets().batchUpdate.return_value.execute.side_effect = HttpError(
@@ -510,7 +511,7 @@ async def test_insert_smart_chips_first_batch_failure_propagates_http_error():
     )
 
     with pytest.raises(HttpError):
-        await _insert_smart_chips_impl(
+        await _write_smart_chips(
             service=service,
             user_google_email="user@example.com",
             spreadsheet_id="test_sheet_id",
@@ -520,11 +521,11 @@ async def test_insert_smart_chips_first_batch_failure_propagates_http_error():
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_unknown_sheet():
+async def test_write_smart_chips_unknown_sheet():
     """Test error when sheet name is not found."""
     service = create_mock_sheets_service()
     with pytest.raises(UserInputError, match="Sheet 'NonExistent' not found"):
-        await _insert_smart_chips_impl(
+        await _write_smart_chips(
             service=service,
             user_google_email="user@example.com",
             spreadsheet_id="test_sheet_id",
@@ -534,11 +535,11 @@ async def test_insert_smart_chips_unknown_sheet():
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_overflow_raises_error():
+async def test_write_smart_chips_overflow_raises_error():
     """Test that inserting more chips than range capacity raises UserInputError."""
     service = create_mock_sheets_service()
     with pytest.raises(UserInputError, match="exceeds vertical range capacity"):
-        await _insert_smart_chips_impl(
+        await _write_smart_chips(
             service=service,
             user_google_email="user@example.com",
             spreadsheet_id="test_sheet_id",
@@ -665,7 +666,7 @@ def test_extract_smart_chips_skips_plain_text_runs():
 
 
 @pytest.mark.asyncio
-async def test_insert_smart_chips_multi_chips_single_cell():
+async def test_write_smart_chips_multi_chips_single_cell():
     """Test inserting multiple smart chips into a single cell."""
     service = create_mock_sheets_service()
     chips = [
@@ -673,7 +674,7 @@ async def test_insert_smart_chips_multi_chips_single_cell():
         "antoine@example.com",
     ]
 
-    result = await _insert_smart_chips_impl(
+    result = await _write_smart_chips(
         service=service,
         user_google_email="user@example.com",
         spreadsheet_id="test_sheet_id",
@@ -693,3 +694,45 @@ async def test_insert_smart_chips_multi_chips_single_cell():
     assert len(cell_data["chipRuns"]) == 2
     assert cell_data["chipRuns"][0]["startIndex"] == 0
     assert cell_data["chipRuns"][1]["startIndex"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests for modify_sheet_values chips mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_modify_sheet_values_writes_chips():
+    """modify_sheet_values routes chips to batchUpdate instead of values.update."""
+    service = create_mock_sheets_service()
+
+    result = await _unwrap(modify_sheet_values)(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="test_sheet_id",
+        range_name="Elections!F3",
+        chips="antoine@example.com",
+    )
+
+    assert "Successfully inserted 1 smart chip(s)" in result
+    service.spreadsheets().batchUpdate.assert_called_once()
+    service.spreadsheets().values.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra", [{"values": [["x"]]}, {"clear_values": True}], ids=["values", "clear"]
+)
+async def test_modify_sheet_values_rejects_chips_with_other_modes(extra):
+    service = create_mock_sheets_service()
+
+    with pytest.raises(UserInputError, match="only one of"):
+        await _unwrap(modify_sheet_values)(
+            service=service,
+            user_google_email="user@example.com",
+            spreadsheet_id="test_sheet_id",
+            range_name="Elections!F3",
+            chips="antoine@example.com",
+            **extra,
+        )
+    service.spreadsheets().batchUpdate.assert_not_called()
