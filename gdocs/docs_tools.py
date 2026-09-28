@@ -82,7 +82,7 @@ from gdocs.managers import (
     ValidationManager,
     BatchOperationManager,
 )
-from gdrive.drive_helpers import move_new_file_to_folder
+from gdrive.drive_helpers import flag_incomplete_search, move_new_file_to_folder
 import json
 
 logger = logging.getLogger(__name__)
@@ -144,12 +144,26 @@ async def search_docs(
     user_google_email: str,
     query: str,
     page_size: int = 10,
+    page_token: Optional[str] = None,
+    corpora: Optional[str] = None,
+    drive_id: Optional[str] = None,
 ) -> str:
     """
     Searches for Google Docs by name using Drive API (mimeType filter).
 
+    Args:
+        user_google_email: The user's Google email address.
+        query: Text to search for in document names.
+        page_size: Maximum number of documents to return. Defaults to 10.
+        page_token: Page token from a previous response's nextPageToken to
+            retrieve the next page of results.
+        corpora: Corpus to search ('user', 'domain', 'drive', 'allDrives').
+            Defaults to 'drive' when drive_id is set, otherwise 'allDrives'.
+        drive_id: Optional shared drive ID to search.
+
     Returns:
         str: A formatted list of Google Docs matching the search query.
+            Includes a nextPageToken line when more results are available.
     """
     logger.info(f"[search_docs] Email={user_google_email}, query_len={len(query)}")
     logger.debug(f"[search_docs] Query='{query}'")
@@ -161,22 +175,30 @@ async def search_docs(
         .list(
             q=f"name contains '{escaped_query}' and mimeType='application/vnd.google-apps.document' and trashed=false",
             pageSize=page_size,
-            fields="files(id, name, createdTime, modifiedTime, webViewLink)",
+            pageToken=page_token,
+            fields="nextPageToken, incompleteSearch, files(id, name, createdTime, modifiedTime, webViewLink)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
+            corpora=corpora or ("drive" if drive_id else "allDrives"),
+            driveId=drive_id,
         )
         .execute
     )
     files = response.get("files", [])
-    if not files:
-        return f"No Google Docs found matching '{query}'."
+    next_token = response.get("nextPageToken")
+    if not files and not next_token:
+        return flag_incomplete_search(
+            f"No Google Docs found matching '{query}'.", response
+        )
 
     output = [f"Found {len(files)} Google Docs matching '{query}':"]
     for f in files:
         output.append(
             f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
         )
-    return "\n".join(output)
+    if next_token:
+        output.append(f"nextPageToken: {next_token}")
+    return flag_incomplete_search("\n".join(output), response)
 
 
 @server.tool(
@@ -405,13 +427,25 @@ async def get_doc_content(
 @handle_http_errors("list_docs_in_folder", is_read_only=True, service_type="docs")
 @require_google_service("drive", "drive_read")
 async def list_docs_in_folder(
-    service: Any, user_google_email: str, folder_id: str = "root", page_size: int = 100
+    service: Any,
+    user_google_email: str,
+    folder_id: str = "root",
+    page_size: int = 100,
+    page_token: Optional[str] = None,
 ) -> str:
     """
     Lists Google Docs within a specific Drive folder.
 
+    Args:
+        user_google_email: The user's Google email address.
+        folder_id: ID of the Drive folder to list. Defaults to 'root'.
+        page_size: Maximum number of documents to return. Defaults to 100.
+        page_token: Page token from a previous response's nextPageToken to
+            retrieve the next page of results.
+
     Returns:
         str: A formatted list of Google Docs in the specified folder.
+            Includes a nextPageToken line when more results are available.
     """
     logger.info(
         f"[list_docs_in_folder] Invoked. Email: '{user_google_email}', Folder ID: '{folder_id}'"
@@ -422,20 +456,24 @@ async def list_docs_in_folder(
         .list(
             q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false",
             pageSize=page_size,
-            fields="files(id, name, modifiedTime, webViewLink)",
+            pageToken=page_token,
+            fields="nextPageToken, files(id, name, modifiedTime, webViewLink)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
         )
         .execute
     )
     items = rsp.get("files", [])
-    if not items:
+    next_token = rsp.get("nextPageToken")
+    if not items and not next_token:
         return f"No Google Docs found in folder '{folder_id}'."
     out = [f"Found {len(items)} Docs in folder '{folder_id}':"]
     for f in items:
         out.append(
             f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
         )
+    if next_token:
+        out.append(f"nextPageToken: {next_token}")
     return "\n".join(out)
 
 

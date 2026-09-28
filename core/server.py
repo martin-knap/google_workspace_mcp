@@ -707,6 +707,7 @@ def configure_server_for_http():
                 from auth.external_oauth_provider import (
                     ExternalOAuthProvider,
                     get_token_validation_workers,
+                    get_token_validation_cache_ttl,
                 )
 
                 provider = ExternalOAuthProvider(
@@ -718,6 +719,7 @@ def configure_server_for_http():
                     resource_server_url=config.get_oauth_base_url(),
                     jwt_signing_key=jwt_signing_key,
                     token_validation_workers=get_token_validation_workers(),
+                    token_validation_cache_ttl=get_token_validation_cache_ttl(),
                     **expiry_kwargs,
                 )
                 server.auth = provider
