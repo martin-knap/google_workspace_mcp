@@ -1,6 +1,10 @@
+import base64
+import json
 from unittest.mock import Mock
 
+import httpx
 import pytest
+from fastmcp.tools import ToolResult
 
 from core.utils import UserInputError
 from gslides import slides_tools
@@ -816,9 +820,52 @@ class TestStyleAndTableReporting:
         # Empty cells stay quiet.
         assert not any("cell [0,1]" in line for line in lines)
 
+    def test_table_geometry_reports_api_units(self):
+        table = {
+            "tableColumns": [
+                {"columnWidth": {"magnitude": 100, "unit": "PT"}},
+                {"columnWidth": {"magnitude": 1270000, "unit": "EMU"}},
+            ],
+            "tableRows": [{"rowHeight": {"magnitude": 20, "unit": "PT"}}],
+        }
+        assert slides_tools._describe_table_geometry(table, "") == (
+            "  columns (PT): 100, 1270000 EMU   rows (PT): 20"
+        )
+
     def test_table_cell_styles(self):
         lines = slides_tools._describe_elements([self.TABLE], include_styles=True)
         assert any('run: italic | "Pair signals"' in line for line in lines)
+
+    RED = {"solidFill": {"color": {"rgbColor": {"red": 1}}}}
+
+    @pytest.mark.parametrize(
+        ("prop", "expected"),
+        [
+            # An absent propertyState is the API default, RENDERED.
+            (RED, "#FF0000"),
+            ({**RED, "propertyState": "RENDERED"}, "#FF0000"),
+            # NOT_RENDERED may keep a color for child placeholders to inherit.
+            ({**RED, "propertyState": "NOT_RENDERED"}, "none"),
+            ({**RED, "propertyState": "INHERIT"}, "inherit:#FF0000"),
+            ({"propertyState": "INHERIT"}, "inherit"),
+            # SolidFill fields may be unset and inherited from the parent.
+            ({"solidFill": {"alpha": 1}}, None),
+            ({}, None),
+        ],
+    )
+    def test_fill_state_follows_property_state(self, prop, expected):
+        assert slides_tools._describe_fill_state(prop, prop) == expected
+
+    def test_frame_reports_fill_and_outline_by_state(self):
+        shape = {
+            "shapeProperties": {
+                "shapeBackgroundFill": {**self.RED, "propertyState": "NOT_RENDERED"},
+                "outline": {"outlineFill": self.RED},
+            }
+        }
+        assert slides_tools._describe_shape_frame(shape, "") == [
+            "  frame: fill=none outline=#FF0000"
+        ]
 
     def test_theme_color_rendered_by_name(self):
         assert (
@@ -828,15 +875,13 @@ class TestStyleAndTableReporting:
 
     @pytest.mark.asyncio
     async def test_raw_returns_full_page_resource(self):
-        import json as _json
-
         page = {"objectId": "p1", "pageType": "SLIDE", "pageElements": [self.TABLE]}
         service = Mock()
         service.presentations.return_value.pages.return_value.get.return_value.execute.return_value = page
         out = await _unwrap(slides_tools.get_page)(
             service, "u@example.com", "pres", "p1", raw=True
         )
-        assert _json.loads(out) == page
+        assert json.loads(out) == page
 
 
 def test_iter_text_bearing_elements_includes_table_cells():
@@ -858,8 +903,6 @@ def test_iter_text_bearing_elements_includes_table_cells():
 
 @pytest.mark.asyncio
 async def test_get_presentation_raw_returns_full_resource():
-    import json as _json
-
     presentation = {
         "presentationId": "pres",
         "slides": [{"objectId": "p"}],
@@ -867,7 +910,7 @@ async def test_get_presentation_raw_returns_full_resource():
     }
     service, _ = _build_slides_service(presentation=presentation)
     out = await _unwrap(get_presentation)(service, "u@example.com", "pres", raw=True)
-    assert _json.loads(out) == presentation
+    assert json.loads(out) == presentation
 
 
 class TestThumbnailInline:
@@ -888,16 +931,13 @@ class TestThumbnailInline:
 
     @pytest.mark.asyncio
     async def test_inline_returns_png_image_content(self, monkeypatch):
-        import base64
-
-        import httpx
-        from fastmcp.tools import ToolResult
-
         png = b"\x89PNG\r\n\x1a\nfake"
 
         def handler(request):
             assert request.url.host == "lh7-us.googleusercontent.com"
-            return httpx.Response(200, content=png)
+            return httpx.Response(
+                200, content=png, headers={"content-type": "image/png"}
+            )
 
         real_client = httpx.AsyncClient
         monkeypatch.setattr(
@@ -914,3 +954,33 @@ class TestThumbnailInline:
         assert image.type == "image" and image.mimeType == "image/png"
         assert base64.b64decode(image.data) == png
         assert out.structured_content == {"result": text.text}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "response",
+        [
+            httpx.Response(403),
+            httpx.Response(
+                200, content=b"<html>", headers={"content-type": "text/html"}
+            ),
+            httpx.ConnectError("unreachable"),
+        ],
+    )
+    async def test_inline_fetch_failure_falls_back_to_url(self, monkeypatch, response):
+        def handler(request):
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            slides_tools.httpx,
+            "AsyncClient",
+            lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+        )
+        out = await _unwrap(slides_tools.get_page_thumbnail)(
+            self._service(), "u@example.com", "pres", "p1", inline=True
+        )
+        assert isinstance(out, str)
+        assert "https://lh7-us.googleusercontent.com/thumb.png" in out
+        assert "Inline image unavailable" in out

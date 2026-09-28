@@ -4,12 +4,11 @@ Google Slides MCP Tools
 This module provides MCP tools for interacting with Google Slides API.
 """
 
+import asyncio
+import base64
 import json
 import logging
-import asyncio
 from typing import Any, Dict, Iterator, List, Optional, Tuple
-
-import base64
 
 import httpx
 from fastmcp.tools import ToolResult
@@ -64,8 +63,6 @@ def _iter_text_bearing_elements(
             if full_text:
                 yield full_text
         elif "table" in element:
-            # Table copy is slide copy. Skipping it hid every table's text from
-            # get_presentation.
             for row in element["table"].get("tableRows", []):
                 for cell in row.get("tableCells", []):
                     cell_text = _extract_shape_text(cell)
@@ -112,9 +109,6 @@ def _describe_geometry(element: Dict[str, Any], indent: str) -> Optional[str]:
             f"{height.get('magnitude', 'Unknown')} {unit}"
         )
     return f"{indent}  {'   '.join(parts)}"
-
-
-_EMU_PER_PT = 12700
 
 
 def _describe_color(color: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -234,6 +228,27 @@ def _describe_text_styles(text: Optional[Dict[str, Any]], indent: str) -> List[s
     return lines
 
 
+def _describe_fill_state(
+    prop: Dict[str, Any], fill: Optional[Dict[str, Any]]
+) -> Optional[str]:
+    """Render a fill or outline by its PropertyState, or None when nothing is set.
+
+    An absent state is the API default, RENDERED. A NOT_RENDERED property may
+    still carry a color for child placeholders to inherit, and an INHERIT one
+    takes its state from the parent placeholder, so neither color is shown as
+    drawn.
+    """
+    if not prop:
+        return None
+    state = prop.get("propertyState", "RENDERED")
+    if state == "NOT_RENDERED":
+        return "none"
+    color = _describe_color(((fill or {}).get("solidFill") or {}).get("color"))
+    if state == "INHERIT":
+        return f"inherit:{color}" if color else "inherit"
+    return color
+
+
 def _describe_shape_frame(shape: Dict[str, Any], indent: str) -> List[str]:
     """Placeholder linkage, autofit and fill/outline for a shape. Placeholder
     parent IDs matter because unset text styles inherit from them."""
@@ -252,40 +267,42 @@ def _describe_shape_frame(shape: Dict[str, Any], indent: str) -> List[str]:
         frame.append(f"autofit={autofit}")
     if props.get("contentAlignment"):
         frame.append(f"vAlign={props['contentAlignment']}")
-    fill = (props.get("shapeBackgroundFill") or {}).get("solidFill")
-    if fill:
-        frame.append(f"fill={_describe_color(fill.get('color'))}")
+    background = props.get("shapeBackgroundFill") or {}
     outline = props.get("outline") or {}
-    if outline.get("propertyState") not in (None, "NOT_RENDERED") and outline.get(
-        "outlineFill"
+    for label, prop, fill in (
+        ("fill", background, background),
+        ("outline", outline, outline.get("outlineFill")),
     ):
-        frame.append(
-            f"outline={_describe_color((outline['outlineFill'].get('solidFill') or {}).get('color'))}"
-        )
+        state = _describe_fill_state(prop, fill)
+        if state:
+            frame.append(f"{label}={state}")
     if frame:
         lines.append(f"{indent}  frame: {' '.join(frame)}")
     return lines
 
 
 def _describe_table_geometry(table: Dict[str, Any], indent: str) -> Optional[str]:
-    cols = [
-        str((c.get("columnWidth") or {}).get("magnitude", "?"))
-        for c in table.get("tableColumns", [])
-    ]
-    rows = [
-        str((r.get("rowHeight") or {}).get("magnitude", "?"))
-        for r in table.get("tableRows", [])
-    ]
-    if not cols and not rows:
+    """Column widths and row heights, labeled with the unit the API reports."""
+    widths = [c.get("columnWidth") or {} for c in table.get("tableColumns", [])]
+    heights = [r.get("rowHeight") or {} for r in table.get("tableRows", [])]
+    if not widths and not heights:
         return None
-    return f"{indent}  columns (EMU): {', '.join(cols)}   rows (EMU): {', '.join(rows)}"
+    unit = next((d["unit"] for d in widths + heights if d.get("unit")), "EMU")
+
+    def render(dims: List[Dict[str, Any]]) -> str:
+        return ", ".join(
+            f"{d.get('magnitude', '?')}"
+            + (f" {d['unit']}" if d.get("unit", unit) != unit else "")
+            for d in dims
+        )
+
+    return f"{indent}  columns ({unit}): {render(widths)}   rows ({unit}): {render(heights)}"
 
 
 def _describe_table_cells(
     table: Dict[str, Any], indent: str, include_styles: bool
 ) -> List[str]:
-    """Cell text by [row,col]; get_page never surfaced it before, which hid
-    all table copy from anything proofing a deck."""
+    """Cell text by [row,col], with merged-cell spans and, optionally, styles."""
     lines: List[str] = []
     for r, row in enumerate(table.get("tableRows", [])):
         for c, cell in enumerate(row.get("tableCells", [])):
@@ -735,10 +752,12 @@ async def get_page(
         include_styles (bool): Also report text styling: per paragraph
             (alignment, indents, spacing, bullets) and per run of uniform style
             (font family, weight, size, bold/italic, color), each with a short
-            excerpt; plus placeholder linkage, autofit and fill for shapes, and
-            the same for every table cell. Only explicitly set values appear;
-            anything else is inherited from the placeholder named in the
-            output. Use for proofing: font consistency, color use, alignment.
+            excerpt; plus placeholder linkage, autofit, fill and outline for
+            shapes (fill=none / outline=none when explicitly not rendered),
+            and the text styling of every table cell. Only explicitly set
+            values appear; anything else is inherited from the placeholder
+            named in the output. Use for proofing: font consistency, color
+            use, alignment.
         raw (bool): Return the complete Slides API Page resource as JSON instead
             of the summary. Nothing is filtered. Use when the summary does not
             carry a field you need. Overrides the other flags.
@@ -788,6 +807,30 @@ Page Elements:
     return confirmation_message
 
 
+async def _fetch_thumbnail_image(url: str) -> Optional[ImageContent]:
+    """Download a rendered thumbnail, or return None if it cannot be retrieved."""
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.get(url)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        # The URL grants the requester's access to anyone holding it, so it
+        # stays out of the log.
+        logger.warning(
+            f"[get_page_thumbnail] Inline fetch failed: {type(exc).__name__}"
+        )
+        return None
+    mime_type = response.headers.get("content-type", "").split(";")[0].strip()
+    if not mime_type.startswith("image/"):
+        logger.warning("[get_page_thumbnail] Inline fetch returned a non-image")
+        return None
+    return ImageContent(
+        type="image",
+        data=base64.b64encode(response.content).decode("ascii"),
+        mimeType=mime_type,
+    )
+
+
 @server.tool(
     title="Get Page Thumbnail",
     annotations=ToolAnnotations(
@@ -815,11 +858,12 @@ async def get_page_thumbnail(
         presentation_id (str): The ID of the presentation.
         page_object_id (str): The object ID of the page/slide.
         thumbnail_size (str): Size of thumbnail ("LARGE", "MEDIUM", "SMALL"). Defaults to "MEDIUM".
-
         inline (bool): Also return the rendered PNG itself as image content, so
             a multimodal client can look at the slide without fetching the URL.
             The URL is a short-lived googleusercontent link that sandboxed or
-            egress-restricted clients often cannot reach. Defaults to False.
+            egress-restricted clients often cannot reach. If the image cannot
+            be fetched, the URL-only result is returned with a note saying so.
+            Defaults to False.
 
     Returns:
         str: URL to the generated thumbnail image.
@@ -854,14 +898,14 @@ You can view or download the thumbnail using the provided URL."""
     if not inline or not thumbnail_url:
         return confirmation_message
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        response = await client.get(thumbnail_url)
-        response.raise_for_status()
-    image = ImageContent(
-        type="image",
-        data=base64.b64encode(response.content).decode("ascii"),
-        mimeType="image/png",
-    )
+    image = await _fetch_thumbnail_image(thumbnail_url)
+    if image is None:
+        # The URL may still be reachable by the caller, so a failed fetch
+        # degrades to the URL-only result instead of failing the call.
+        return (
+            f"{confirmation_message}\n\n"
+            "Inline image unavailable: the thumbnail could not be fetched."
+        )
     # structured_content mirrors the plain-string result so clients that
     # validate against the tool's output schema still get what they expect.
     return ToolResult(

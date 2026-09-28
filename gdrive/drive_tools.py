@@ -8,7 +8,6 @@ import asyncio
 import base64
 import logging
 import io
-import os
 
 from typing import Optional, List, Dict, Any
 from tempfile import NamedTemporaryFile, SpooledTemporaryFile
@@ -34,6 +33,7 @@ from core.file_limits import (
     FileTooLargeError,
     download_media_bytes,
     ensure_within_file_size_limit,
+    get_stateless_inline_max_bytes,
 )
 from core.utils import (
     GOOGLE_API_WRITE_RETRIES,
@@ -99,11 +99,25 @@ from gdrive.drive_helpers import (
 
 logger = logging.getLogger(__name__)
 
-# Largest file get_drive_file_download_url returns inline in stateless mode.
-# Base64 inflates the payload by a third, so 10 MB of file is ~13.4 MB on the wire.
-_STATELESS_INLINE_MAX_BYTES = int(
-    os.getenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", str(10 * 1024 * 1024))
-)
+
+def _stateless_too_large_message(
+    file_name: str, file_id: str, size_bytes: int, mime_type: str, limit: int
+) -> str:
+    """Explain why a stateless-mode download was not returned inline."""
+    return "\n".join(
+        [
+            f"File: {file_name}",
+            f"File ID: {file_id}",
+            f"Size: {size_bytes / 1024:.1f} KB ({size_bytes} bytes)",
+            f"MIME Type: {mime_type}",
+            "",
+            "Not returned: stateless mode has no file storage, and this file "
+            f"exceeds the inline limit of {limit} bytes "
+            "(WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES, or "
+            "WORKSPACE_MCP_MAX_FILE_BYTES if lower). Use "
+            "get_drive_file_content for its text, or raise the limit.",
+        ]
+    )
 
 
 @server.tool(
@@ -435,7 +449,8 @@ async def get_drive_file_download_url(
     In stdio mode, returns the local file path for direct access.
     In HTTP mode, returns a temporary download URL (valid for 1 hour).
     In stateless mode (no file storage), returns the file itself as an embedded
-    resource, up to WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES (default 10 MB).
+    resource, up to WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES (default 10 MiB,
+    and never more than WORKSPACE_MCP_MAX_FILE_BYTES when that is set).
 
     For Google native files (Docs, Sheets, Slides), exports to a useful format:
     - Google Docs -> PDF (default) or DOCX if export_format='docx'
@@ -463,7 +478,7 @@ async def get_drive_file_download_url(
     resolved_file_id, file_metadata = await resolve_drive_item(
         service,
         file_id,
-        extra_fields="name, webViewLink, mimeType",
+        extra_fields="name, webViewLink, mimeType, size",
     )
     file_id = resolved_file_id
     mime_type = file_metadata.get("mimeType", "")
@@ -523,30 +538,32 @@ async def get_drive_file_download_url(
             if not output_filename.endswith(".pdf"):
                 output_filename = f"{Path(output_filename).stem}.pdf"
 
-    # Stream the download straight to disk. The payload is never held in memory
-    # as a whole, so file size no longer bounds how much RAM this tool needs.
+    # Stateless mode has no attachment storage to hand out a URL from, so the
+    # file itself goes back as an embedded resource, up to inline_max_bytes.
+    inline_max_bytes = get_stateless_inline_max_bytes() if is_stateless_mode() else None
+    # Drive's declared size is the download size only for binary files; an
+    # export's size is unknown until it has been downloaded.
+    declared_size = int(file_metadata.get("size") or 0)
+    if (
+        inline_max_bytes is not None
+        and not export_mime_type
+        and declared_size > inline_max_bytes
+    ):
+        return _stateless_too_large_message(
+            file_name, file_id, declared_size, output_mime_type, inline_max_bytes
+        )
+
+    # Stream the download straight to disk. Outside the capped stateless inline
+    # return, the payload is never held in memory as a whole.
     tmp_path = await _download_file_to_temp(service, file_id, export_mime_type)
     size_bytes = tmp_path.stat().st_size
     size_kb = size_bytes / 1024 if size_bytes else 0
 
-    # Stateless mode has no attachment storage to hand out a URL from, so the
-    # file itself goes back as an embedded resource. Returning a 100-byte
-    # preview (the old behavior) gave the caller nothing it could use.
-    if is_stateless_mode():
+    if inline_max_bytes is not None:
         try:
-            if size_bytes > _STATELESS_INLINE_MAX_BYTES:
-                return "\n".join(
-                    [
-                        f"File: {file_name}",
-                        f"File ID: {file_id}",
-                        f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-                        f"MIME Type: {output_mime_type}",
-                        "",
-                        "Not returned: stateless mode has no file storage, and this file "
-                        f"exceeds the inline limit of {_STATELESS_INLINE_MAX_BYTES} bytes "
-                        "(WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES). Use "
-                        "get_drive_file_content for its text, or raise the limit.",
-                    ]
+            if size_bytes > inline_max_bytes:
+                return _stateless_too_large_message(
+                    file_name, file_id, size_bytes, output_mime_type, inline_max_bytes
                 )
             with tmp_path.open("rb") as fh:
                 payload = fh.read()
@@ -563,6 +580,10 @@ async def get_drive_file_download_url(
                 f"embedded resource ({output_filename}).",
             ]
         )
+        if export_mime_type:
+            summary += (
+                f"\n\nNote: Google native file exported to {output_mime_type} format."
+            )
         logger.info(
             f"[get_drive_file_download_url] Returned {size_kb:.1f} KB inline (stateless mode)"
         )

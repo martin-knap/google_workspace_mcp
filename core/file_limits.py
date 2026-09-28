@@ -9,6 +9,10 @@ behavior. Set a positive integer (e.g. ``5242880`` for 5 MiB) to enable.
 ``WORKSPACE_MCP_MAX_OFFICE_XML_BYTES`` independently caps both the XML expanded
 from one Office file and the text extracted from it. It is on by default;
 ``0`` disables it.
+
+``WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES`` caps the file a stateless-mode
+download returns inline. It defaults to 10 MiB and never exceeds
+``WORKSPACE_MCP_MAX_FILE_BYTES``.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 _ENV_NAME = "WORKSPACE_MCP_MAX_FILE_BYTES"
 _OFFICE_XML_ENV_NAME = "WORKSPACE_MCP_MAX_OFFICE_XML_BYTES"
+_STATELESS_INLINE_ENV_NAME = "WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES"
 
 # Office files are ZIP archives, so the download cap above bounds only the
 # COMPRESSED size, and XML compresses by orders of magnitude. Unlike the
@@ -38,6 +43,9 @@ _OFFICE_XML_ENV_NAME = "WORKSPACE_MCP_MAX_OFFICE_XML_BYTES"
 # default therefore allows a worst case in the hundreds of MiB per extraction;
 # small containers should set it lower.
 DEFAULT_MAX_OFFICE_XML_BYTES = 25 * 1024 * 1024  # 25 MiB
+
+# Base64 inflates an inline payload by a third, so this is ~13.4 MiB on the wire.
+DEFAULT_STATELESS_INLINE_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 # Keep the uncapped path from asking httplib2 to materialize its 100 MiB
 # default response chunk. This does not impose a total-size limit; it only
@@ -84,10 +92,30 @@ def get_max_office_xml_bytes() -> Optional[int]:
     return value or None
 
 
+def get_stateless_inline_max_bytes() -> int:
+    """Return the largest file a stateless-mode download may return inline.
+
+    Parsing rules:
+    - unset or empty → ``DEFAULT_STATELESS_INLINE_MAX_BYTES``
+    - ``0`` → nothing is inlined
+    - positive int → that many bytes
+    - invalid or negative value → raise ``ValueError``
+
+    Inlining holds the whole file in memory, so ``WORKSPACE_MCP_MAX_FILE_BYTES``
+    lowers this when set.
+    """
+    value = _byte_count_from_env(_STATELESS_INLINE_ENV_NAME)
+    if value is None:
+        value = DEFAULT_STATELESS_INLINE_MAX_BYTES
+    max_file_bytes = get_max_file_bytes()
+    return min(value, max_file_bytes) if max_file_bytes else value
+
+
 def validate_file_limit_settings() -> None:
     """Raise ``ValueError`` if any file-limit environment setting is invalid."""
     get_max_file_bytes()
     get_max_office_xml_bytes()
+    get_stateless_inline_max_bytes()
 
 
 def _byte_count_from_env(name: str) -> Optional[int]:

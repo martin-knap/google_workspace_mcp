@@ -7,6 +7,7 @@ cleaned up, and nothing base64-encodes the payload on the way to storage.
 """
 
 import asyncio
+import base64
 import io
 import os
 import time
@@ -15,6 +16,7 @@ from threading import Event
 from unittest.mock import Mock, patch
 
 import pytest
+from fastmcp.tools import ToolResult
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 
@@ -216,12 +218,10 @@ async def test_worker_save_survives_concurrent_attachment_route_sweep(
 
 @pytest.mark.asyncio
 async def test_download_url_stateless_mode_returns_whole_file_and_cleans_up(
-    mock_resolve,
+    mock_resolve, monkeypatch
 ):
-    import base64
-
-    from fastmcp.tools import ToolResult
-
+    monkeypatch.delenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("WORKSPACE_MCP_MAX_FILE_BYTES", raising=False)
     mock_service = Mock()
     mock_service.files().get_media.return_value = "req"
     payload = bytes(range(256)) * 2  # 512 bytes, binary-safe
@@ -248,15 +248,15 @@ async def test_download_url_stateless_mode_returns_whole_file_and_cleans_up(
 
 @pytest.mark.asyncio
 async def test_download_url_stateless_mode_refuses_oversize_and_cleans_up(
-    mock_resolve,
+    mock_resolve, monkeypatch
 ):
+    monkeypatch.setenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", "100")
     mock_service = Mock()
     mock_service.files().get_media.return_value = "req"
 
     with (
         _patch_downloader(b"x" * 500),
         patch("gdrive.drive_tools.is_stateless_mode", return_value=True),
-        patch("gdrive.drive_tools._STATELESS_INLINE_MAX_BYTES", 100),
     ):
         result = await _unwrap(get_drive_file_download_url)(
             service=mock_service,
@@ -268,3 +268,61 @@ async def test_download_url_stateless_mode_refuses_oversize_and_cleans_up(
     assert "500 bytes" in result
     assert "exceeds the inline limit" in result
     assert not Path(_FakeDownloader.handles[0].name).exists()
+
+
+@pytest.mark.asyncio
+async def test_download_url_stateless_mode_refuses_declared_oversize_before_download(
+    mock_resolve, monkeypatch
+):
+    monkeypatch.setenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", "100")
+    mock_resolve.return_value[1]["size"] = "500"
+    mock_service = Mock()
+
+    with (
+        _patch_downloader(b"x" * 500),
+        patch("gdrive.drive_tools.is_stateless_mode", return_value=True),
+    ):
+        result = await _unwrap(get_drive_file_download_url)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="file123",
+        )
+
+    assert "500 bytes" in result
+    assert "exceeds the inline limit of 100 bytes" in result
+    assert _FakeDownloader.handles == []
+    mock_service.files().get_media.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_download_url_stateless_mode_ignores_declared_size_of_exports(
+    mock_resolve, monkeypatch
+):
+    """A Workspace file's declared size is its storage size, not its export's."""
+    monkeypatch.setenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", "100")
+    mock_resolve.return_value = (
+        "doc123",
+        {
+            "name": "Notes",
+            "mimeType": "application/vnd.google-apps.document",
+            "webViewLink": "https://docs.google.com/document/d/doc123",
+            "size": "500",
+        },
+    )
+    mock_service = Mock()
+    mock_service.files().export_media.return_value = "req"
+
+    with (
+        _patch_downloader(b"%PDF-1.7"),
+        patch("gdrive.drive_tools.is_stateless_mode", return_value=True),
+    ):
+        result = await _unwrap(get_drive_file_download_url)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="doc123",
+        )
+
+    text, resource = result.content
+    assert "exported to application/pdf" in text.text
+    assert resource.resource.uri.path == "/Notes.pdf"
+    assert base64.b64decode(resource.resource.blob) == b"%PDF-1.7"
