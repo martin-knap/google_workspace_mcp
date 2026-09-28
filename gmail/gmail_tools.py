@@ -67,6 +67,7 @@ from auth.scopes import (
 from gmail.gmail_helpers import (
     GMAIL_METADATA_HEADERS,
     RAW_BODY_TRUNCATE_LIMIT,
+    THREAD_REPLY_CONTEXT_FIELDS,
     _analyze_thread_ownership_impl,
     _build_forward_content,
     _derive_reply_all_recipients,
@@ -75,6 +76,7 @@ from gmail.gmail_helpers import (
     _get_send_as_identity_and_signature,
     _get_send_as_signature_html_for_tool,
     _http_error_status,
+    _is_email_reaction,
     _retryable_result_ids,
     _signature_html_to_text,
     _wrap_signature_html,
@@ -985,13 +987,9 @@ async def _fetch_thread_reply_context(
     ]
 
     try:
-        request_kwargs = {
-            "userId": "me",
-            "id": thread_id,
-            "format": "full" if include_bodies else "metadata",
-        }
+        request_kwargs = {"userId": "me", "id": thread_id, "format": "full"}
         if not include_bodies:
-            request_kwargs["metadataHeaders"] = header_names
+            request_kwargs["fields"] = THREAD_REPLY_CONTEXT_FIELDS
 
         request = service.users().threads().get(**request_kwargs)
         thread = await asyncio.to_thread(request.execute)
@@ -1037,9 +1035,16 @@ async def _fetch_thread_reply_context(
             context["html_body"] = bodies.get("html", "")
         message_contexts.append(context)
         # Automatic selection only considers actual sent or received messages.
-        # Keep every context above so an explicit In-Reply-To can still resolve
-        # to the exact message the caller selected.
-        if context["message_id"] and "DRAFT" not in labels and "TRASH" not in labels:
+        # Gmail web renders a reaction as a chip on its parent, so a reply
+        # parented on one is hidden from the conversation view. Keep every
+        # context above so an explicit In-Reply-To can still resolve to the
+        # exact message the caller selected.
+        if (
+            context["message_id"]
+            and "DRAFT" not in labels
+            and "TRASH" not in labels
+            and not _is_email_reaction(payload)
+        ):
             eligible_contexts.append(context)
 
     target = None
