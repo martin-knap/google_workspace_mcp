@@ -87,7 +87,6 @@ sheets:
     - get_spreadsheet_info
     - format_sheet_range
     - list_sheet_tables
-    - insert_smart_chips
   complete:
     - create_sheet
     - manage_sheet_tab
