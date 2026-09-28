@@ -58,6 +58,8 @@ Google Sheets can resolve them as named ranges.
 ### modify_sheet_values
 Write, update, or clear values in a range, or insert Smart Chips (Drive files/folders or People). Chip writes are chunked into batches of <=8 chips to respect Google Sheets API limits.
 
+When providing `chips`, omit `values` and leave `clear_values=false`. `value_input_option` applies only to ordinary value writes.
+
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
 | user_google_email | string | yes | | |
@@ -66,7 +68,7 @@ Write, update, or clear values in a range, or insert Smart Chips (Drive files/fo
 | values | array or string | conditional | | 2D array of values. Required unless `clear_values=true` or `chips` is set. Accepts a JSON string or a list |
 | value_input_option | string | no | USER_ENTERED | `RAW` or `USER_ENTERED` |
 | clear_values | boolean | no | false | Clear the range instead of writing |
-| chips | array or string | conditional | | Smart chips instead of `values`: single URL/email, 1D/2D array of URLs/emails, or dict(s) with `type`, `uri`/`email` |
+| chips | array, object, or string | conditional | | Smart chips instead of `values`: single URL/email, 1D/2D array of URLs/emails, or dict(s) with `type`, `uri`/`email` |
 | chip_type | string | no | null | Optional override for `chips`: `drive` or `person` (auto-detected if omitted) |
 
 ---
