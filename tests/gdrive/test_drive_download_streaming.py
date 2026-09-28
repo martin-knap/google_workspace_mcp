@@ -215,12 +215,19 @@ async def test_worker_save_survives_concurrent_attachment_route_sweep(
 
 
 @pytest.mark.asyncio
-async def test_download_url_stateless_mode_previews_and_cleans_up(mock_resolve):
+async def test_download_url_stateless_mode_returns_whole_file_and_cleans_up(
+    mock_resolve,
+):
+    import base64
+
+    from fastmcp.tools import ToolResult
+
     mock_service = Mock()
     mock_service.files().get_media.return_value = "req"
+    payload = bytes(range(256)) * 2  # 512 bytes, binary-safe
 
     with (
-        _patch_downloader(b"x" * 500),
+        _patch_downloader(payload),
         patch("gdrive.drive_tools.is_stateless_mode", return_value=True),
     ):
         result = await _unwrap(get_drive_file_download_url)(
@@ -229,6 +236,35 @@ async def test_download_url_stateless_mode_previews_and_cleans_up(mock_resolve):
             file_id="file123",
         )
 
-    assert "Stateless mode" in result
+    assert isinstance(result, ToolResult)
+    text, resource = result.content
+    assert "512 bytes" in text.text
+    assert resource.type == "resource"
+    assert resource.resource.mimeType == "video/mp4"
+    assert base64.b64decode(resource.resource.blob) == payload
+    assert result.structured_content == {"result": text.text}
+    assert not Path(_FakeDownloader.handles[0].name).exists()
+
+
+@pytest.mark.asyncio
+async def test_download_url_stateless_mode_refuses_oversize_and_cleans_up(
+    mock_resolve,
+):
+    mock_service = Mock()
+    mock_service.files().get_media.return_value = "req"
+
+    with (
+        _patch_downloader(b"x" * 500),
+        patch("gdrive.drive_tools.is_stateless_mode", return_value=True),
+        patch("gdrive.drive_tools._STATELESS_INLINE_MAX_BYTES", 100),
+    ):
+        result = await _unwrap(get_drive_file_download_url)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="file123",
+        )
+
+    assert isinstance(result, str)
     assert "500 bytes" in result
+    assert "exceeds the inline limit" in result
     assert not Path(_FakeDownloader.handles[0].name).exists()

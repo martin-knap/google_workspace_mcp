@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -75,8 +76,13 @@ async def test_get_drive_file_download_url_allows_disk_streamed_oversized(
             file_id="file123",
         )
 
-    assert "File downloaded successfully!" in result
-    assert "500 bytes" in result
+    # Stateless mode returns the file inline; the in-memory limit above does not
+    # apply because the payload was streamed to disk and is bounded separately
+    # by WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES.
+    text, resource = result.content
+    assert "File downloaded successfully!" in text.text
+    assert "500 bytes" in text.text
+    assert base64.b64decode(resource.resource.blob) == b"x" * 500
     download.assert_awaited_once_with(mock_service, "file123", None)
 
 

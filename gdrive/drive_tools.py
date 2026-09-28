@@ -8,17 +8,24 @@ import asyncio
 import base64
 import logging
 import io
+import os
 
 from typing import Optional, List, Dict, Any
 from tempfile import NamedTemporaryFile, SpooledTemporaryFile
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import url2pathname
 from pathlib import Path
 
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
-from mcp.types import ToolAnnotations
+from fastmcp.tools import ToolResult
+from mcp.types import (
+    BlobResourceContents,
+    EmbeddedResource,
+    TextContent,
+    ToolAnnotations,
+)
 
 from auth.service_decorator import require_google_service
 from auth.oauth_config import is_stateless_mode
@@ -91,6 +98,12 @@ from gdrive.drive_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Largest file get_drive_file_download_url returns inline in stateless mode.
+# Base64 inflates the payload by a third, so 10 MB of file is ~13.4 MB on the wire.
+_STATELESS_INLINE_MAX_BYTES = int(
+    os.getenv("WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES", str(10 * 1024 * 1024))
+)
 
 
 @server.tool(
@@ -421,6 +434,8 @@ async def get_drive_file_download_url(
 
     In stdio mode, returns the local file path for direct access.
     In HTTP mode, returns a temporary download URL (valid for 1 hour).
+    In stateless mode (no file storage), returns the file itself as an embedded
+    resource, up to WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES (default 10 MB).
 
     For Google native files (Docs, Sheets, Slides), exports to a useful format:
     - Google Docs -> PDF (default) or DOCX if export_format='docx'
@@ -514,27 +529,57 @@ async def get_drive_file_download_url(
     size_bytes = tmp_path.stat().st_size
     size_kb = size_bytes / 1024 if size_bytes else 0
 
-    # Check if we're in stateless mode (can't save files)
+    # Stateless mode has no attachment storage to hand out a URL from, so the
+    # file itself goes back as an embedded resource. Returning a 100-byte
+    # preview (the old behavior) gave the caller nothing it could use.
     if is_stateless_mode():
         try:
-            with tmp_path.open("rb") as preview_fh:
-                preview_bytes = preview_fh.read(100)
+            if size_bytes > _STATELESS_INLINE_MAX_BYTES:
+                return "\n".join(
+                    [
+                        f"File: {file_name}",
+                        f"File ID: {file_id}",
+                        f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
+                        f"MIME Type: {output_mime_type}",
+                        "",
+                        "Not returned: stateless mode has no file storage, and this file "
+                        f"exceeds the inline limit of {_STATELESS_INLINE_MAX_BYTES} bytes "
+                        "(WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES). Use "
+                        "get_drive_file_content for its text, or raise the limit.",
+                    ]
+                )
+            with tmp_path.open("rb") as fh:
+                payload = fh.read()
         finally:
             tmp_path.unlink(missing_ok=True)
-        result_lines = [
-            "File downloaded successfully!",
-            f"File: {file_name}",
-            f"File ID: {file_id}",
-            f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-            f"MIME Type: {output_mime_type}",
-            "\n⚠️ Stateless mode: File storage disabled.",
-            "\nBase64-encoded content (first 100 characters shown):",
-            f"{base64.b64encode(preview_bytes).decode('utf-8')}...",
-        ]
-        logger.info(
-            f"[get_drive_file_download_url] Successfully downloaded {size_kb:.1f} KB file (stateless mode)"
+        summary = "\n".join(
+            [
+                "File downloaded successfully!",
+                f"File: {file_name}",
+                f"File ID: {file_id}",
+                f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
+                f"MIME Type: {output_mime_type}",
+                "\nStateless mode: the file is attached to this result as an "
+                f"embedded resource ({output_filename}).",
+            ]
         )
-        return "\n".join(result_lines)
+        logger.info(
+            f"[get_drive_file_download_url] Returned {size_kb:.1f} KB inline (stateless mode)"
+        )
+        return ToolResult(
+            content=[
+                TextContent(type="text", text=summary),
+                EmbeddedResource(
+                    type="resource",
+                    resource=BlobResourceContents(
+                        uri=f"gdrive://{file_id}/{quote(output_filename)}",
+                        mimeType=output_mime_type or "application/octet-stream",
+                        blob=base64.b64encode(payload).decode("ascii"),
+                    ),
+                ),
+            ],
+            structured_content={"result": summary},
+        )
 
     # Move the download into attachment storage and return its path/URL
     try:
