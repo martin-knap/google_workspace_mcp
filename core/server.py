@@ -74,7 +74,8 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 _ALLOW_NULL_ORIGIN_CONSENT_ENV = "WORKSPACE_MCP_ALLOW_NULL_ORIGIN_CONSENT"
 _SESSION_IDLE_TIMEOUT_ENV = "WORKSPACE_MCP_SESSION_IDLE_TIMEOUT"
-_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60
+# Leave a minute beyond the usual one-hour Google access-token lifetime.
+_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 60 * 60 + 60
 
 
 def _parse_bool_env(value: str) -> bool:
@@ -244,7 +245,7 @@ well_known_cache_control_middleware = Middleware(WellKnownCacheControlMiddleware
 
 
 def get_session_idle_timeout() -> Optional[int]:
-    """Parse WORKSPACE_MCP_SESSION_IDLE_TIMEOUT; unset uses the default, 0 disables.
+    """Parse WORKSPACE_MCP_SESSION_IDLE_TIMEOUT; 0 defers to FastMCP's setting.
 
     Invalid values raise instead of falling back, so a misconfigured deployment
     fails at startup.
@@ -274,10 +275,12 @@ def _compute_scope_fingerprint() -> str:
 class SecureFastMCP(FastMCP):
     def http_app(self, **kwargs) -> "Starlette":
         """Override to add secure middleware stack for OAuth 2.1."""
-        # FastMCP leaves abandoned sessions open for the life of the process
-        # unless given an idle timeout, which stateless mode rejects.
-        if not kwargs.get("stateless_http", is_stateless_mode()):
-            kwargs.setdefault("session_idle_timeout", get_session_idle_timeout())
+        # Bound memory retained by abandoned stateful sessions.
+        if (
+            not kwargs.get("stateless_http", is_stateless_mode())
+            and "session_idle_timeout" not in kwargs
+        ):
+            kwargs["session_idle_timeout"] = get_session_idle_timeout()
         app = super().http_app(**kwargs)
 
         # Add middleware in order (first added = outermost layer)

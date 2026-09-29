@@ -1,3 +1,4 @@
+import fastmcp
 from fastmcp.server.http import StreamableHTTPASGIApp
 import pytest
 
@@ -23,7 +24,7 @@ async def _idle_timeout_after_startup(**http_app_kwargs):
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [(None, 1800), ("", 1800), (" 600 ", 600), ("0", None)],
+    [(None, 3660), ("", 3660), (" 600 ", 600), ("0", None)],
 )
 def test_get_session_idle_timeout(monkeypatch, raw, expected):
     if raw is None:
@@ -43,6 +44,13 @@ def test_get_session_idle_timeout_rejects_invalid(monkeypatch, raw):
 
 
 @pytest.mark.asyncio
+async def test_http_app_default_outlasts_google_access_token(monkeypatch):
+    monkeypatch.delenv(_ENV, raising=False)
+
+    assert await _idle_timeout_after_startup() == 3600 + 60
+
+
+@pytest.mark.asyncio
 async def test_http_app_applies_idle_timeout_at_startup(monkeypatch):
     monkeypatch.setenv(_ENV, "600")
 
@@ -57,7 +65,23 @@ async def test_http_app_leaves_idle_timeout_unset_when_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_http_app_zero_defers_to_fastmcp_timeout(monkeypatch):
+    monkeypatch.setenv(_ENV, "0")
+    monkeypatch.setattr(fastmcp.settings, "http_session_idle_timeout", 300)
+
+    assert await _idle_timeout_after_startup() == 300
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [None, 300])
+async def test_http_app_preserves_explicit_timeout(monkeypatch, timeout):
+    monkeypatch.setenv(_ENV, "invalid")
+
+    assert await _idle_timeout_after_startup(session_idle_timeout=timeout) == timeout
+
+
+@pytest.mark.asyncio
 async def test_http_app_skips_stateless_session_manager(monkeypatch):
-    monkeypatch.delenv(_ENV, raising=False)
+    monkeypatch.setenv(_ENV, "invalid")
 
     assert await _idle_timeout_after_startup(stateless_http=True) is None
