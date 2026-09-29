@@ -1,0 +1,63 @@
+from fastmcp.server.http import StreamableHTTPASGIApp
+import pytest
+
+from core.server import SecureFastMCP, get_session_idle_timeout
+
+_ENV = "WORKSPACE_MCP_SESSION_IDLE_TIMEOUT"
+
+
+def _session_manager(app):
+    for route in app.routes:
+        endpoint = getattr(route, "endpoint", None)
+        endpoint = getattr(endpoint, "app", endpoint)
+        if isinstance(endpoint, StreamableHTTPASGIApp):
+            return endpoint.session_manager
+    raise AssertionError("streamable-HTTP endpoint not found")
+
+
+async def _idle_timeout_after_startup(**http_app_kwargs):
+    app = SecureFastMCP(name="test_server").http_app(**http_app_kwargs)
+    async with app.router.lifespan_context(app):
+        return _session_manager(app).session_idle_timeout
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 1800), ("", 1800), (" 600 ", 600), ("0", None)],
+)
+def test_get_session_idle_timeout(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv(_ENV, raising=False)
+    else:
+        monkeypatch.setenv(_ENV, raw)
+
+    assert get_session_idle_timeout() == expected
+
+
+@pytest.mark.parametrize("raw", ["-1", "abc", "1.5"])
+def test_get_session_idle_timeout_rejects_invalid(monkeypatch, raw):
+    monkeypatch.setenv(_ENV, raw)
+
+    with pytest.raises(ValueError, match=_ENV):
+        get_session_idle_timeout()
+
+
+@pytest.mark.asyncio
+async def test_http_app_applies_idle_timeout_at_startup(monkeypatch):
+    monkeypatch.setenv(_ENV, "600")
+
+    assert await _idle_timeout_after_startup() == 600
+
+
+@pytest.mark.asyncio
+async def test_http_app_leaves_idle_timeout_unset_when_disabled(monkeypatch):
+    monkeypatch.setenv(_ENV, "0")
+
+    assert await _idle_timeout_after_startup() is None
+
+
+@pytest.mark.asyncio
+async def test_http_app_skips_stateless_session_manager(monkeypatch):
+    monkeypatch.delenv(_ENV, raising=False)
+
+    assert await _idle_timeout_after_startup(stateless_http=True) is None

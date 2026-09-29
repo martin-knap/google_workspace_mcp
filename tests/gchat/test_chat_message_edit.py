@@ -46,8 +46,8 @@ async def _edit_message(message_name):
 @pytest.mark.asyncio
 async def test_send_message_advertises_destructive_updates():
     tool = await server.get_tool("send_message")
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is True
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is True
 
 
 @pytest.mark.asyncio

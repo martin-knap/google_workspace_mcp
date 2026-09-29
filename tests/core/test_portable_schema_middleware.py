@@ -131,14 +131,14 @@ async def test_listed_schema_is_portable_and_optional_args_still_work():
             "search", {"query": "q", "page_token": None}
         )
 
-    properties = tool.inputSchema["properties"]
+    properties = tool.input_schema["properties"]
     assert properties["page_token"] == {"type": "string", "default": None}
     assert properties["search_type"] == {
         "type": "string",
         "enum": ["image"],
         "default": None,
     }
-    assert tool.inputSchema["required"] == ["query"]
+    assert tool.input_schema["required"] == ["query"]
     assert json.loads(omitted.content[0].text) == ["q", None, None]
     assert json.loads(explicit_null.content[0].text) == ["q", None, None]
 

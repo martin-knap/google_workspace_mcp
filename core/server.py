@@ -24,6 +24,7 @@ from auth.oauth_config import (
     is_external_oauth21_provider,
     get_oauth_config,
     is_trust_gateway_identity,
+    is_stateless_mode,
 )
 from auth.oauth_proxy_config import get_oauth_proxy_expiry_kwargs
 from auth.oauth_responses import (
@@ -72,6 +73,8 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 # header that received the request (a same-origin check).
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 _ALLOW_NULL_ORIGIN_CONSENT_ENV = "WORKSPACE_MCP_ALLOW_NULL_ORIGIN_CONSENT"
+_SESSION_IDLE_TIMEOUT_ENV = "WORKSPACE_MCP_SESSION_IDLE_TIMEOUT"
+_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60
 
 
 def _parse_bool_env(value: str) -> bool:
@@ -240,6 +243,27 @@ class WellKnownCacheControlMiddleware:
 well_known_cache_control_middleware = Middleware(WellKnownCacheControlMiddleware)
 
 
+def get_session_idle_timeout() -> Optional[int]:
+    """Parse WORKSPACE_MCP_SESSION_IDLE_TIMEOUT; unset uses the default, 0 disables.
+
+    Invalid values raise instead of falling back, so a misconfigured deployment
+    fails at startup.
+    """
+    raw = os.getenv(_SESSION_IDLE_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError(
+            f"{_SESSION_IDLE_TIMEOUT_ENV} must be a non-negative integer "
+            f"(seconds), got {raw!r}"
+        )
+    return value or None
+
+
 def _compute_scope_fingerprint() -> str:
     """Compute a short hash of the current scope configuration for cache-busting."""
     scopes_str = ",".join(sorted(get_current_scopes()))
@@ -250,6 +274,10 @@ def _compute_scope_fingerprint() -> str:
 class SecureFastMCP(FastMCP):
     def http_app(self, **kwargs) -> "Starlette":
         """Override to add secure middleware stack for OAuth 2.1."""
+        # FastMCP leaves abandoned sessions open for the life of the process
+        # unless given an idle timeout, which stateless mode rejects.
+        if not kwargs.get("stateless_http", is_stateless_mode()):
+            kwargs.setdefault("session_idle_timeout", get_session_idle_timeout())
         app = super().http_app(**kwargs)
 
         # Add middleware in order (first added = outermost layer)
@@ -364,14 +392,14 @@ server = SecureFastMCP(
     icons=_brand_icons,
 )
 
-# Add the AuthInfo middleware to inject authentication into FastMCP context
-auth_info_middleware = AuthInfoMiddleware()
-server.add_middleware(auth_info_middleware)
-
 # Accept camelCase argument names (calendarId, timeMin, ...) from callers that
 # mirror the Google API field names, mapping them onto the snake_case tool
 # parameters. See https://github.com/taylorwilsdon/google_workspace_mcp/issues/918
 server.add_middleware(CamelCaseArgumentsMiddleware())
+
+# Add the AuthInfo middleware to inject authentication into FastMCP context
+auth_info_middleware = AuthInfoMiddleware()
+server.add_middleware(auth_info_middleware)
 
 # Advertise tool schemas without null unions or ``const``, which Gemini's
 # function-calling schema cannot represent. See
@@ -769,9 +797,6 @@ def configure_server_for_http():
                     cimd_manager.default_scope = cimd_default_scope
                 # Enable protocol-level auth
                 server.auth = provider
-                logger.info(
-                    "OAuth 2.1 enabled using FastMCP GoogleProvider with protocol-level auth"
-                )
 
             # Always set auth provider for token validation in middleware
             set_auth_provider(provider)
