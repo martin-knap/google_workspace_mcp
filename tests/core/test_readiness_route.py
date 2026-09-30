@@ -70,7 +70,8 @@ async def test_unavailable_when_store_raises(monkeypatch, caplog):
         "storage": "unavailable",
         "error": "ConnectionRefusedError",
     }
-    assert "refused connection" in caplog.text
+    assert "ConnectionRefusedError" in caplog.text
+    assert "refused connection" not in caplog.text
 
 
 @pytest.mark.asyncio

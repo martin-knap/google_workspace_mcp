@@ -788,9 +788,7 @@ async def readiness_check(request: Request):
         logger.warning("Readiness probe: OAuth storage %s", error)
     except Exception as exc:
         error = type(exc).__name__
-        logger.warning(
-            "Readiness probe: OAuth storage unavailable (%s: %s)", error, exc
-        )
+        logger.warning("Readiness probe: OAuth storage unavailable (%s)", error)
     else:
         return JSONResponse({"status": "ready", "storage": "ok"})
 
