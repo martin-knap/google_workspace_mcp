@@ -2,6 +2,7 @@ import fastmcp
 from fastmcp.server.http import StreamableHTTPASGIApp
 import pytest
 
+from auth.oauth_config import is_stateless_mode, reload_oauth_config
 from core.server import SecureFastMCP, get_session_idle_timeout
 
 _ENV = "WORKSPACE_MCP_SESSION_IDLE_TIMEOUT"
@@ -85,3 +86,24 @@ async def test_http_app_skips_stateless_session_manager(monkeypatch):
     monkeypatch.setenv(_ENV, "invalid")
 
     assert await _idle_timeout_after_startup(stateless_http=True) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("http_app_kwargs", [{}, {"stateless_http": None}])
+async def test_http_app_skips_fastmcp_stateless_setting(monkeypatch, http_app_kwargs):
+    monkeypatch.setenv(_ENV, "invalid")
+    monkeypatch.setattr(fastmcp.settings, "stateless_http", True)
+
+    assert await _idle_timeout_after_startup(**http_app_kwargs) is None
+
+
+@pytest.mark.asyncio
+async def test_http_app_applies_timeout_when_fastmcp_settings_stateful(monkeypatch):
+    monkeypatch.setenv(_ENV, "600")
+    monkeypatch.setenv("MCP_ENABLE_OAUTH21", "true")
+    monkeypatch.setenv("WORKSPACE_MCP_STATELESS_MODE", "true")
+    reload_oauth_config()
+    assert is_stateless_mode()
+    monkeypatch.setattr(fastmcp.settings, "stateless_http", False)
+
+    assert await _idle_timeout_after_startup() == 600

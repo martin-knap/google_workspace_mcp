@@ -24,7 +24,6 @@ from auth.oauth_config import (
     is_external_oauth21_provider,
     get_oauth_config,
     is_trust_gateway_identity,
-    is_stateless_mode,
 )
 from auth.oauth_proxy_config import get_oauth_proxy_expiry_kwargs
 from auth.oauth_responses import (
@@ -40,6 +39,7 @@ from core.config import (
     get_oauth_redirect_uri as get_oauth_redirect_uri_for_current_mode,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+import fastmcp
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.google import GoogleProvider
 from mcp.types import ToolAnnotations, Icon
@@ -275,11 +275,12 @@ def _compute_scope_fingerprint() -> str:
 class SecureFastMCP(FastMCP):
     def http_app(self, **kwargs) -> "Starlette":
         """Override to add secure middleware stack for OAuth 2.1."""
-        # Bound memory retained by abandoned stateful sessions.
-        if (
-            not kwargs.get("stateless_http", is_stateless_mode())
-            and "session_idle_timeout" not in kwargs
-        ):
+        # Bound memory retained by abandoned stateful sessions. Resolve an omitted
+        # or None stateless_http the same way FastMCP does.
+        stateless_http = kwargs.get("stateless_http")
+        if stateless_http is None:
+            stateless_http = fastmcp.settings.stateless_http
+        if not stateless_http and "session_idle_timeout" not in kwargs:
             kwargs["session_idle_timeout"] = get_session_idle_timeout()
         app = super().http_app(**kwargs)
 
