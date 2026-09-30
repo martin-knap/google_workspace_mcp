@@ -228,7 +228,7 @@ async def search_drive_files(
     normalized_query = normalize_drive_query_v2_compat(final_query)
     if normalized_query != final_query:
         logger.info(
-            f"[search_drive_files] Normalized v2 query fields: '{final_query}' -> '{normalized_query}'"
+            "[search_drive_files] Normalized v2 query field names to v3 equivalents"
         )
         final_query = normalized_query
 
