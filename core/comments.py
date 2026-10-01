@@ -253,7 +253,7 @@ async def _read_comments_impl(
 
         kwargs: dict = {
             "fileId": file_id,
-            "fields": "nextPageToken,comments(id,content,author,createdTime,modifiedTime,resolved,quotedFileContent,replies(content,author,id,createdTime,modifiedTime))",
+            "fields": "nextPageToken,comments(id,content,author,createdTime,modifiedTime,resolved,quotedFileContent,anchor,replies(content,author,id,createdTime,modifiedTime))",
             "pageSize": page_size,
         }
         if page_token is not None:
@@ -283,12 +283,17 @@ async def _read_comments_impl(
         status = " [RESOLVED]" if resolved else ""
 
         quoted_text = comment.get("quotedFileContent", {}).get("value", "")
+        anchor = comment.get("anchor", "")
 
         output.append(f"Comment ID: {comment_id}")
         output.append(f"Author: {author}")
         output.append(f"Created: {created}{status}")
         if quoted_text:
             output.append(_format_field("Quoted text: ", quoted_text))
+        if anchor:
+            # Opaque, file-type specific location the comment is attached to
+            # (e.g. the slide/shape in Google Slides). Passed through unparsed.
+            output.append(_format_field("Anchor: ", anchor))
         output.append(_format_field("Content: ", content))
 
         replies = comment.get("replies", [])
