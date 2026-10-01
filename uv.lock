@@ -2512,6 +2512,7 @@ test = [
 ]
 valkey = [
     { name = "py-key-value-aio", extra = ["valkey"] },
+    { name = "valkey-glide" },
 ]
 
 [package.dev-dependencies]
@@ -2545,6 +2546,7 @@ test = [
 ]
 valkey = [
     { name = "py-key-value-aio", extra = ["valkey"] },
+    { name = "valkey-glide" },
 ]
 
 [package.metadata]
@@ -2591,6 +2593,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'release'", specifier = ">=5.0.0" },
     { name = "tzdata", specifier = ">=2026.1" },
     { name = "urllib3", specifier = ">=2.7.0" },
+    { name = "valkey-glide", marker = "extra == 'valkey'", specifier = ">=2.3.0" },
 ]
 provides-extras = ["gcs", "disk", "valkey", "otel", "test", "release", "dev"]
 
@@ -2621,7 +2624,10 @@ test = [
     { name = "pytest-asyncio", specifier = ">=0.23.0" },
     { name = "requests", specifier = ">=2.32.3" },
 ]
-valkey = [{ name = "py-key-value-aio", extras = ["valkey"], specifier = ">=0.3.0" }]
+valkey = [
+    { name = "py-key-value-aio", extras = ["valkey"], specifier = ">=0.3.0" },
+    { name = "valkey-glide", specifier = ">=2.3.0" },
+]
 
 [[package]]
 name = "zipp"
