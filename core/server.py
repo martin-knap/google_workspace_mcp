@@ -132,10 +132,11 @@ def _is_origin_allowed(origin: str) -> bool:
 def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
     """Return True when the Origin's authority matches the request's Host header.
 
-    A same-origin request is the server's own page calling back to the host that
-    served it, so it is never the cross-site/DNS-rebinding threat this middleware
-    guards against. Matching the Host header lets a single deployment answer on any
-    number of hostnames without enumerating each one in the allowlist.
+    This lets the OAuth proxy consent page post back to whatever host served it
+    without that host being in the allowlist. It is honored only in OAuth 2.1 mode:
+    a DNS-rebinding page controls both Host and Origin, so a same-origin match proves
+    nothing on its own, and only OAuth 2.1 mode requires a bearer token the
+    rebinding page cannot obtain on every MCP request.
     """
     if not host_header:
         return False
@@ -148,7 +149,11 @@ def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
         host_port = host.port or _DEFAULT_PORTS.get(parsed.scheme)
     except ValueError:
         return False
-    return parsed.hostname == host.hostname and origin_port == host_port
+    return (
+        parsed.hostname == host.hostname
+        and origin_port == host_port
+        and is_oauth21_enabled()
+    )
 
 
 def _is_null_origin_consent_compat_allowed(scope: Scope, origin: str) -> bool:
