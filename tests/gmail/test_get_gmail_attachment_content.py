@@ -229,6 +229,37 @@ async def test_cap_uses_index_to_survive_refreshed_attachment_id(
 
 
 @pytest.mark.asyncio
+async def test_uncapped_uses_index_to_resolve_filename_when_sizes_tie(
+    monkeypatch, isolated_attachment_env
+):
+    """Without a cap, the ordinal still names attachments the size fallback can't."""
+    monkeypatch.delenv("WORKSPACE_MCP_MAX_FILE_BYTES", raising=False)
+    mock_service = _build_mock_service(b"same payload", filename="b.pdf")
+    mock_service.users().messages().get().execute.return_value = {
+        "payload": {
+            "parts": [
+                {
+                    "filename": name,
+                    "mimeType": "application/pdf",
+                    "body": {"attachmentId": f"refreshed-{name}", "size": 12},
+                }
+                for name in ("a.pdf", "b.pdf", "c.pdf")
+            ]
+        }
+    }
+
+    result = await _unwrap(get_gmail_attachment_content)(
+        service=mock_service,
+        message_id="msg-1",
+        attachment_id="stale-id",
+        attachment_index=1,
+        user_google_email="user@example.com",
+    )
+
+    assert "Filename: b.pdf" in result
+
+
+@pytest.mark.asyncio
 async def test_cap_fails_closed_when_deep_attachment_metadata_is_truncated(
     monkeypatch, isolated_attachment_env
 ):

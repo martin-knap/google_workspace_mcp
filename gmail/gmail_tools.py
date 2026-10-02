@@ -2270,9 +2270,9 @@ async def get_gmail_attachment_content(
             standard (not URL-safe) base64. Default False preserves the
             existing behavior and response size.
         attachment_index (Optional[int]): Zero-based attachment position from
-            the message-content response. When the cap is enabled, this lets
-            the server safely resolve Gmail's refreshed attachment IDs against
-            current metadata before downloading.
+            the message-content response. Lets the server resolve Gmail's
+            refreshed attachment IDs against current metadata, both for the
+            size cap preflight and for the saved filename and MIME type.
 
     Returns:
         str: Attachment metadata with either a local file path or download URL,
@@ -2445,6 +2445,16 @@ async def get_gmail_attachment_content(
                         filename = att.get("filename")
                         mime_type = att.get("mimeType")
                         break
+
+                # Gmail refreshes attachment IDs on every metadata fetch, so
+                # the stable ordinal is more reliable than the size heuristic.
+                if (
+                    not filename
+                    and attachment_index is not None
+                    and 0 <= attachment_index < len(attachments)
+                ):
+                    filename = attachments[attachment_index].get("filename")
+                    mime_type = attachments[attachment_index].get("mimeType")
 
                 if not filename and attachments:
                     size_matches = [
