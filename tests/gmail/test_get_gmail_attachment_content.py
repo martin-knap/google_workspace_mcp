@@ -6,7 +6,7 @@ localhost download URLs or local file paths.
 
 import base64
 from typing import Any, Callable
-from unittest.mock import Mock
+from unittest.mock import DEFAULT, Mock
 
 import pytest
 
@@ -226,6 +226,49 @@ async def test_cap_uses_index_to_survive_refreshed_attachment_id(
     assert "Attachment downloaded successfully!" in result
     download_get = mock_service.users().messages().attachments().get
     assert download_get.call_args.kwargs["id"] == "refreshed-target"
+
+
+@pytest.mark.asyncio
+async def test_uncapped_uses_index_to_resolve_filename_when_sizes_tie(
+    monkeypatch, isolated_attachment_env
+):
+    """Without a cap, the ordinal still selects the current ID and filename."""
+    monkeypatch.delenv("WORKSPACE_MCP_MAX_FILE_BYTES", raising=False)
+    mock_service = _build_mock_service(b"same payload", filename="b.pdf")
+    download_get = mock_service.users().messages().attachments().get
+    download_get.reset_mock()
+
+    def _reject_stale_ids(**kwargs):
+        if kwargs["id"] != "refreshed-b.pdf":
+            raise RuntimeError(f"Invalid attachment ID: {kwargs['id']}")
+        return DEFAULT
+
+    download_get.side_effect = _reject_stale_ids
+    mock_service.users().messages().get().execute.return_value = {
+        "payload": {
+            "parts": [
+                {
+                    "filename": name,
+                    "mimeType": "application/pdf",
+                    "body": {"attachmentId": f"refreshed-{name}", "size": 12},
+                }
+                for name in ("a.pdf", "b.pdf", "c.pdf")
+            ]
+        }
+    }
+
+    result = await _unwrap(get_gmail_attachment_content)(
+        service=mock_service,
+        message_id="msg-1",
+        attachment_id="stale-id",
+        attachment_index=1,
+        user_google_email="user@example.com",
+    )
+
+    assert "Attachment downloaded successfully!" in result
+    assert "Filename: b.pdf" in result
+    download_get.assert_called_once()
+    assert download_get.call_args.kwargs["id"] == "refreshed-b.pdf"
 
 
 @pytest.mark.asyncio

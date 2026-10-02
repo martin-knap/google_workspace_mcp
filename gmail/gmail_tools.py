@@ -2270,9 +2270,9 @@ async def get_gmail_attachment_content(
             standard (not URL-safe) base64. Default False preserves the
             existing behavior and response size.
         attachment_index (Optional[int]): Zero-based attachment position from
-            the message-content response. When the cap is enabled, this lets
-            the server safely resolve Gmail's refreshed attachment IDs against
-            current metadata before downloading.
+            the message-content response. Lets the server resolve Gmail's
+            refreshed attachment IDs against current metadata before every
+            download, selecting the current attachment ID, filename and MIME type.
 
     Returns:
         str: Attachment metadata with either a local file path or download URL,
@@ -2291,7 +2291,7 @@ async def get_gmail_attachment_content(
     declared_size = None
     download_attachment_id = attachment_id
     max_file_bytes = get_max_file_bytes()
-    if max_file_bytes is not None:
+    if max_file_bytes is not None or attachment_index is not None:
         try:
             message_full = await asyncio.to_thread(
                 service.users()
@@ -2338,7 +2338,7 @@ async def get_gmail_attachment_content(
         # metadata projection could not resolve this attachment (for example,
         # because it is nested deeper than the fields mask), fail closed before
         # requesting data that may exceed the configured cap.
-        if declared_size is None:
+        if max_file_bytes is not None and declared_size is None:
             return (
                 "Error: Could not verify the attachment size before download while "
                 "WORKSPACE_MCP_MAX_FILE_BYTES is configured. Fetch the message again "
