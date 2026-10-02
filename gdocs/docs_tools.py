@@ -151,6 +151,7 @@ async def get_doc_content(
     user_google_email: str,
     document_id: str,
     suggestions_view_mode: str = "DEFAULT_FOR_CURRENT_ACCESS",
+    tab_id: Optional[str] = None,
 ) -> str:
     """
     Retrieves content of a Google Doc or a Drive file (like .docx) identified by document_id.
@@ -165,6 +166,10 @@ async def get_doc_content(
             - "SUGGESTIONS_INLINE": Suggested changes appear inline in the document
             - "PREVIEW_SUGGESTIONS_ACCEPTED": Preview as if all suggestions were accepted
             - "PREVIEW_WITHOUT_SUGGESTIONS": Preview as if all suggestions were rejected
+        tab_id: Optional ID of a specific tab to fetch. When omitted, all tabs are
+            returned. Use inspect_doc_structure (without tab_id) to list available tabs
+            and their IDs. Fetching a single tab avoids returning large documents in
+            full, which can cause timeouts on docs with many or long tabs.
 
     Returns:
         str: The document content with metadata header.
@@ -271,6 +276,11 @@ async def get_doc_content(
             processed_text_lines.append(main_content)
 
         tabs = doc_data.get("tabs", [])
+        if tab_id:
+            matched = _find_tab_in_tree(tabs, tab_id)
+            if not matched:
+                return f"Error: Tab '{tab_id}' not found in document {document_id}. Use inspect_doc_structure to list available tabs."
+            tabs = [matched]
         for tab in tabs:
             tab_content = process_tab_hierarchy(tab)
             if tab_content.strip():
@@ -2370,6 +2380,7 @@ async def get_doc_as_markdown(
     comment_mode: str = "inline",
     include_resolved: bool = False,
     suggestions_view_mode: str = "DEFAULT_FOR_CURRENT_ACCESS",
+    tab_id: Optional[str] = None,
 ) -> str:
     """
     Reads a Google Doc and returns it as clean Markdown with optional comment context.
@@ -2383,7 +2394,9 @@ async def get_doc_as_markdown(
 
     Args:
         user_google_email: User's Google email address
-        document_id: ID of the Google Doc (or full URL)
+        document_id: ID of the Google Doc (or full URL). When a full URL is provided
+            and it contains a ?tab= query parameter, that tab is used automatically
+            unless tab_id is also specified (explicit tab_id takes precedence).
         include_comments: Whether to include comments (default: True)
         comment_mode: How to display comments:
             - "inline": Footnote-style references placed at the anchor text location (default)
@@ -2395,13 +2408,23 @@ async def get_doc_as_markdown(
             - "SUGGESTIONS_INLINE": Suggested changes appear inline in the document
             - "PREVIEW_SUGGESTIONS_ACCEPTED": Preview as if all suggestions were accepted
             - "PREVIEW_WITHOUT_SUGGESTIONS": Preview as if all suggestions were rejected
+        tab_id: Optional ID of a specific tab to fetch. When omitted, all tabs are
+            returned. Use inspect_doc_structure (without tab_id) to list available tabs
+            and their IDs. Fetching a single tab avoids returning large documents in
+            full, which can cause timeouts on docs with many or long tabs (e.g., a
+            Gemini meeting notes doc whose Transcript tab contains a full verbatim
+            transcript).
 
     Returns:
         str: The document content as Markdown, optionally with comments
     """
-    # Extract doc ID from URL if a full URL was provided
+    # Extract doc ID (and optional tab_id) from URL if a full URL was provided
     url_match = re.search(r"/d/([\w-]+)", document_id)
     if url_match:
+        if tab_id is None:
+            tab_url_match = re.search(r"[?&]tab=([\w.]+)", document_id)
+            if tab_url_match:
+                tab_id = tab_url_match.group(1)
         document_id = url_match.group(1)
 
     valid_modes = ("inline", "appendix", "none")
@@ -2435,6 +2458,12 @@ async def get_doc_as_markdown(
             f"Error: Timed out fetching document {document_id} from Google Docs API. "
             "The document may be too large or there may be a network issue. Please try again."
         )
+
+    if tab_id:
+        matched = _find_tab_in_tree(doc.get("tabs", []), tab_id)
+        if not matched:
+            return f"Error: Tab '{tab_id}' not found in document {document_id}. Use inspect_doc_structure to list available tabs."
+        doc = {**doc, "tabs": [matched]}
 
     markdown = convert_doc_to_markdown(doc)
 
@@ -2476,6 +2505,19 @@ async def get_doc_as_markdown(
     else:
         appendix = format_comments_appendix(comments)
         return markdown.rstrip("\n") + "\n\n" + appendix
+
+
+def _find_tab_in_tree(tabs: list, target_tab_id: str) -> Optional[dict]:
+    """Return the first tab whose tabId matches target_tab_id, searching recursively."""
+    for tab in tabs:
+        if tab.get("tabProperties", {}).get("tabId") == target_tab_id:
+            return tab
+        child_tabs = tab.get("childTabs", [])
+        if child_tabs:
+            found = _find_tab_in_tree(child_tabs, target_tab_id)
+            if found is not None:
+                return found
+    return None
 
 
 def _find_tab_end_index(doc: dict, target_tab_id: str) -> Optional[int]:
