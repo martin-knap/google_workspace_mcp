@@ -5,16 +5,20 @@ import hashlib
 import jwt
 import logging
 import os
+import time
 import webbrowser
 
-from typing import List, Optional, Tuple, Dict, Any
+from collections import deque
+from contextlib import contextmanager
+from typing import List, Optional, Tuple, Dict, Any, Iterator
 from urllib.parse import parse_qs, urlparse
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
-from googleapiclient.discovery import build
+import google.auth.credentials
+from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
 import httplib2
 import google_auth_httplib2
@@ -91,14 +95,58 @@ def get_default_credentials_dir():
 DEFAULT_CREDENTIALS_DIR = get_default_credentials_dir()
 
 
-def _build_authorized_http(
-    credentials: Credentials, timeout: int = 30
-) -> google_auth_httplib2.AuthorizedHttp:
-    """Return credentialed HTTP with an explicit socket timeout."""
-    http = httplib2.Http(timeout=timeout)
+_HTTP_TIMEOUT_SECONDS = 30
+# httplib2 does not retry a request whose send fails on a connection the server
+# already dropped, so only reuse connections that were active recently.
+_HTTP_MAX_IDLE_SECONDS = 60
+# Raw httplib2.Http objects only: they hold sockets, never credentials, so a
+# pooled connection can safely serve any user's next request.
+_idle_http: deque[tuple[float, httplib2.Http]] = deque(maxlen=32)
+
+
+def _acquire_http() -> httplib2.Http:
+    """Pop the most recently released connection, or create a new one."""
+    try:
+        while True:
+            released_at, http = _idle_http.pop()
+            if time.monotonic() - released_at < _HTTP_MAX_IDLE_SECONDS:
+                return http
+            http.close()
+    except IndexError:
+        pass
+    http = httplib2.Http(timeout=_HTTP_TIMEOUT_SECONDS)
     # Drive uses 308 Resume Incomplete with Range during resumable uploads, not a redirect.
     http.redirect_codes = http.redirect_codes - {308}
-    return google_auth_httplib2.AuthorizedHttp(credentials, http=http)
+    return http
+
+
+def _build_authorized_http(
+    credentials: google.auth.credentials.Credentials,
+) -> google_auth_httplib2.AuthorizedHttp:
+    """Return credentialed HTTP over a pooled, timeout-bounded connection."""
+    return google_auth_httplib2.AuthorizedHttp(credentials, http=_acquire_http())
+
+
+def build_google_service(
+    service_name: str, version: str, credentials: google.auth.credentials.Credentials
+) -> Resource:
+    """Build a discovery client on a pooled, timeout-bounded connection."""
+    return build(service_name, version, http=_build_authorized_http(credentials))
+
+
+@contextmanager
+def recycling(service: Resource) -> Iterator[Resource]:
+    """Like contextlib.closing, but return the connection to the pool on success.
+
+    After an error or cancellation a worker thread may still be mid-request on
+    this connection, so it is closed instead and never shared with another call.
+    """
+    try:
+        yield service
+    except BaseException:
+        service.close()
+        raise
+    _idle_http.append((time.monotonic(), service._http.http))
 
 
 # Session credentials now handled by OAuth21SessionStore - no local cache needed
@@ -1262,7 +1310,7 @@ def get_user_info(
     try:
         # Using googleapiclient discovery to get user info
         # Requires 'google-api-python-client' library
-        service = build("oauth2", "v2", http=_build_authorized_http(credentials))
+        service = build_google_service("oauth2", "v2", credentials)
         user_info = service.userinfo().get().execute()
         logger.info(f"Successfully fetched user info: {user_info.get('email')}")
         return user_info
@@ -1411,7 +1459,7 @@ async def get_authenticated_google_service(
         raise GoogleAuthenticationError(auth_response)
 
     try:
-        service = build(service_name, version, http=_build_authorized_http(credentials))
+        service = build_google_service(service_name, version, credentials)
         log_user_email = user_google_email
 
         # Try to get email from credentials if needed for validation

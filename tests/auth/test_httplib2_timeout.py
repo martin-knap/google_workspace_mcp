@@ -4,9 +4,16 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from google.auth.credentials import AnonymousCredentials
 
-from auth.google_auth import _build_authorized_http, get_authenticated_google_service
-from auth.google_auth import get_user_info
+import auth.google_auth as google_auth
+from auth.google_auth import (
+    _build_authorized_http,
+    build_google_service,
+    get_authenticated_google_service,
+    get_user_info,
+    recycling,
+)
 
 
 def test_build_authorized_http_uses_explicit_timeout():
@@ -24,29 +31,48 @@ def test_build_authorized_http_uses_explicit_timeout():
             return_value=mock_authorized,
         ) as mock_auth_http_cls,
     ):
-        result = _build_authorized_http(mock_credentials, timeout=42)
+        result = _build_authorized_http(mock_credentials)
 
-    mock_http_cls.assert_called_once_with(timeout=42)
+    mock_http_cls.assert_called_once_with(timeout=30)
     mock_auth_http_cls.assert_called_once_with(mock_credentials, http=mock_http)
     assert mock_http.redirect_codes == {300, 301, 302, 303, 307}
     assert result is mock_authorized
 
 
-def test_build_authorized_http_default_timeout_is_30():
-    mock_credentials = MagicMock()
+def test_recycled_connection_is_reused():
+    service = build_google_service("gmail", "v1", AnonymousCredentials())
+    pooled_http = service._http.http
 
-    with (
-        patch("auth.google_auth.httplib2.Http") as mock_http_cls,
-        patch(
-            "auth.google_auth.google_auth_httplib2.AuthorizedHttp",
-        ) as mock_auth_http_cls,
-    ):
-        _build_authorized_http(mock_credentials)
+    with recycling(service):
+        pass
 
-    mock_http_cls.assert_called_once_with(timeout=30)
-    mock_auth_http_cls.assert_called_once_with(
-        mock_credentials, http=mock_http_cls.return_value
+    assert _build_authorized_http(AnonymousCredentials()).http is pooled_http
+    assert not google_auth._idle_http
+
+
+def test_stale_connection_is_closed_and_replaced(monkeypatch):
+    stale_http = MagicMock()
+    google_auth._idle_http.append((0.0, stale_http))
+    monkeypatch.setattr(
+        google_auth.time, "monotonic", lambda: google_auth._HTTP_MAX_IDLE_SECONDS
     )
+
+    http = google_auth._acquire_http()
+
+    stale_http.close.assert_called_once_with()
+    assert http is not stale_http
+    assert not google_auth._idle_http
+
+
+def test_failed_block_closes_instead_of_recycling():
+    service = MagicMock()
+
+    with pytest.raises(ValueError):
+        with recycling(service):
+            raise ValueError("boom")
+
+    service.close.assert_called_once_with()
+    assert not google_auth._idle_http
 
 
 def test_get_user_info_builds_service_with_authorized_http(monkeypatch):

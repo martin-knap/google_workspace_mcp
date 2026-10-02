@@ -1,9 +1,11 @@
 # ruff: noqa: E402
 # Startup warning filters must be installed before importing FastMCP/Authlib dependencies.
 import asyncio
+import gc
 import hashlib
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 from importlib import metadata
 from urllib.parse import urlparse, ParseResult
@@ -42,6 +44,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 import fastmcp
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.google import GoogleProvider
+from fastmcp.server.lifespan import lifespan
 from mcp.types import ToolAnnotations, Icon
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
@@ -82,6 +85,7 @@ _ALLOW_NULL_ORIGIN_CONSENT_ENV = "WORKSPACE_MCP_ALLOW_NULL_ORIGIN_CONSENT"
 _SESSION_IDLE_TIMEOUT_ENV = "WORKSPACE_MCP_SESSION_IDLE_TIMEOUT"
 # Leave a minute beyond the usual one-hour Google access-token lifetime.
 _DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 60 * 60 + 60
+_GOOGLE_API_WORKERS_ENV = "WORKSPACE_MCP_GOOGLE_API_WORKERS"
 
 
 def _parse_bool_env(value: str) -> bool:
@@ -282,6 +286,54 @@ def _compute_scope_fingerprint() -> str:
     return hashlib.sha256(scopes_str.encode()).hexdigest()[:12]
 
 
+def get_google_api_workers() -> Optional[int]:
+    """Parse WORKSPACE_MCP_GOOGLE_API_WORKERS; unset keeps asyncio's default.
+
+    Invalid values raise instead of falling back, so a misconfigured deployment
+    fails at startup.
+    """
+    raw = os.getenv(_GOOGLE_API_WORKERS_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(
+            f"{_GOOGLE_API_WORKERS_ENV} must be a positive integer, got {raw!r}"
+        )
+    return value
+
+
+@lifespan
+async def _freeze_startup_heap(server: FastMCP):
+    """Exempt objects loaded at startup from garbage collection.
+
+    Each tool call ends with a full collection to free googleapiclient reference
+    cycles. Freezing the modules and tool registry first keeps that collection
+    under a millisecond instead of scanning the whole startup heap every call.
+    """
+    gc.collect()
+    gc.freeze()
+    yield None
+
+
+@lifespan
+async def _google_api_executor(server: FastMCP):
+    """Size the executor that runs blocking Google API calls, when configured.
+
+    Tools run Google HTTP requests through asyncio.to_thread, so this pool caps
+    how many requests one process has in flight across all users.
+    """
+    workers = get_google_api_workers()
+    if workers:
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(workers, thread_name_prefix="google-api")
+        )
+    yield None
+
+
 # Custom FastMCP that adds secure middleware stack for OAuth 2.1
 class SecureFastMCP(FastMCP):
     def http_app(self, **kwargs) -> "Starlette":
@@ -405,6 +457,7 @@ server = SecureFastMCP(
     instructions=_server_instructions,
     website_url=_brand_config.brand_website_url,
     icons=_brand_icons,
+    lifespan=_freeze_startup_heap | _google_api_executor,
 )
 
 # Accept camelCase argument names (calendarId, timeMin, ...) from callers that

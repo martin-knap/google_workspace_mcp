@@ -1,5 +1,6 @@
 import pytest
 
+import auth.google_auth as google_auth
 from auth.oauth_config import reload_oauth_config
 
 
@@ -14,3 +15,11 @@ def _reset_oauth_config():
     """
     yield
     reload_oauth_config()
+
+
+@pytest.fixture(autouse=True)
+def _empty_http_pool():
+    """Keep connections recycled by one test, often mocks, out of the next."""
+    google_auth._idle_http.clear()
+    yield
+    google_auth._idle_http.clear()
