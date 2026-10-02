@@ -2826,19 +2826,9 @@ async def set_drive_file_permissions(
     # Handle link sharing via permissions API
     if link_sharing is not None:
         current_permissions = await asyncio.to_thread(
-            service.permissions()
-            .list(
-                fileId=file_id,
-                supportsAllDrives=True,
-                fields="permissions(id, type, role)",
-            )
-            .execute
+            list_all_permissions, service, file_id
         )
-        anyone_perms = [
-            p
-            for p in current_permissions.get("permissions", [])
-            if p.get("type") == "anyone"
-        ]
+        anyone_perms = [p for p in current_permissions if p.get("type") == "anyone"]
 
         if link_sharing == "off":
             if anyone_perms:

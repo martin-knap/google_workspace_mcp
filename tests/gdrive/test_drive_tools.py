@@ -34,6 +34,7 @@ from gdrive.drive_tools import (
     import_to_google_slides,
     list_drive_items,
     search_drive_files,
+    set_drive_file_permissions,
     update_drive_file,
 )
 
@@ -439,6 +440,51 @@ async def test_create_drive_file_normalizes_mixed_case_odt_mime_for_zip_validati
         )
 
     mock_service.files.return_value.create.return_value.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# set_drive_file_permissions - link sharing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
+async def test_link_sharing_off_finds_anyone_permission_on_a_later_page(
+    mock_resolve_item,
+):
+    """A public link past the first page of permissions is still removed."""
+    mock_resolve_item.return_value = ("file123", {"name": "Budget"})
+    mock_service = Mock()
+    pages = {
+        None: {
+            "permissions": [
+                {"id": f"u{i}", "type": "user", "role": "reader"} for i in range(100)
+            ],
+            "nextPageToken": "page2",
+        },
+        "page2": {
+            "permissions": [{"id": "anyone1", "type": "anyone", "role": "reader"}]
+        },
+    }
+
+    def list_permissions(**kwargs):
+        request = Mock()
+        request.execute.return_value = pages[kwargs.get("pageToken")]
+        return request
+
+    mock_service.permissions().list.side_effect = list_permissions
+
+    result = await _unwrap(set_drive_file_permissions)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        file_id="file123",
+        link_sharing="off",
+    )
+
+    mock_service.permissions().delete.assert_called_once_with(
+        fileId="file123", permissionId="anyone1", supportsAllDrives=True
+    )
+    assert "Link sharing: disabled" in result
 
 
 # ---------------------------------------------------------------------------
