@@ -1,9 +1,11 @@
 # ruff: noqa: E402
 # Startup warning filters must be installed before importing FastMCP/Authlib dependencies.
 import asyncio
+import gc
 import hashlib
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 from importlib import metadata
 from urllib.parse import urlparse, ParseResult
@@ -39,8 +41,10 @@ from core.config import (
     get_oauth_redirect_uri as get_oauth_redirect_uri_for_current_mode,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+import fastmcp
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.google import GoogleProvider
+from fastmcp.server.lifespan import lifespan
 from mcp.types import ToolAnnotations, Icon
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
@@ -78,6 +82,10 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 # header that received the request (a same-origin check).
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 _ALLOW_NULL_ORIGIN_CONSENT_ENV = "WORKSPACE_MCP_ALLOW_NULL_ORIGIN_CONSENT"
+_SESSION_IDLE_TIMEOUT_ENV = "WORKSPACE_MCP_SESSION_IDLE_TIMEOUT"
+# Leave a minute beyond the usual one-hour Google access-token lifetime.
+_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 60 * 60 + 60
+_GOOGLE_API_WORKERS_ENV = "WORKSPACE_MCP_GOOGLE_API_WORKERS"
 
 
 def _parse_bool_env(value: str) -> bool:
@@ -134,10 +142,11 @@ def _is_origin_allowed(origin: str) -> bool:
 def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
     """Return True when the Origin's authority matches the request's Host header.
 
-    A same-origin request is the server's own page calling back to the host that
-    served it, so it is never the cross-site/DNS-rebinding threat this middleware
-    guards against. Matching the Host header lets a single deployment answer on any
-    number of hostnames without enumerating each one in the allowlist.
+    This lets the OAuth proxy consent page post back to whatever host served it
+    without that host being in the allowlist. It is honored only in OAuth 2.1 mode:
+    a DNS-rebinding page controls both Host and Origin, so a same-origin match proves
+    nothing on its own, and only OAuth 2.1 mode requires a bearer token the
+    rebinding page cannot obtain on every MCP request.
     """
     if not host_header:
         return False
@@ -150,7 +159,11 @@ def _is_same_origin_as_host(origin: str, host_header: Optional[str]) -> bool:
         host_port = host.port or _DEFAULT_PORTS.get(parsed.scheme)
     except ValueError:
         return False
-    return parsed.hostname == host.hostname and origin_port == host_port
+    return (
+        parsed.hostname == host.hostname
+        and origin_port == host_port
+        and is_oauth21_enabled()
+    )
 
 
 def _is_null_origin_consent_compat_allowed(scope: Scope, origin: str) -> bool:
@@ -246,16 +259,92 @@ class WellKnownCacheControlMiddleware:
 well_known_cache_control_middleware = Middleware(WellKnownCacheControlMiddleware)
 
 
+def get_session_idle_timeout() -> Optional[int]:
+    """Parse WORKSPACE_MCP_SESSION_IDLE_TIMEOUT; 0 defers to FastMCP's setting.
+
+    Invalid values raise instead of falling back, so a misconfigured deployment
+    fails at startup.
+    """
+    raw = os.getenv(_SESSION_IDLE_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError(
+            f"{_SESSION_IDLE_TIMEOUT_ENV} must be a non-negative integer "
+            f"(seconds), got {raw!r}"
+        )
+    return value or None
+
+
 def _compute_scope_fingerprint() -> str:
     """Compute a short hash of the current scope configuration for cache-busting."""
     scopes_str = ",".join(sorted(get_current_scopes()))
     return hashlib.sha256(scopes_str.encode()).hexdigest()[:12]
 
 
+def get_google_api_workers() -> Optional[int]:
+    """Parse WORKSPACE_MCP_GOOGLE_API_WORKERS; unset keeps asyncio's default.
+
+    Invalid values raise instead of falling back, so a misconfigured deployment
+    fails at startup.
+    """
+    raw = os.getenv(_GOOGLE_API_WORKERS_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(
+            f"{_GOOGLE_API_WORKERS_ENV} must be a positive integer, got {raw!r}"
+        )
+    return value
+
+
+@lifespan
+async def _freeze_startup_heap(server: FastMCP):
+    """Exempt objects loaded at startup from garbage collection.
+
+    Each tool call ends with a full collection to free googleapiclient reference
+    cycles. Freezing the modules and tool registry first keeps that collection
+    under a millisecond instead of scanning the whole startup heap every call.
+    """
+    gc.collect()
+    gc.freeze()
+    yield None
+
+
+@lifespan
+async def _google_api_executor(server: FastMCP):
+    """Size the executor that runs blocking Google API calls, when configured.
+
+    Tools run Google HTTP requests through asyncio.to_thread, so this pool caps
+    how many requests one process has in flight across all users.
+    """
+    workers = get_google_api_workers()
+    if workers:
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(workers, thread_name_prefix="google-api")
+        )
+    yield None
+
+
 # Custom FastMCP that adds secure middleware stack for OAuth 2.1
 class SecureFastMCP(FastMCP):
     def http_app(self, **kwargs) -> "Starlette":
         """Override to add secure middleware stack for OAuth 2.1."""
+        # Bound memory retained by abandoned stateful sessions. Resolve an omitted
+        # or None stateless_http the same way FastMCP does.
+        stateless_http = kwargs.get("stateless_http")
+        if stateless_http is None:
+            stateless_http = fastmcp.settings.stateless_http
+        if not stateless_http and "session_idle_timeout" not in kwargs:
+            kwargs["session_idle_timeout"] = get_session_idle_timeout()
         app = super().http_app(**kwargs)
 
         # Add middleware in order (first added = outermost layer)
@@ -368,16 +457,17 @@ server = SecureFastMCP(
     instructions=_server_instructions,
     website_url=_brand_config.brand_website_url,
     icons=_brand_icons,
+    lifespan=_freeze_startup_heap | _google_api_executor,
 )
-
-# Add the AuthInfo middleware to inject authentication into FastMCP context
-auth_info_middleware = AuthInfoMiddleware()
-server.add_middleware(auth_info_middleware)
 
 # Accept camelCase argument names (calendarId, timeMin, ...) from callers that
 # mirror the Google API field names, mapping them onto the snake_case tool
 # parameters. See https://github.com/taylorwilsdon/google_workspace_mcp/issues/918
 server.add_middleware(CamelCaseArgumentsMiddleware())
+
+# Add the AuthInfo middleware to inject authentication into FastMCP context
+auth_info_middleware = AuthInfoMiddleware()
+server.add_middleware(auth_info_middleware)
 
 # Advertise tool schemas without null unions or ``const``, which Gemini's
 # function-calling schema cannot represent. See
@@ -683,9 +773,6 @@ def configure_server_for_http():
                 # Enable protocol-level auth
                 server.auth = provider
                 _oauth_client_storage = client_storage
-                logger.info(
-                    "OAuth 2.1 enabled using FastMCP GoogleProvider with protocol-level auth"
-                )
 
             # Always set auth provider for token validation in middleware
             set_auth_provider(provider)

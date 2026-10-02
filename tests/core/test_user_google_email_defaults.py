@@ -220,7 +220,7 @@ async def test_authenticate_service_account_uses_verified_gateway_email(monkeypa
         "_get_service_account_credentials",
         fake_get_service_account_credentials,
     )
-    monkeypatch.setattr(service_decorator, "build", fake_build)
+    monkeypatch.setattr(service_decorator, "build_google_service", fake_build)
 
     service, actual_user = await service_decorator._authenticate_service(
         use_oauth21=False,
@@ -305,7 +305,7 @@ def _patch_service_account(monkeypatch, *, allowed_domains=""):
         "_get_service_account_credentials",
         fake_get_creds,
     )
-    monkeypatch.setattr(service_decorator, "build", fake_build)
+    monkeypatch.setattr(service_decorator, "build_google_service", fake_build)
     return captured, fake_service
 
 

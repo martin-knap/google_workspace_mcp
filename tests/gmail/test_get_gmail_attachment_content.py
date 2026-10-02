@@ -65,11 +65,14 @@ def isolated_attachment_env(tmp_path, monkeypatch):
     """Route attachment storage to a temp dir and force HTTP (not stateless) mode."""
     import core.attachment_storage as storage_module
     import auth.oauth_config as oauth_config_module
-    import core.config as core_config_module
 
     monkeypatch.setattr(storage_module, "STORAGE_DIR", tmp_path)
     monkeypatch.setattr(oauth_config_module, "is_stateless_mode", lambda: False)
-    monkeypatch.setattr(core_config_module, "get_transport_mode", lambda: "http")
+    # Patch the shared config state rather than one module's reference to the
+    # getter; otherwise stdio mode starts a real callback listener on port 8000.
+    monkeypatch.setattr(
+        oauth_config_module.get_oauth_config(), "_transport_mode", "streamable-http"
+    )
 
     # Reset the cached module-level storage singleton so our patched
     # STORAGE_DIR actually takes effect.
