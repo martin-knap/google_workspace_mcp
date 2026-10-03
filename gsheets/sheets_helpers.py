@@ -1677,4 +1677,9 @@ async def _insert_cell_comment(
 
     replies = response.get("replies") or [{}]
     thread = replies[0].get("insertComment", {}).get("commentThread", {})
-    return thread.get("commentId", "")
+    comment_id = thread.get("commentId")
+    if not comment_id:
+        raise RuntimeError(
+            f"Sheets API did not return a comment ID for {cell}; the comment may not have been created."
+        )
+    return comment_id

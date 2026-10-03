@@ -47,12 +47,12 @@ async def _manage_comment_dispatch(
 ) -> str:
     """Route comment management actions to the appropriate implementation."""
     action_lower = action.lower().strip()
-    if cell is not None and action_lower != "create":
+    if cell and action_lower != "create":
         raise ValueError("cell is only supported for the create action")
     if action_lower == "create":
         if not comment_content:
             raise ValueError("comment_content is required for create action")
-        if cell is not None:
+        if cell:
             return await _create_cell_comment_impl(
                 insert_cell_comment, sheets_service, file_id, cell, comment_content
             )

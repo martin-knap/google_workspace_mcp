@@ -29,8 +29,9 @@ def _mock_sheets_service(comment_id="thread-1"):
     service = Mock()
     spreadsheets = service.spreadsheets.return_value
     spreadsheets.get.return_value.execute.return_value = {"sheets": SHEETS}
+    thread = {"commentId": comment_id} if comment_id else {}
     spreadsheets.batchUpdate.return_value.execute.return_value = {
-        "replies": [{"insertComment": {"commentThread": {"commentId": comment_id}}}]
+        "replies": [{"insertComment": {"commentThread": thread}}]
     }
     return service
 
@@ -138,4 +139,38 @@ class TestManageSpreadsheetCommentCell:
         with pytest.raises(ValueError, match="comment_content is required"):
             await manage_comment(
                 Mock(), Mock(), "user@example.com", "sheet123", "create", cell="A1"
+            )
+
+    @pytest.mark.asyncio
+    async def test_empty_cell_falls_back_to_drive(self, manage_comment):
+        drive = Mock()
+        drive.comments.return_value.create.return_value.execute.return_value = {
+            "id": "c1"
+        }
+        sheets = Mock()
+
+        result = await manage_comment(
+            drive,
+            sheets,
+            "user@example.com",
+            "sheet123",
+            "create",
+            comment_content="File-level",
+            cell="",
+        )
+
+        assert "Comment ID: c1" in result
+        sheets.spreadsheets.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_comment_id_raises(self, manage_comment):
+        with pytest.raises(RuntimeError, match="did not return a comment ID"):
+            await manage_comment(
+                Mock(),
+                _mock_sheets_service(comment_id=None),
+                "user@example.com",
+                "sheet123",
+                "create",
+                comment_content="x",
+                cell="A1",
             )
