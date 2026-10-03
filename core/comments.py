@@ -8,11 +8,11 @@ All Google Workspace apps (Docs, Sheets, Slides) use the Drive API for comment o
 import logging
 import asyncio
 import os
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from mcp.types import ToolAnnotations
 
-from auth.service_decorator import require_google_service
+from auth.service_decorator import require_google_service, require_multiple_services
 from core.server import server
 from core.utils import handle_http_errors
 
@@ -66,13 +66,18 @@ async def _manage_comment_dispatch(
         )
 
 
-def create_comment_tools(app_name: str, file_id_param: str):
+def create_comment_tools(
+    app_name: str,
+    file_id_param: str,
+    insert_cell_comment: Optional[Callable[..., Awaitable[str]]] = None,
+):
     """
     Factory function to create comment management tools for a specific Google Workspace app.
 
     Args:
         app_name: Name of the app (e.g., "document", "spreadsheet", "presentation")
         file_id_param: Parameter name for the file ID (e.g., "document_id", "spreadsheet_id", "presentation_id")
+        insert_cell_comment: Spreadsheet only; passed in because gsheets imports this module.
 
     Returns:
         Dict containing the comment management functions with unique names
@@ -138,25 +143,45 @@ def create_comment_tools(app_name: str, file_id_param: str):
             )
 
         # Use full Drive scope so comment operations remain visible to collaborators.
-        @require_google_service("drive", "drive")
+        @require_multiple_services(
+            [
+                {"service_type": "drive", "scopes": "drive", "param_name": "service"},
+                {
+                    "service_type": "sheets",
+                    "scopes": "sheets_write",
+                    "param_name": "sheets_service",
+                },
+            ]
+        )
         @handle_http_errors(manage_func_name, service_type="drive")
         async def manage_comment(
             service,
+            sheets_service,
             user_google_email: str,
             spreadsheet_id: str,
             action: str,
             comment_content: Optional[str] = None,
             comment_id: Optional[str] = None,
+            cell: Optional[str] = None,
         ) -> str:
             """Manage comments on a Google Spreadsheet.
 
             Actions:
-              - create: Create a new comment. Requires comment_content.
-                Note: The Drive API cannot anchor comments to arbitrary text;
-                Sheets comments are cell-scoped via the API.
+              - create: Create a new comment. Requires comment_content. Pass cell
+                (A1 notation, e.g. 'Sheet1!B2'; defaults to the first sheet) to
+                anchor it to a cell; otherwise it is a file-level comment.
               - reply: Reply to a comment. Requires comment_id and comment_content.
               - resolve: Resolve a comment. Requires comment_id.
             """
+            if cell is not None:
+                if action.lower().strip() != "create":
+                    raise ValueError("cell is only supported for the create action")
+                if not comment_content:
+                    raise ValueError("comment_content is required for create action")
+                new_id = await insert_cell_comment(
+                    sheets_service, spreadsheet_id, cell, comment_content
+                )
+                return f"Comment created successfully on {cell}!\nComment ID: {new_id}\n{_format_field('Content: ', comment_content)}"
             return await _manage_comment_dispatch(
                 service, app_name, spreadsheet_id, action, comment_content, comment_id
             )
