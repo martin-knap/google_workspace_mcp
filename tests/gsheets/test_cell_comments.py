@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from auth.scopes import DRIVE_SCOPE, SHEETS_WRITE_SCOPE
 from core.comments import create_comment_tools
 from core.utils import UserInputError
 from gsheets.sheets_helpers import _build_insert_comment_request, _insert_cell_comment
@@ -174,3 +175,12 @@ class TestManageSpreadsheetCommentCell:
                 comment_content="x",
                 cell="A1",
             )
+
+
+def test_manage_comment_requires_drive_and_sheets_write_scopes():
+    tools = create_comment_tools(
+        "spreadsheet", "spreadsheet_id", insert_cell_comment=_insert_cell_comment
+    )
+    tool = tools["manage_comment"]
+    fn = tool.fn if hasattr(tool, "fn") else tool
+    assert set(fn._required_google_scopes) >= {DRIVE_SCOPE, SHEETS_WRITE_SCOPE}
