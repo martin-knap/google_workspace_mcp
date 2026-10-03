@@ -41,12 +41,21 @@ async def _manage_comment_dispatch(
     action: str,
     comment_content: Optional[str] = None,
     comment_id: Optional[str] = None,
+    cell: Optional[str] = None,
+    sheets_service=None,
+    insert_cell_comment: Optional[Callable[..., Awaitable[str]]] = None,
 ) -> str:
     """Route comment management actions to the appropriate implementation."""
     action_lower = action.lower().strip()
+    if cell is not None and action_lower != "create":
+        raise ValueError("cell is only supported for the create action")
     if action_lower == "create":
         if not comment_content:
             raise ValueError("comment_content is required for create action")
+        if cell is not None:
+            return await _create_cell_comment_impl(
+                insert_cell_comment, sheets_service, file_id, cell, comment_content
+            )
         return await _create_comment_impl(service, app_name, file_id, comment_content)
     elif action_lower == "reply":
         if not comment_id or not comment_content:
@@ -173,17 +182,16 @@ def create_comment_tools(
               - reply: Reply to a comment. Requires comment_id and comment_content.
               - resolve: Resolve a comment. Requires comment_id.
             """
-            if cell is not None:
-                if action.lower().strip() != "create":
-                    raise ValueError("cell is only supported for the create action")
-                if not comment_content:
-                    raise ValueError("comment_content is required for create action")
-                new_id = await insert_cell_comment(
-                    sheets_service, spreadsheet_id, cell, comment_content
-                )
-                return f"Comment created successfully on {cell}!\nComment ID: {new_id}\n{_format_field('Content: ', comment_content)}"
             return await _manage_comment_dispatch(
-                service, app_name, spreadsheet_id, action, comment_content, comment_id
+                service,
+                app_name,
+                spreadsheet_id,
+                action,
+                comment_content,
+                comment_id,
+                cell=cell,
+                sheets_service=sheets_service,
+                insert_cell_comment=insert_cell_comment,
             )
 
     elif file_id_param == "presentation_id":
@@ -362,6 +370,23 @@ async def _create_comment_impl(
     created = comment.get("createdTime", "")
 
     return f"Comment created successfully!\nComment ID: {comment_id}\nAuthor: {author}\nCreated: {created}\n{_format_field('Content: ', comment_content)}"
+
+
+async def _create_cell_comment_impl(
+    insert_cell_comment: Callable[..., Awaitable[str]],
+    sheets_service,
+    spreadsheet_id: str,
+    cell: str,
+    comment_content: str,
+) -> str:
+    """Implementation for creating a cell-anchored comment on a spreadsheet."""
+    logger.info(
+        f"[create_spreadsheet_comment] Creating comment on {cell} in spreadsheet {spreadsheet_id}"
+    )
+    comment_id = await insert_cell_comment(
+        sheets_service, spreadsheet_id, cell, comment_content
+    )
+    return f"Comment created successfully on {cell}!\nComment ID: {comment_id}\n{_format_field('Content: ', comment_content)}"
 
 
 async def _reply_to_comment_impl(
