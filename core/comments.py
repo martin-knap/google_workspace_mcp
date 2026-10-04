@@ -53,6 +53,8 @@ async def _manage_comment_dispatch(
         if not comment_content:
             raise ValueError("comment_content is required for create action")
         if cell:
+            if insert_cell_comment is None:
+                raise ValueError("insert_cell_comment is required for cell comments")
             return await _create_cell_comment_impl(
                 insert_cell_comment, sheets_service, file_id, cell, comment_content
             )
