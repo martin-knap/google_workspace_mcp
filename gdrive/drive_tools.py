@@ -222,9 +222,7 @@ async def search_drive_files(
             f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'"
         )
 
-    # Drive API v3 uses `name`, not v2 `title` (and `Time` suffix, not `Date`).
-    # Normalize v2 field names outside quoted literals so
-    # `title contains 'test'` becomes `name contains 'test'`.
+    # Rewrite v2 field names (title, *Date) to their v3 equivalents; literals are untouched.
     normalized_query = normalize_drive_query_v2_compat(final_query)
     if normalized_query != final_query:
         logger.info(
