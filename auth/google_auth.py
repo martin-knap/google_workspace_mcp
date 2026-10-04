@@ -1,24 +1,37 @@
 # auth/google_auth.py
 
 import asyncio
-import json
+import hashlib
 import jwt
 import logging
 import os
+import time
+import webbrowser
 
-from typing import List, Optional, Tuple, Dict, Any
+from collections import deque
+from contextlib import contextmanager
+from typing import List, Optional, Tuple, Dict, Any, Iterator
 from urllib.parse import parse_qs, urlparse
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
-from googleapiclient.discovery import build
+import google.auth.credentials
+from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
+import httplib2
+import google_auth_httplib2
 from auth.scopes import SCOPES, get_current_scopes, has_required_scopes  # noqa
+from auth.client_secrets import get_client_secrets_path, load_client_secrets_file
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.credential_store import get_credential_store
-from auth.oauth_config import get_oauth_config, is_stateless_mode
+from auth.gateway_identity import normalize_principal_email
+from auth.oauth_config import (
+    is_oauth21_enabled,
+    is_stateless_mode,
+    is_trust_gateway_identity,
+)
 from core.config import (
     get_transport_mode,
     get_oauth_redirect_uri,
@@ -34,6 +47,13 @@ except ImportError:
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _session_id_log_fingerprint(session_id: Optional[str]) -> str:
+    """Return a stable, non-reversible session identifier for logs."""
+    if not session_id:
+        return "<none>"
+    return f"sha256:{hashlib.sha256(session_id.encode()).hexdigest()[:12]}"
 
 
 # Constants
@@ -74,19 +94,64 @@ def get_default_credentials_dir():
 
 DEFAULT_CREDENTIALS_DIR = get_default_credentials_dir()
 
+
+_HTTP_TIMEOUT_SECONDS = 30
+# httplib2 does not retry a request whose send fails on a connection the server
+# already dropped, so only reuse connections that were active recently.
+_HTTP_MAX_IDLE_SECONDS = 60
+# Raw httplib2.Http objects only: they hold sockets, never credentials, so a
+# pooled connection can safely serve any user's next request.
+_idle_http: deque[tuple[float, httplib2.Http]] = deque(maxlen=32)
+
+
+def _acquire_http() -> httplib2.Http:
+    """Pop the most recently released connection, or create a new one."""
+    try:
+        while True:
+            released_at, http = _idle_http.pop()
+            if time.monotonic() - released_at < _HTTP_MAX_IDLE_SECONDS:
+                return http
+            http.close()
+    except IndexError:
+        pass
+    http = httplib2.Http(timeout=_HTTP_TIMEOUT_SECONDS)
+    # Drive uses 308 Resume Incomplete with Range during resumable uploads, not a redirect.
+    http.redirect_codes = http.redirect_codes - {308}
+    return http
+
+
+def _build_authorized_http(
+    credentials: google.auth.credentials.Credentials,
+) -> google_auth_httplib2.AuthorizedHttp:
+    """Return credentialed HTTP over a pooled, timeout-bounded connection."""
+    return google_auth_httplib2.AuthorizedHttp(credentials, http=_acquire_http())
+
+
+def build_google_service(
+    service_name: str, version: str, credentials: google.auth.credentials.Credentials
+) -> Resource:
+    """Build a discovery client on a pooled, timeout-bounded connection."""
+    return build(service_name, version, http=_build_authorized_http(credentials))
+
+
+@contextmanager
+def recycling(service: Resource) -> Iterator[Resource]:
+    """Like contextlib.closing, but return the connection to the pool on success.
+
+    After an error or cancellation a worker thread may still be mid-request on
+    this connection, so it is closed instead and never shared with another call.
+    """
+    try:
+        yield service
+    except BaseException:
+        service.close()
+        raise
+    _idle_http.append((time.monotonic(), service._http.http))
+
+
 # Session credentials now handled by OAuth21SessionStore - no local cache needed
 # Centralized Client Secrets Path Logic
-_client_secrets_env = os.getenv("GOOGLE_CLIENT_SECRET_PATH") or os.getenv(
-    "GOOGLE_CLIENT_SECRETS"
-)
-if _client_secrets_env:
-    CONFIG_CLIENT_SECRETS_PATH = _client_secrets_env
-else:
-    # Assumes this file is in auth/ and client_secret.json is in the root
-    CONFIG_CLIENT_SECRETS_PATH = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "client_secret.json",
-    )
+CONFIG_CLIENT_SECRETS_PATH = get_client_secrets_path()
 
 # --- Helper Functions ---
 
@@ -260,27 +325,12 @@ def load_client_secrets(client_secrets_path: str) -> Dict[str, Any]:
 
     # Fall back to loading from file
     try:
-        with open(client_secrets_path, "r") as f:
-            client_config = json.load(f)
-            # The file usually contains a top-level key like "web" or "installed"
-            if "web" in client_config:
-                logger.info(
-                    f"Loaded OAuth client credentials from file: {client_secrets_path}"
-                )
-                return client_config["web"]
-            elif "installed" in client_config:
-                logger.info(
-                    f"Loaded OAuth client credentials from file: {client_secrets_path}"
-                )
-                return client_config["installed"]
-            else:
-                logger.error(
-                    f"Client secrets file {client_secrets_path} has unexpected format."
-                )
-                raise ValueError("Invalid client secrets file format")
-    except (IOError, json.JSONDecodeError) as e:
+        client_config = load_client_secrets_file(client_secrets_path)
+    except (IOError, ValueError) as e:
         logger.error(f"Error loading client secrets file {client_secrets_path}: {e}")
         raise
+    logger.info(f"Loaded OAuth client credentials from file: {client_secrets_path}")
+    return client_config
 
 
 def check_client_secrets() -> Optional[str]:
@@ -462,6 +512,8 @@ async def start_auth_flow(
     user_google_email: Optional[str],
     service_name: str,  # e.g., "Google Calendar", "Gmail" for user messages
     redirect_uri: str,  # Added redirect_uri as a required parameter
+    *,
+    principal_source: Optional[str] = None,
 ) -> str:
     """
     Initiates the Google OAuth flow and returns an actionable message for the user.
@@ -470,6 +522,7 @@ async def start_auth_flow(
         user_google_email: The user's specified Google email, if provided.
         service_name: The name of the Google service requiring auth (for user messages).
         redirect_uri: The URI Google will redirect to after authorization.
+        principal_source: Verified source of an enforced principal binding, if any.
 
     Returns:
         A formatted string containing guidance for the LLM/user.
@@ -477,6 +530,17 @@ async def start_auth_flow(
     Raises:
         Exception: If the OAuth flow cannot be initiated.
     """
+    if principal_source not in (None, "gateway_assertion"):
+        raise ValueError(f"Unsupported OAuth principal source: {principal_source}")
+
+    enforce_user_email_match = principal_source == "gateway_assertion"
+    if enforce_user_email_match:
+        user_google_email = normalize_principal_email(user_google_email)
+        if not user_google_email:
+            raise GoogleAuthenticationError(
+                "Trusted-gateway OAuth flow requires a verified email principal."
+            )
+
     initial_email_provided = bool(
         user_google_email
         and user_google_email.strip()
@@ -525,28 +589,76 @@ async def start_auth_flow(
             required_scopes=current_scopes,
             session_id=session_id,
         )
-        auth_url, _ = flow.authorization_url(access_type="offline", prompt=prompt_type)
+        # Add login_hint if email provided so Google pre-selects the right account
+        auth_kwargs = {"access_type": "offline", "prompt": prompt_type}
+        if initial_email_provided:
+            auth_kwargs["login_hint"] = user_google_email
+        auth_url, _ = flow.authorization_url(**auth_kwargs)
+
+        browser_opened = False
+        should_open_browser = (
+            get_transport_mode() == "stdio" and not is_oauth21_enabled()
+        )
+        if should_open_browser:
+            # Only legacy stdio runs on the user's workstation. HTTP/OAuth 2.1
+            # deployments may be remote, so opening a server-side browser is wrong.
+            try:
+                browser_opened = await asyncio.to_thread(webbrowser.open, auth_url)
+                if browser_opened:
+                    logger.info("Opened auth URL in browser automatically")
+                else:
+                    logger.info(
+                        "webbrowser.open() reported failure (likely headless environment); "
+                        "falling back to displaying URL"
+                    )
+            except Exception as e:
+                logger.warning(f"Could not open browser automatically: {e}")
 
         store = get_oauth21_session_store()
         store.store_oauth_state(
             oauth_state,
             session_id=session_id,
             code_verifier=flow.code_verifier,
+            expected_user_email=(
+                user_google_email if enforce_user_email_match else None
+            ),
+            enforce_user_email_match=enforce_user_email_match,
+            principal_source=principal_source,
         )
 
         logger.info(
-            f"Auth flow started for {user_display_name}. Advise user to visit: {auth_url}"
+            f"Auth flow started for {user_display_name}. State: {oauth_state[:8]}... "
+            f"Browser opened automatically: {browser_opened}"
         )
 
-        message_lines = [
-            f"**ACTION REQUIRED: Google Authentication Needed for {user_display_name}**\n",
-            f"To proceed, the user must authorize this application for {service_name} access using all required permissions.",
-            "**LLM, please present this exact authorization URL to the user as a clickable hyperlink:**",
-            f"Authorization URL: {auth_url}",
-            f"Markdown for hyperlink: [Click here to authorize {service_name} access]({auth_url})\n",
-            "**LLM, after presenting the link, instruct the user as follows:**",
-            "1. Click the link and complete the authorization in their browser.",
-        ]
+        # Trusted-gateway identity: the principal is verified and fixed, so give a clear,
+        # identity-specific instruction — no "tell me your email" step, no generic
+        # "must match" footnote that confuses the client.
+        if enforce_user_email_match:
+            return "\n".join(
+                [
+                    f"**ACTION REQUIRED: Google sign-in needed for {user_display_name}**\n",
+                    f"You're authenticated at the gateway as **{user_google_email}**. To authorize Google access:",
+                    f"1. Open this URL and sign in to Google as **{user_google_email}** — it must be that exact account (your verified gateway identity):",
+                    f"   Authorization URL: {auth_url}",
+                    "2. After authorizing, retry your original request.",
+                    f"\nOnly the Google account matching your gateway identity (**{user_google_email}**) can be authorized — signing in with a different account is rejected.",
+                ]
+            )
+
+        if browser_opened:
+            message_lines = [
+                f"**ACTION REQUIRED: Google Authentication Needed for {user_display_name}**\n",
+                "1. The authorization page has been **automatically opened in your browser**. Please complete the authorization there.",
+                "   If it did not appear, open this URL manually:",
+                f"   Authorization URL: {auth_url}",
+            ]
+        else:
+            message_lines = [
+                f"**ACTION REQUIRED: Google Authentication Needed for {user_display_name}**\n",
+                f"1. Open this URL in your browser to authorize {service_name} access using all required permissions:",
+                f"   Authorization URL: {auth_url}",
+            ]
         session_info_for_llm = ""
 
         if not initial_email_provided:
@@ -586,6 +698,8 @@ async def handle_auth_callback(
     redirect_uri: str,
     credentials_base_dir: str = DEFAULT_CREDENTIALS_DIR,
     session_id: Optional[str] = None,
+    *,
+    allow_missing_state_fallback: bool = False,
     client_secrets_path: Optional[
         str
     ] = None,  # Deprecated: kept for backward compatibility
@@ -601,6 +715,9 @@ async def handle_auth_callback(
         redirect_uri: The redirect URI.
         credentials_base_dir: Base directory for credential files.
         session_id: Optional MCP session ID to associate with the credentials.
+        allow_missing_state_fallback: Whether to recover a missing callback state
+            from the most recently stored OAuth state. Only enable for local stdio
+            callbacks where there is no multi-user session context.
         client_secrets_path: (Deprecated) Path to client secrets file. Ignored if environment variables are set.
 
     Returns:
@@ -640,15 +757,20 @@ async def handle_auth_callback(
             state_info = store.validate_and_consume_oauth_state(
                 state, session_id=session_id
             )
-        elif session_id is None:
+        elif (
+            allow_missing_state_fallback
+            and os.getenv("MCP_SINGLE_USER_MODE") == "1"
+            and session_id is None
+        ):
             # stdio mode fallback: state may be absent from Google's redirect
             # (e.g. when prompt=select_account is used with revoked credentials).
             # Use the most recently stored state to recover the PKCE code_verifier.
             logger.warning(
-                "OAuth callback missing state parameter; using most recent stored state (stdio fallback)"
+                "OAuth callback missing state parameter; using most recent stored state (single-user stdio fallback)"
             )
             state_info = store.consume_latest_oauth_state(
-                initiating_session_id=session_id
+                initiating_session_id=session_id,
+                allow_any_session=True,
             )
             if not state_info:
                 raise ValueError(
@@ -662,6 +784,15 @@ async def handle_auth_callback(
             (state[:8] if state else "<fallback>"),
             state_info.get("session_id") or "<unknown>",
         )
+
+        if not session_id:
+            originating_session_id = state_info.get("session_id")
+            if originating_session_id:
+                session_id = originating_session_id
+                logger.info(
+                    "OAuth callback: bound credentials to originating MCP session %s",
+                    _session_id_log_fingerprint(originating_session_id),
+                )
 
         flow = create_oauth_flow(
             scopes=scopes,
@@ -719,6 +850,48 @@ async def handle_auth_callback(
 
         user_google_email = user_info["email"]
         logger.info(f"Identified user_google_email: {user_google_email}")
+
+        enforcement_marker = state_info.get("enforce_user_email_match")
+        if is_trust_gateway_identity():
+            if enforcement_marker is not True:
+                raise GoogleAuthenticationError(
+                    "OAuth consent state predates trusted-gateway principal binding. "
+                    "Please restart authentication."
+                )
+        elif enforcement_marker not in (True, False):
+            # State entries created before explicit binding markers existed are not
+            # enforcing outside trusted-gateway mode.
+            enforcement_marker = False
+        if enforcement_marker is True:
+            # Normalization is confined to the enforced gateway path so legacy flows
+            # keep Google's email byte-for-byte as the credential key.
+            expected_email = normalize_principal_email(
+                state_info.get("expected_user_email")
+            )
+            principal_source = state_info.get("principal_source")
+            if principal_source != "gateway_assertion" or not expected_email:
+                logger.error(
+                    "SECURITY: OAuth state requires principal enforcement but its "
+                    "gateway binding is missing or invalid; rejecting."
+                )
+                raise GoogleAuthenticationError(
+                    "OAuth consent state is missing its verified gateway principal."
+                )
+            consented_email = normalize_principal_email(user_google_email)
+            if consented_email != expected_email:
+                logger.error(
+                    "SECURITY: OAuth consent account '%s' does not match the gateway "
+                    "identity '%s'; rejecting (no credentials stored).",
+                    user_google_email,
+                    expected_email,
+                )
+                raise GoogleAuthenticationError(
+                    f"Google account mismatch: you signed in as {user_google_email}, "
+                    f"but your verified gateway identity is {expected_email}. Please "
+                    f"sign in to Google as {expected_email}."
+                )
+            # Use the exact canonical key selected by the gateway for every store.
+            user_google_email = expected_email
 
         stateless_mode = is_stateless_mode()
         credential_store = None
@@ -1137,7 +1310,7 @@ def get_user_info(
     try:
         # Using googleapiclient discovery to get user info
         # Requires 'google-api-python-client' library
-        service = build("oauth2", "v2", credentials=credentials)
+        service = build_google_service("oauth2", "v2", credentials)
         user_info = service.userinfo().get().execute()
         logger.info(f"Successfully fetched user info: {user_info.get('email')}")
         return user_info
@@ -1259,36 +1432,34 @@ async def get_authenticated_google_service(
         )
 
         redirect_uri = get_oauth_redirect_uri()
-        transport_mode = get_transport_mode()
-        if transport_mode == "stdio":
-            # Only stdio legacy OAuth depends on the standalone callback server.
-            from auth.oauth_callback_server import ensure_oauth_callback_available
+        # Only stdio legacy OAuth depends on the standalone callback server; the
+        # helper no-ops in other transports and binds the port lazily (#832).
+        from auth.oauth_callback_server import ensure_stdio_oauth_callback_available
 
-            config = get_oauth_config()
-            success, error_msg = await asyncio.to_thread(
-                ensure_oauth_callback_available,
-                transport_mode,
-                config.port,
-                config.base_uri,
+        success, error_msg = await asyncio.to_thread(
+            ensure_stdio_oauth_callback_available
+        )
+        if not success:
+            error_detail = f" ({error_msg})" if error_msg else ""
+            raise GoogleAuthenticationError(
+                f"Cannot initiate OAuth flow - callback server unavailable{error_detail}"
             )
-            if not success:
-                error_detail = f" ({error_msg})" if error_msg else ""
-                raise GoogleAuthenticationError(
-                    f"Cannot initiate OAuth flow - callback server unavailable{error_detail}"
-                )
 
         # Generate auth URL and raise exception with it
         auth_response = await start_auth_flow(
             user_google_email=user_google_email,
             service_name=f"Google {service_name.title()}",
             redirect_uri=redirect_uri,
+            principal_source=(
+                "gateway_assertion" if is_trust_gateway_identity() else None
+            ),
         )
 
         # Extract the auth URL from the response and raise with it
         raise GoogleAuthenticationError(auth_response)
 
     try:
-        service = build(service_name, version, credentials=credentials)
+        service = build_google_service(service_name, version, credentials)
         log_user_email = user_google_email
 
         # Try to get email from credentials if needed for validation

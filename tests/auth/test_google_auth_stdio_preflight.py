@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from auth.google_auth import GoogleAuthenticationError, get_authenticated_google_service
@@ -23,13 +21,12 @@ async def test_get_authenticated_google_service_skips_preflight_outside_stdio(
     monkeypatch.setattr("auth.google_auth.asyncio.to_thread", fake_to_thread)
     monkeypatch.setattr("auth.google_auth.get_credentials", lambda **kwargs: None)
     monkeypatch.setattr(
-        "auth.google_auth.get_transport_mode", lambda: "streamable-http"
+        "auth.oauth_callback_server.get_transport_mode", lambda: "streamable-http"
     )
     monkeypatch.setattr(
         "auth.google_auth.get_oauth_redirect_uri",
         lambda: "http://localhost:8000/oauth2callback",
     )
-    monkeypatch.setattr("auth.google_auth.get_oauth_config", lambda: SimpleNamespace())
     monkeypatch.setattr("auth.google_auth.start_auth_flow", fake_start_auth_flow)
     monkeypatch.setattr(
         "auth.oauth_callback_server.ensure_oauth_callback_available",

@@ -5,6 +5,8 @@ Tests the batch_update_form tool with mocked API responses
 """
 
 import pytest
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 from unittest.mock import Mock
 import sys
 import os
@@ -12,7 +14,13 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 # Import internal implementation functions (not decorated tool wrappers)
-from gforms.forms_tools import _batch_update_form_impl, _serialize_form_item, get_form
+from gforms.forms_tools import (
+    _batch_update_form_impl,
+    _serialize_form_item,
+    create_form,
+    get_form,
+    set_publish_settings,
+)
 
 
 @pytest.mark.asyncio
@@ -342,3 +350,141 @@ async def test_get_form_returns_structured_item_metadata():
     assert '"type": "GRID"' in result
     assert '"columns": [' in result
     assert '"rows": [' in result
+
+
+@pytest.mark.asyncio
+async def test_set_publish_settings_builds_publish_state_body():
+    """set_publish_settings should send publishSettings.publishState with an updateMask."""
+    mock_service = Mock()
+    mock_service.forms().setPublishSettings().execute.return_value = {}
+
+    result = await set_publish_settings.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "form_123",
+        is_published=True,
+        is_accepting_responses=False,
+    )
+
+    _, kwargs = mock_service.forms().setPublishSettings.call_args
+    assert kwargs["formId"] == "form_123"
+    assert kwargs["body"] == {
+        "publishSettings": {
+            "publishState": {
+                "isPublished": True,
+                "isAcceptingResponses": False,
+            }
+        },
+        "updateMask": "publishState",
+    }
+    assert "Published: True" in result
+    assert "Accepting responses: False" in result
+    assert "form_123" in result
+
+
+@pytest.mark.asyncio
+async def test_set_publish_settings_defaults_publish_and_accept():
+    """Defaults should publish the form and accept responses."""
+    mock_service = Mock()
+    mock_service.forms().setPublishSettings().execute.return_value = {}
+
+    await set_publish_settings.__wrapped__.__wrapped__(
+        mock_service, "user@example.com", "form_abc"
+    )
+
+    _, kwargs = mock_service.forms().setPublishSettings.call_args
+    assert kwargs["body"]["publishSettings"]["publishState"] == {
+        "isPublished": True,
+        "isAcceptingResponses": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_form_uses_document_title_and_batches_description():
+    """create_form should send camelCase documentTitle on create and apply description via batchUpdate."""
+    mock_service = Mock()
+    mock_service.forms().create().execute.return_value = {
+        "formId": "form_456",
+        "info": {"title": "Feedback Form", "documentTitle": "Browser Tab Title"},
+        "responderUri": "https://docs.google.com/forms/d/form_456/viewform",
+    }
+    mock_service.forms().batchUpdate().execute.return_value = {"replies": [{}]}
+
+    result = await create_form.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "Feedback Form",
+        description="Please share your thoughts",
+        document_title="Browser Tab Title",
+    )
+
+    _, create_kwargs = mock_service.forms().create.call_args
+    assert create_kwargs["body"] == {
+        "info": {
+            "title": "Feedback Form",
+            "documentTitle": "Browser Tab Title",
+        }
+    }
+
+    _, batch_kwargs = mock_service.forms().batchUpdate.call_args
+    assert batch_kwargs == {
+        "formId": "form_456",
+        "body": {
+            "requests": [
+                {
+                    "updateFormInfo": {
+                        "info": {"description": "Please share your thoughts"},
+                        "updateMask": "description",
+                    }
+                }
+            ]
+        },
+    }
+    assert "Successfully created form 'Feedback Form'" in result
+    assert "form_456" in result
+
+
+@pytest.mark.asyncio
+async def test_create_form_without_description_skips_batch_update():
+    """create_form should not call batchUpdate when description is omitted."""
+    mock_service = Mock()
+    mock_service.forms().create().execute.return_value = {
+        "formId": "form_789",
+        "info": {"title": "Title Only"},
+    }
+
+    await create_form.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "Title Only",
+    )
+
+    _, create_kwargs = mock_service.forms().create.call_args
+    assert create_kwargs["body"] == {"info": {"title": "Title Only"}}
+    mock_service.forms().batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_form_description_failure_returns_created_form_id():
+    """A failed description update must still report the created form's ID."""
+    mock_service = Mock()
+    mock_service.forms().create().execute.return_value = {
+        "formId": "form_999",
+        "info": {"title": "Partial"},
+    }
+    mock_service.forms().batchUpdate().execute.side_effect = HttpError(
+        Response({"status": "500"}), b"backend error"
+    )
+
+    result = await create_form.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "Partial",
+        description="Will fail",
+    )
+
+    mock_service.forms().create().execute.assert_called_once()
+    assert "Successfully created form 'Partial'" in result
+    assert "Form ID: form_999" in result
+    assert "description was not applied" in result
+    assert "batch_update_form on form ID form_999" in result

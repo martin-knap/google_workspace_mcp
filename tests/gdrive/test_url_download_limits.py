@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-import gdrive.drive_tools as drive_tools
+import gdrive.drive_helpers as drive_helpers
 
 
 class _FakeStreamResponse:
@@ -32,10 +32,10 @@ async def test_download_url_to_bytes_streams_content(monkeypatch):
         chunks=[b"abc", b"def"],
     )
     monkeypatch.setattr(
-        drive_tools, "_ssrf_safe_stream", _mock_stream_response(response)
+        drive_helpers, "_ssrf_safe_stream", _mock_stream_response(response)
     )
 
-    data_file, content_type = await drive_tools._download_url_to_bytes(
+    data_file, content_type = await drive_helpers._download_url_to_bytes(
         "https://example.com/file.pdf"
     )
 
@@ -48,12 +48,12 @@ async def test_download_url_to_bytes_streams_content(monkeypatch):
 async def test_download_url_to_bytes_enforces_max_size(monkeypatch):
     response = _FakeStreamResponse(200, chunks=[b"abcd", b"efgh"])
     monkeypatch.setattr(
-        drive_tools, "_ssrf_safe_stream", _mock_stream_response(response)
+        drive_helpers, "_ssrf_safe_stream", _mock_stream_response(response)
     )
-    monkeypatch.setattr(drive_tools, "MAX_DOWNLOAD_BYTES", 6)
+    monkeypatch.setattr(drive_helpers, "MAX_DOWNLOAD_BYTES", 6)
 
     with pytest.raises(
         ValueError,
         match=r"Download from example\.com/file\.bin exceeded 6 byte limit",
     ):
-        await drive_tools._download_url_to_bytes("https://example.com/file.bin")
+        await drive_helpers._download_url_to_bytes("https://example.com/file.bin")

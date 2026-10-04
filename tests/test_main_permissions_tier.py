@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -12,6 +13,51 @@ os.environ["MCP_ENABLE_OAUTH21"] = "false"
 os.environ["WORKSPACE_MCP_STATELESS_MODE"] = "false"
 
 import main
+
+
+def test_main_rejects_invalid_max_file_bytes_at_startup(monkeypatch, capsys):
+    monkeypatch.setenv("WORKSPACE_MCP_MAX_FILE_BYTES", "5MB")
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setattr(main, "configure_safe_logging", lambda: None)
+    monkeypatch.setattr("core.telemetry.configure_telemetry", lambda: None)
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+
+    assert exc.value.code == 2
+    assert "WORKSPACE_MCP_MAX_FILE_BYTES" in capsys.readouterr().err
+
+
+def test_main_rejects_invalid_max_office_xml_bytes_at_startup(monkeypatch, capsys):
+    monkeypatch.delenv("WORKSPACE_MCP_MAX_FILE_BYTES", raising=False)
+    monkeypatch.setenv("WORKSPACE_MCP_MAX_OFFICE_XML_BYTES", "5MB")
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setattr(main, "configure_safe_logging", lambda: None)
+    monkeypatch.setattr("core.telemetry.configure_telemetry", lambda: None)
+
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+
+    assert exc.value.code == 2
+    assert "WORKSPACE_MCP_MAX_OFFICE_XML_BYTES" in capsys.readouterr().err
+
+
+def test_fastmcp_entrypoint_rejects_invalid_file_limits_at_startup():
+    env = os.environ.copy()
+    env["WORKSPACE_MCP_MAX_FILE_BYTES"] = "0"
+    env["WORKSPACE_MCP_MAX_OFFICE_XML_BYTES"] = "5MB"
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import fastmcp_server"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "WORKSPACE_MCP_MAX_OFFICE_XML_BYTES" in result.stderr
 
 
 def test_resolve_permissions_mode_selection_without_tier():
@@ -48,6 +94,111 @@ def test_narrow_permissions_to_services_drops_non_selected_services():
     permissions = {"gmail": "send", "drive": "full"}
     narrowed = main.narrow_permissions_to_services(permissions, ["gmail"])
     assert narrowed == {"gmail": "send"}
+
+
+def test_resolve_stdio_callback_port_marks_resolved_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_resolve_port() -> None:
+        calls.append("resolve")
+        monkeypatch.setenv("WORKSPACE_MCP_PORT", "8123")
+        monkeypatch.setenv("WORKSPACE_MCP_RESOLVED_PORT", "1")
+
+    monkeypatch.setattr("auth.port_resolver.resolve_port", fake_resolve_port)
+    monkeypatch.setattr(main, "reload_oauth_config", lambda: calls.append("reload"))
+
+    main.resolve_stdio_callback_port()
+
+    assert calls == ["resolve", "reload"]
+    assert os.environ["WORKSPACE_MCP_RESOLVED_PORT"] == "1"
+
+
+def test_resolve_callback_port_for_transport_skips_streamable_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called() -> None:
+        raise AssertionError("stdio port resolver must not run for streamable HTTP")
+
+    monkeypatch.setattr(main, "resolve_stdio_callback_port", fail_if_called)
+    monkeypatch.setenv("WORKSPACE_MCP_RESOLVED_PORT", "1")
+
+    main.resolve_callback_port_for_transport("streamable-http")
+
+    assert "WORKSPACE_MCP_RESOLVED_PORT" not in os.environ
+
+
+def test_resolve_bind_host_defaults_legacy_streamable_http_to_loopback(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: False,
+            is_configured=lambda: True,
+        ),
+    )
+    monkeypatch.delenv("WORKSPACE_MCP_HOST", raising=False)
+
+    assert main.resolve_bind_host_for_transport("streamable-http") == "127.0.0.1"
+
+
+def test_resolve_bind_host_preserves_explicit_legacy_streamable_http_host(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: False,
+            is_configured=lambda: True,
+        ),
+    )
+    monkeypatch.setenv("WORKSPACE_MCP_HOST", "0.0.0.0")
+
+    assert main.resolve_bind_host_for_transport("streamable-http") == "0.0.0.0"
+
+
+def test_resolve_bind_host_preserves_oauth21_streamable_http_default(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: True,
+        ),
+    )
+    monkeypatch.delenv("WORKSPACE_MCP_HOST", raising=False)
+
+    assert main.resolve_bind_host_for_transport("streamable-http") == "0.0.0.0"
+
+
+def test_validate_streamable_http_auth_rejects_unconfigured_oauth21(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        main,
+        "get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: False,
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.validate_streamable_http_auth("streamable-http")
+
+    assert exc.value.code == 1
+    assert "requires GOOGLE_OAUTH_CLIENT_ID" in capsys.readouterr().err
+
+
+def test_validate_streamable_http_auth_allows_stdio(monkeypatch):
+    def fail_if_called():
+        raise AssertionError("stdio should not check OAuth 2.1 config")
+
+    monkeypatch.setattr(main, "get_oauth_config", fail_if_called)
+
+    main.validate_streamable_http_auth("stdio")
 
 
 def test_permissions_and_tools_flags_are_rejected(monkeypatch, capsys):
@@ -97,6 +248,10 @@ def test_main_skips_gcs_store_initialization_in_service_account_mode(monkeypatch
         lambda: SimpleNamespace(
             service_account_key_file=None,
             service_account_key_json=service_account_json,
+            client_secret=None,
+            client_secrets_file=None,
+            stateless_mode=False,
+            is_oauth21_enabled=lambda: False,
         ),
     )
     monkeypatch.setattr(main.server, "run", fake_run)

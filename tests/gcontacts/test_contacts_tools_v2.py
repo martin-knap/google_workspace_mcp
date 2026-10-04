@@ -29,10 +29,12 @@ from gcontacts.contacts_tools import (
     EmailInput,
     OrganizationInput,
     PhoneInput,
+    _build_person_body,
+)
+from gcontacts.contacts_helpers import (
     _format_contact,
     _format_phone_line,
     _format_email_line,
-    _build_person_body,
     _merge_phones,
     _merge_emails,
     _merge_organizations,
