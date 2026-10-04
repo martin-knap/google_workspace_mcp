@@ -138,7 +138,8 @@ DOC_URL = "https://docs.google.com/document/d/doc123/edit"
 
 
 @pytest.mark.asyncio
-async def test_get_doc_content_extracts_the_id_and_tab_from_a_url():
+@pytest.mark.parametrize("tab_value", ["t.week2", "t%2Eweek%32"])
+async def test_get_doc_content_extracts_the_id_and_tab_from_a_url(tab_value):
     drive = _drive_service()
     docs = _docs_service(TABBED_DOC)
 
@@ -146,7 +147,7 @@ async def test_get_doc_content_extracts_the_id_and_tab_from_a_url():
         drive_service=drive,
         docs_service=docs,
         user_google_email="user@example.com",
-        document_id=f"{DOC_URL}?tab=t.week2",
+        document_id=f"{DOC_URL}?tab={tab_value}",
     )
 
     assert drive.files.return_value.get.call_args.kwargs["fileId"] == "doc123"
@@ -158,14 +159,15 @@ async def test_get_doc_content_extracts_the_id_and_tab_from_a_url():
 
 
 @pytest.mark.asyncio
-async def test_get_doc_content_reads_every_tab_of_a_url_without_tab():
+@pytest.mark.parametrize("suffix", ["", "#?tab=t.week2", "#heading=h.x&tab=t.week2"])
+async def test_get_doc_content_reads_every_tab_of_a_url_without_tab(suffix):
     drive = _drive_service()
 
     result = await _unwrap(docs_tools.get_doc_content)(
         drive_service=drive,
         docs_service=_docs_service(TABBED_DOC),
         user_google_email="user@example.com",
-        document_id=DOC_URL,
+        document_id=f"{DOC_URL}{suffix}",
     )
 
     assert drive.files.return_value.get.call_args.kwargs["fileId"] == "doc123"
@@ -191,10 +193,11 @@ async def _get_doc_as_markdown(doc, comments=None, **kwargs):
 
 
 @pytest.mark.asyncio
-async def test_get_doc_as_markdown_reads_the_tab_named_in_the_url():
+@pytest.mark.parametrize("tab_value", ["t.week2", "t%2Eweek%32"])
+async def test_get_doc_as_markdown_reads_the_tab_named_in_the_url(tab_value):
     result = await _get_doc_as_markdown(
         TABBED_DOC,
-        document_id=f"{DOC_URL}?usp=sharing&tab=t.week2#heading=h.x",
+        document_id=f"{DOC_URL}?usp=sharing&tab={tab_value}#heading=h.x",
         include_comments=False,
     )
 
@@ -202,6 +205,20 @@ async def test_get_doc_as_markdown_reads_the_tab_named_in_the_url():
     assert "First week notes" not in result
     # Browsers add ?tab= to every URL, so the narrowed read must say so.
     assert "Showing only tab 'Week 2' (t.week2)" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fragment", ["?tab=t.week2", "heading=h.x&tab=t.week2"])
+async def test_get_doc_as_markdown_ignores_tab_parameters_in_the_fragment(fragment):
+    result = await _get_doc_as_markdown(
+        TABBED_DOC,
+        document_id=f"{DOC_URL}#{fragment}",
+        include_comments=False,
+    )
+
+    assert "First week notes" in result
+    assert "Second week notes" in result
+    assert "Showing only tab" not in result
 
 
 @pytest.mark.asyncio

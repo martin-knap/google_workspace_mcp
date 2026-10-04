@@ -10,6 +10,7 @@ import io
 import inspect
 import re
 from typing import List, Any, Literal, Optional, Union
+from urllib.parse import parse_qs, urlsplit
 
 from typing_extensions import TypedDict
 
@@ -138,9 +139,9 @@ def _parse_doc_reference(
     url_match = re.search(r"/d/([\w-]+)", document_id)
     if not url_match:
         return document_id, tab_id, False
-    tab_match = re.search(r"[?&]tab=([^&#]+)", document_id)
-    if tab_id is None and tab_match:
-        return url_match.group(1), tab_match.group(1), True
+    url_tabs = parse_qs(urlsplit(document_id).query).get("tab", [])
+    if tab_id is None and url_tabs:
+        return url_match.group(1), url_tabs[0], True
     return url_match.group(1), tab_id, False
 
 
