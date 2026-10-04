@@ -24,6 +24,7 @@ from gdrive.drive_helpers import (
     _create_drive_folder_impl,
     build_drive_list_params,
     has_explicit_trashed_clause,
+    normalize_drive_query_v2_compat,
     resolve_drive_item,
 )
 from gdrive.drive_tools import (
@@ -34,6 +35,7 @@ from gdrive.drive_tools import (
     import_to_google_slides,
     list_drive_items,
     search_drive_files,
+    set_drive_file_permissions,
     update_drive_file,
 )
 
@@ -439,6 +441,51 @@ async def test_create_drive_file_normalizes_mixed_case_odt_mime_for_zip_validati
         )
 
     mock_service.files.return_value.create.return_value.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# set_drive_file_permissions - link sharing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
+async def test_link_sharing_off_finds_anyone_permission_on_a_later_page(
+    mock_resolve_item,
+):
+    """A public link past the first page of permissions is still removed."""
+    mock_resolve_item.return_value = ("file123", {"name": "Budget"})
+    mock_service = Mock()
+    pages = {
+        None: {
+            "permissions": [
+                {"id": f"u{i}", "type": "user", "role": "reader"} for i in range(100)
+            ],
+            "nextPageToken": "page2",
+        },
+        "page2": {
+            "permissions": [{"id": "anyone1", "type": "anyone", "role": "reader"}]
+        },
+    }
+
+    def list_permissions(**kwargs):
+        request = Mock()
+        request.execute.return_value = pages[kwargs.get("pageToken")]
+        return request
+
+    mock_service.permissions().list.side_effect = list_permissions
+
+    result = await _unwrap(set_drive_file_permissions)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        file_id="file123",
+        link_sharing="off",
+    )
+
+    mock_service.permissions().delete.assert_called_once_with(
+        fileId="file123", permissionId="anyone1", supportsAllDrives=True
+    )
+    assert "Link sharing: disabled" in result
 
 
 # ---------------------------------------------------------------------------
@@ -3310,3 +3357,126 @@ async def test_check_drive_file_public_access_shared_drive(mock_resolve):
 
     assert "PUBLIC ACCESS ENABLED" in result
     assert "Shared: True" in result
+
+
+# ---------------------------------------------------------------------------
+# search_drive_files - Drive API v2 -> v3 query compat (title -> name)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_drive_query_v2_title_contains():
+    """v2 `title contains` is rewritten to v3 `name contains`."""
+    assert (
+        normalize_drive_query_v2_compat("title contains 'test'")
+        == "name contains 'test'"
+    )
+
+
+def test_normalize_drive_query_v2_preserves_literals():
+    """Quoted values mentioning v2 names are data, not fields."""
+    assert (
+        normalize_drive_query_v2_compat("name contains 'title'")
+        == "name contains 'title'"
+    )
+    assert (
+        normalize_drive_query_v2_compat("name contains \"title contains 'test'\"")
+        == "name contains \"title contains 'test'\""
+    )
+    assert (
+        normalize_drive_query_v2_compat("name contains 'it\\'s title' and title = 'a'")
+        == "name contains 'it\\'s title' and name = 'a'"
+    )
+
+
+def test_normalize_drive_query_v2_whole_words_any_case():
+    """Matching is case-insensitive but never touches longer identifiers."""
+    assert (
+        normalize_drive_query_v2_compat(
+            "TITLE = 'a' or subtitle = 'b' or title_x = 'c'"
+        )
+        == "name = 'a' or subtitle = 'b' or title_x = 'c'"
+    )
+
+
+def test_normalize_drive_query_v2_date_fields():
+    """v2 date fields map to v3 `Time` suffix equivalents."""
+    assert (
+        normalize_drive_query_v2_compat("modifiedDate > '2024-01-01T00:00:00Z'")
+        == "modifiedTime > '2024-01-01T00:00:00Z'"
+    )
+    assert (
+        normalize_drive_query_v2_compat("createdDate > '2024-01-01T00:00:00Z'")
+        == "createdTime > '2024-01-01T00:00:00Z'"
+    )
+    assert (
+        normalize_drive_query_v2_compat("lastViewedByMeDate > '2024-01-01T00:00:00Z'")
+        == "viewedByMeTime > '2024-01-01T00:00:00Z'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_normalizes_title_contains_to_name():
+    """`title contains 'test'` produces v3 `(name contains 'test') and trashed=false`."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="title contains 'test'",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == "(name contains 'test') and trashed=false"
+    assert "title contains" not in call_kwargs["q"]
+    assert "name contains 'test'" in call_kwargs["q"]
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_normalizes_title_equals_to_name():
+    """`title = 'report'` is also a v2 field usage and must become v3 `name`."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="title = 'report'",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == "(name = 'report') and trashed=false"
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_does_not_rewrite_quoted_title():
+    """A literal filename containing the word title is left untouched."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="name contains 'title'",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == "(name contains 'title') and trashed=false"
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_escapes_free_text_literal():
+    """Backslashes and quotes in free text stay inside one literal, never rewritten."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="it's a title\\",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert (
+        call_kwargs["q"] == "(fullText contains 'it\\'s a title\\\\') and trashed=false"
+    )

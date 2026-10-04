@@ -7,6 +7,7 @@ import pytest
 from googleapiclient.errors import HttpError
 from httplib2 import Response
 
+import auth.google_auth as google_auth
 import auth.service_decorator as service_decorator
 from core.server import server
 from core.utils import UserInputError
@@ -32,6 +33,11 @@ def chat_service(monkeypatch):
     return service
 
 
+def _assert_recycled(service):
+    service.close.assert_not_called()
+    assert google_auth._idle_http[-1][1] is service._http.http
+
+
 async def _edit_message(message_name):
     # Access the callable without unwrapping authentication or HTTP error handling.
     public_fn = getattr(send_message, "fn", send_message)
@@ -46,8 +52,8 @@ async def _edit_message(message_name):
 @pytest.mark.asyncio
 async def test_send_message_advertises_destructive_updates():
     tool = await server.get_tool("send_message")
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is True
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is True
 
 
 @pytest.mark.asyncio
@@ -93,7 +99,7 @@ async def test_valid_message_names_are_editable(chat_service, message_id):
         name=message_name, updateMask="text", body={"text": "corrected text"}
     )
     messages.create.assert_not_called()
-    chat_service.close.assert_called_once_with()
+    _assert_recycled(chat_service)
 
 
 @pytest.mark.asyncio
@@ -156,7 +162,7 @@ async def test_send_message_creates_plain_message_when_optional_params_omitted_o
         body={"text": "hello world"},
     )
     messages.patch.assert_not_called()
-    chat_service.close.assert_called_once_with()
+    _assert_recycled(chat_service)
 
 
 @pytest.mark.asyncio
@@ -185,4 +191,4 @@ async def test_send_message_allows_edit_when_thread_params_coerced_to_null_strin
         name=message_name, updateMask="text", body={"text": "updated text"}
     )
     messages.create.assert_not_called()
-    chat_service.close.assert_called_once_with()
+    _assert_recycled(chat_service)

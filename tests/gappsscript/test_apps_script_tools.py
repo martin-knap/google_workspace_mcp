@@ -24,6 +24,7 @@ from pydantic import TypeAdapter
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from core.utils import UserInputError
+import auth.google_auth as google_auth
 import auth.service_decorator as service_decorator
 
 # Import the internal implementation functions (not the decorated ones)
@@ -1584,7 +1585,8 @@ async def test_project_actions_authenticate_only_required_service(
     assert authenticate.call_args.args[1] == service_type
     assert authenticate.call_args.args[5] == service_decorator._resolve_scopes(scopes)
     assert impl.call_args.args[:2] == (service, "u@e.com")
-    service.close.assert_called_once()
+    service.close.assert_not_called()
+    assert google_auth._idle_http[-1][1] is service._http.http
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ import io
 import inspect
 import re
 from typing import List, Any, Literal, Optional, Union
+from urllib.parse import parse_qs, urlsplit
 
 from typing_extensions import TypedDict
 
@@ -126,6 +127,35 @@ def _find_tab(tabs: list, target_tab_id: str) -> Optional[dict]:
 def _tab_title(tab: dict) -> str:
     """Human-readable title for a tab, for use in output headers."""
     return tab.get("tabProperties", {}).get("title", "Untitled Tab")
+
+
+def _parse_doc_reference(
+    document_id: str, tab_id: Optional[str]
+) -> tuple[str, Optional[str], bool]:
+    """Split a document ID or URL into (document_id, tab_id, tab_from_url).
+
+    A URL's ?tab= selects that tab unless tab_id was passed explicitly.
+    """
+    url_match = re.search(r"/d/([\w-]+)", document_id)
+    if not url_match:
+        return document_id, tab_id, False
+    url_tabs = parse_qs(urlsplit(document_id).query).get("tab", [])
+    if tab_id is None and url_tabs:
+        return url_match.group(1), url_tabs[0], True
+    return url_match.group(1), tab_id, False
+
+
+def _url_tab_notice(tabs: list, tab: dict, tab_id: str) -> str:
+    """Say when a tab picked from a URL hid other tabs.
+
+    Browsers add ?tab= to every Docs URL, so the caller may not expect it.
+    """
+    if tabs == [tab] and not tab.get("childTabs"):
+        return ""
+    return (
+        f"Showing only tab '{_tab_title(tab)}' ({tab_id}) from the URL; "
+        'pass tab_id="" to read every tab.'
+    )
 
 
 @server.tool(
@@ -253,7 +283,8 @@ async def get_doc_content(
 
     Args:
         user_google_email: User's Google email address
-        document_id: ID of the Google Doc (or full URL)
+        document_id: ID of the Google Doc or Drive file (or full URL). A Docs
+            URL's ?tab= selects that tab unless tab_id is also specified.
         suggestions_view_mode: How to render suggestions in the returned content:
             - "DEFAULT_FOR_CURRENT_ACCESS": Default based on user's access level
             - "SUGGESTIONS_INLINE": Suggested changes appear inline in the document
@@ -263,6 +294,8 @@ async def get_doc_content(
             When given, only that tab's content is returned with no tab separator,
             so the default output stays index-aligned with that tab. When
             omitted, every tab is returned with "--- TAB: ... ---" markers.
+            Pass "" to read every tab of a URL that carries ?tab=. This
+            filters output only: the whole document is still fetched.
         preserve_context: Include readable semantic annotations for native Docs.
             Defaults to False to retain index alignment. Office extraction is
             unaffected. With tab_id, only the selected tab is rendered.
@@ -273,8 +306,9 @@ async def get_doc_content(
     validation_error = validate_suggestions_view_mode(suggestions_view_mode)
     if validation_error:
         return validation_error
+    document_id, tab_id, tab_from_url = _parse_doc_reference(document_id, tab_id)
     logger.info(
-        f"[get_doc_content] Invoked. Document/File ID: '{document_id}' for user '{user_google_email}'"
+        f"[get_doc_content] Invoked. Document/File ID: '{document_id}', tab: '{tab_id}' for user '{user_google_email}'"
     )
 
     file_metadata = await asyncio.to_thread(
@@ -295,6 +329,7 @@ async def get_doc_content(
     )
 
     body_text = ""
+    notice = ""
 
     if mime_type == "application/vnd.google-apps.document":
         logger.info("[get_doc_content] Processing as native Google Doc.")
@@ -308,11 +343,14 @@ async def get_doc_content(
             .execute
         )
         if tab_id:
-            tab = _find_tab(doc_data.get("tabs", []), tab_id)
+            tabs = doc_data.get("tabs", [])
+            tab = _find_tab(tabs, tab_id)
             if tab is None:
                 return f"Error: Tab {tab_id} not found in document."
             if "documentTab" not in tab:
                 return f"Error: Tab {tab_id} is not a document tab and has no body content."
+            if tab_from_url:
+                notice = _url_tab_notice(tabs, tab, tab_id)
             # No tab separator: the caller named one tab. The default output
             # stays index-aligned; context annotations are opt-in.
             file_name = f"{file_name} [tab: {_tab_title(tab)}]"
@@ -408,9 +446,13 @@ async def get_doc_content(
                     f"{len(file_content_bytes)} bytes]"
                 )
 
+    # The notice stays above the content marker so content offsets keep their
+    # alignment with document indices.
     header = (
         f'File: "{file_name}" (ID: {document_id}, Type: {mime_type})\n'
-        f"Link: {web_view_link}\n\n--- CONTENT ---\n"
+        f"Link: {web_view_link}\n"
+        + (f"{notice}\n" if notice else "")
+        + "\n--- CONTENT ---\n"
     )
     return header + body_text
 
@@ -2673,7 +2715,9 @@ async def get_doc_as_markdown(
 
     Args:
         user_google_email: User's Google email address
-        document_id: ID of the Google Doc (or full URL)
+        document_id: ID of the Google Doc (or full URL). When a full URL is provided
+            and it contains a ?tab= query parameter, that tab is used automatically
+            unless tab_id is also specified (explicit tab_id takes precedence).
         include_comments: Whether to include comments (default: True)
         comment_mode: How to display comments:
             - "inline": Footnote-style references placed at the anchor text location (default)
@@ -2687,15 +2731,15 @@ async def get_doc_as_markdown(
             - "PREVIEW_WITHOUT_SUGGESTIONS": Preview as if all suggestions were rejected
         tab_id: Optional ID of a single tab to read (from inspect_doc_structure).
             When given, only that tab's content is rendered, without its child tabs
-            and without a tab heading. When omitted, every tab is rendered.
+            and without a tab heading, and comments are listed as document-wide.
+            When omitted, every tab is rendered. Pass "" to read every tab of a
+            URL that carries ?tab=. This filters output only: the whole document
+            is still fetched.
 
     Returns:
         str: The document content as Markdown, optionally with comments
     """
-    # Extract doc ID from URL if a full URL was provided
-    url_match = re.search(r"/d/([\w-]+)", document_id)
-    if url_match:
-        document_id = url_match.group(1)
+    document_id, tab_id, tab_from_url = _parse_doc_reference(document_id, tab_id)
 
     valid_modes = ("inline", "appendix", "none")
     if comment_mode not in valid_modes:
@@ -2706,7 +2750,7 @@ async def get_doc_as_markdown(
         return validation_error
 
     logger.info(
-        f"[get_doc_as_markdown] Doc={document_id}, comments={include_comments}, mode={comment_mode}"
+        f"[get_doc_as_markdown] Doc={document_id}, tab={tab_id}, comments={include_comments}, mode={comment_mode}"
     )
 
     # Fetch document content via Docs API (includeTabsContent for multi-tab docs)
@@ -2729,17 +2773,23 @@ async def get_doc_as_markdown(
             "The document may be too large or there may be a network issue. Please try again."
         )
 
+    notice = ""
     if tab_id:
-        tab = _find_tab(doc.get("tabs", []), tab_id)
+        tabs = doc.get("tabs", [])
+        tab = _find_tab(tabs, tab_id)
         if tab is None:
             return f"Error: Tab {tab_id} not found in document."
         if "documentTab" not in tab:
             return f"Error: Tab {tab_id} is not a document tab and has no body content."
+        if tab_from_url:
+            notice = _url_tab_notice(tabs, tab, tab_id)
         # Drop childTabs so only the named tab renders, and leave it as the sole
         # tab so it renders without a tab heading.
         doc = {**doc, "tabs": [{k: v for k, v in tab.items() if k != "childTabs"}]}
 
     markdown = convert_doc_to_markdown(doc)
+    if notice:
+        markdown = f"*{notice}*\n\n{markdown}"
 
     if not include_comments or comment_mode == "none":
         return markdown
@@ -2774,11 +2824,14 @@ async def get_doc_as_markdown(
     if not comments:
         return markdown
 
-    if comment_mode == "inline":
+    # Drive comments carry no tab association, so with one tab selected they
+    # stay document-wide instead of being pinned to matching text in this tab.
+    if comment_mode == "inline" and not tab_id:
         return format_comments_inline(markdown, comments)
-    else:
-        appendix = format_comments_appendix(comments)
-        return markdown.rstrip("\n") + "\n\n" + appendix
+    appendix = format_comments_appendix(
+        comments, title="Comments (entire document)" if tab_id else "Comments"
+    )
+    return markdown.rstrip("\n") + "\n\n" + appendix
 
 
 def _find_tab_end_index(doc: dict, target_tab_id: str) -> Optional[int]:
