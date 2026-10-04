@@ -86,6 +86,7 @@ from gdrive.drive_helpers import (
     has_explicit_trashed_clause,
     initiate_resumable_upload_session,
     native_replace_format_map,
+    normalize_drive_query_v2_compat,
     reject_sources_with_upload_url,
     resolve_drive_item,
     resolve_file_type_mime,
@@ -209,13 +210,15 @@ async def search_drive_files(
     is_structured_query = any(pattern.search(query) for pattern in DRIVE_QUERY_PATTERNS)
 
     if is_structured_query:
-        final_query = query
-        logger.debug(
-            f"[search_drive_files] Using structured query as-is: '{final_query}'"
-        )
+        final_query = normalize_drive_query_v2_compat(query)
+        if final_query != query:
+            logger.info(
+                "[search_drive_files] Normalized v2 query field names to v3 equivalents"
+            )
+        logger.debug(f"[search_drive_files] Using structured query: '{final_query}'")
     else:
         # For free text queries, wrap in fullText contains
-        escaped_query = query.replace("'", "\\'")
+        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
         final_query = f"fullText contains '{escaped_query}'"
         logger.debug(
             f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'"
