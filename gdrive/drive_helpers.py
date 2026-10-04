@@ -264,6 +264,34 @@ def has_explicit_trashed_clause(query: str) -> bool:
     return bool(TRASHED_CLAUSE_PATTERN.search(without_literals))
 
 
+# Drive API v2 query field names and their v3 replacements, see
+# https://developers.google.com/drive/api/guides/v2-to-v3-reference
+DRIVE_V2_TO_V3_QUERY_FIELD_MAP = {
+    "title": "name",
+    "createddate": "createdTime",
+    "modifieddate": "modifiedTime",
+    "lastviewedbymedate": "viewedByMeTime",
+}
+
+# Literals are matched first so field names inside quoted values are left alone.
+_DRIVE_V2_FIELD_OR_LITERAL_PATTERN = re.compile(
+    rf"({QUERY_STRING_LITERAL_PATTERN.pattern})"
+    rf"|\b({'|'.join(DRIVE_V2_TO_V3_QUERY_FIELD_MAP)})\b",
+    re.IGNORECASE,
+)
+
+
+def normalize_drive_query_v2_compat(query: str) -> str:
+    """Rewrite Drive API v2 field names outside string literals to their v3 names.
+
+    ``title contains 'title'`` becomes ``name contains 'title'``.
+    """
+    return _DRIVE_V2_FIELD_OR_LITERAL_PATTERN.sub(
+        lambda m: m.group(1) or DRIVE_V2_TO_V3_QUERY_FIELD_MAP[m.group(2).lower()],
+        query,
+    )
+
+
 # Precompiled regex patterns for Drive query detection
 DRIVE_QUERY_PATTERNS = [
     re.compile(r'\b\w+\s*(=|!=|>|<)\s*[\'"].*?[\'"]', re.IGNORECASE),  # field = 'value'
