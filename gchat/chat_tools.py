@@ -21,59 +21,20 @@ from auth.service_decorator import require_google_service, require_multiple_serv
 from core.file_limits import FileTooLargeError, download_http_url_bytes
 from core.server import server
 from core.utils import TransientNetworkError, UserInputError, handle_http_errors
-from gchat.chat_helpers import _name_spaces, _resolve_sender
+from gchat.chat_helpers import (
+    _execute_chat_request,
+    _extract_rich_links,
+    _name_spaces,
+    _none_if_blank,
+    _none_if_null_sentinel,
+    _resolve_sender,
+)
 
 logger = logging.getLogger(__name__)
 
+
 _SEARCH_MESSAGES_MAX_CONCURRENT_SPACE_FETCHES = 1
 _SEARCH_MESSAGES_SSL_RETRIES = 3
-_SEARCH_MESSAGES_RETRY_BASE_DELAY_SECONDS = 1
-
-
-async def _execute_chat_request(
-    request_factory,
-    *,
-    request_label: str,
-    retries: int = 1,
-    semaphore: Optional[asyncio.Semaphore] = None,
-):
-    """Execute a Chat API request in a worker thread with optional SSL retries."""
-    for attempt in range(retries):
-        try:
-            if semaphore is None:
-                return await asyncio.to_thread(lambda: request_factory().execute())
-            async with semaphore:
-                return await asyncio.to_thread(lambda: request_factory().execute())
-        except ssl.SSLError as e:
-            if attempt == retries - 1:
-                raise
-            delay = _SEARCH_MESSAGES_RETRY_BASE_DELAY_SECONDS * (2**attempt)
-            logger.warning(
-                "[search_messages] SSL error during %s on attempt %s/%s: %s. Retrying in %s seconds.",
-                request_label,
-                attempt + 1,
-                retries,
-                e,
-                delay,
-            )
-            await asyncio.sleep(delay)
-
-
-def _extract_rich_links(msg: dict) -> List[str]:
-    """Extract URLs from RICH_LINK annotations (smart chips).
-
-    When a user pastes a Google Workspace URL in Chat and it renders as a
-    smart chip, the URL is NOT in the text field — it's only available in
-    the annotations array as a RICH_LINK with richLinkMetadata.uri.
-    """
-    text = msg.get("text", "")
-    urls = []
-    for ann in msg.get("annotations", []):
-        if ann.get("type") == "RICH_LINK":
-            uri = ann.get("richLinkMetadata", {}).get("uri", "")
-            if uri and uri not in text:
-                urls.append(uri)
-    return urls
 
 
 @server.tool(
@@ -306,6 +267,10 @@ async def send_message(
     """
     logger.info(f"[send_message] Email: '{user_google_email}', Space: '{space_id}'")
 
+    thread_key = _none_if_blank(thread_key)
+    thread_name = _none_if_blank(thread_name)
+    message_name = _none_if_null_sentinel(message_name)
+
     if message_name is not None:
         if thread_name or thread_key:
             raise UserInputError(
@@ -441,7 +406,11 @@ async def search_messages(
 
     # If specific space provided, search within that space
     if space_id:
-        list_params = {"parent": space_id, "pageSize": page_size}
+        list_params = {
+            "parent": space_id,
+            "pageSize": page_size,
+            "orderBy": "createTime desc",
+        }
         if filter_str:
             list_params["filter"] = filter_str
         response = await _execute_chat_request(
@@ -473,7 +442,11 @@ async def search_messages(
 
         async def fetch_space_messages(space: dict) -> tuple[List[dict], bool]:
             try:
-                list_params = {"parent": space.get("name"), "pageSize": page_size}
+                list_params = {
+                    "parent": space.get("name"),
+                    "pageSize": page_size,
+                    "orderBy": "createTime desc",
+                }
                 if filter_str:
                     list_params["filter"] = filter_str
                 response = await _execute_chat_request(
@@ -512,7 +485,10 @@ async def search_messages(
                 "A transient SSL error occurred in 'search_messages' while searching Chat spaces. "
                 "Please try again shortly."
             )
-        context = "all accessible spaces"
+        if len(spaces) > len(spaces_to_search) or spaces_response.get("nextPageToken"):
+            context = f"the first {len(spaces_to_search)} accessible spaces"
+        else:
+            context = "all accessible spaces"
 
     # Client-side text filtering (text: operator is not supported by the API)
     if query:

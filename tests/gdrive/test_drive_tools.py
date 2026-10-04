@@ -19,6 +19,7 @@ import zipfile
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gdrive.drive_helpers import (
+    INCOMPLETE_SEARCH_WARNING,
     SHARED_DRIVE_ORGANIZER_CONCURRENCY_LIMIT,
     _create_drive_folder_impl,
     build_drive_list_params,
@@ -33,6 +34,7 @@ from gdrive.drive_tools import (
     import_to_google_slides,
     list_drive_items,
     search_drive_files,
+    set_drive_file_permissions,
     update_drive_file,
 )
 
@@ -438,6 +440,51 @@ async def test_create_drive_file_normalizes_mixed_case_odt_mime_for_zip_validati
         )
 
     mock_service.files.return_value.create.return_value.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# set_drive_file_permissions - link sharing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
+async def test_link_sharing_off_finds_anyone_permission_on_a_later_page(
+    mock_resolve_item,
+):
+    """A public link past the first page of permissions is still removed."""
+    mock_resolve_item.return_value = ("file123", {"name": "Budget"})
+    mock_service = Mock()
+    pages = {
+        None: {
+            "permissions": [
+                {"id": f"u{i}", "type": "user", "role": "reader"} for i in range(100)
+            ],
+            "nextPageToken": "page2",
+        },
+        "page2": {
+            "permissions": [{"id": "anyone1", "type": "anyone", "role": "reader"}]
+        },
+    }
+
+    def list_permissions(**kwargs):
+        request = Mock()
+        request.execute.return_value = pages[kwargs.get("pageToken")]
+        return request
+
+    mock_service.permissions().list.side_effect = list_permissions
+
+    result = await _unwrap(set_drive_file_permissions)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        file_id="file123",
+        link_sharing="off",
+    )
+
+    mock_service.permissions().delete.assert_called_once_with(
+        fileId="file123", permissionId="anyone1", supportsAllDrives=True
+    )
+    assert "Link sharing: disabled" in result
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +982,104 @@ def test_build_params_order_by_omits_whitespace_only_values():
     """Whitespace-only order_by values are omitted to avoid invalid API requests."""
     params = build_drive_list_params(query="q", page_size=5, order_by="   ")
     assert "orderBy" not in params
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        ({}, "allDrives"),
+        ({"corpora": "user"}, "user"),
+        ({"drive_id": "d1"}, "drive"),
+        ({"drive_id": "d1", "corpora": "allDrives"}, "allDrives"),
+    ],
+)
+def test_build_params_corpora_defaults(kwargs, expected):
+    """Shared drives are searched by default instead of the API's 'user' corpus."""
+    params = build_drive_list_params(query="q", page_size=5, **kwargs)
+    assert params["corpora"] == expected
+
+
+def test_build_params_omits_corpora_when_excluding_shared_drives():
+    """'allDrives' requires includeItemsFromAllDrives, so it is not defaulted without it."""
+    params = build_drive_list_params(
+        query="q", page_size=5, include_items_from_all_drives=False
+    )
+    assert "corpora" not in params
+
+
+@pytest.mark.parametrize("detailed", [True, False])
+def test_build_params_requests_incomplete_search(detailed):
+    """incompleteSearch is requested so partial allDrives results can be flagged."""
+    params = build_drive_list_params(query="q", page_size=5, detailed=detailed)
+    assert "incompleteSearch" in params["fields"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("files", [[], [{"id": "f1", "name": "A", "mimeType": "x"}]])
+@patch("gdrive.drive_tools.resolve_folder_id", new_callable=AsyncMock)
+async def test_drive_listings_warn_on_incomplete_search(mock_resolve_folder, files):
+    """Both listing tools flag incompleteSearch, including when nothing matched."""
+    mock_resolve_folder.return_value = "root"
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": files,
+        "incompleteSearch": True,
+    }
+
+    search_result = await _unwrap(search_drive_files)(
+        service=mock_service, user_google_email="user@example.com", query="a"
+    )
+    list_result = await _unwrap(list_drive_items)(
+        service=mock_service, user_google_email="user@example.com"
+    )
+
+    assert search_result.endswith(INCOMPLETE_SEARCH_WARNING)
+    assert list_result.endswith(INCOMPLETE_SEARCH_WARNING)
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_no_warning_when_search_complete():
+    """No incompleteSearch warning is added when Drive searched every corpus."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [{"id": "f1", "name": "A", "mimeType": "x"}],
+        "incompleteSearch": False,
+    }
+
+    result = await _unwrap(search_drive_files)(
+        service=mock_service, user_google_email="user@example.com", query="a"
+    )
+
+    assert INCOMPLETE_SEARCH_WARNING not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("incomplete", [False, True])
+@pytest.mark.parametrize("detailed", [False, True])
+@patch("gdrive.drive_tools.resolve_folder_id", new_callable=AsyncMock)
+async def test_drive_listings_keep_empty_page_token(
+    mock_resolve_folder, incomplete, detailed
+):
+    """An empty page may have more results; preserve its token and warning."""
+    mock_resolve_folder.return_value = "root"
+    service = Mock()
+    service.files().list().execute.return_value = {
+        "files": [],
+        "nextPageToken": "next-page",
+        "incompleteSearch": incomplete,
+    }
+
+    for tool, kwargs in [(search_drive_files, {"query": "a"}), (list_drive_items, {})]:
+        result = await _unwrap(tool)(
+            service=service,
+            user_google_email="user@example.com",
+            detailed=detailed,
+            **kwargs,
+        )
+        assert "nextPageToken: next-page" in result
+        assert "Found 0" in result
+        assert (INCOMPLETE_SEARCH_WARNING in result) is incomplete
+        assert "incompleteSearch" in service.files().list.call_args.kwargs["fields"]
 
 
 # ---------------------------------------------------------------------------

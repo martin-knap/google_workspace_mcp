@@ -96,9 +96,9 @@ load_dotenv(dotenv_path=dotenv_path)
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 # Suppress httpx/httpcore INFO logs that leak access tokens in URLs
-# (e.g. tokeninfo?access_token=ya29.xxx)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+# (e.g. tokeninfo?access_token=ya29.xxx). FastMCP 4 uses the httpx2 fork.
+for _http_logger in ("httpx", "httpcore", "httpx2", "httpcore2"):
+    logging.getLogger(_http_logger).setLevel(logging.WARNING)
 
 reload_oauth_config()
 
@@ -343,20 +343,21 @@ def _optional_field(name: str, *, path: bool = False) -> tuple[str, str, str]:
     return name, collapse_home(os.path.expanduser(value)) if path else value, "on"
 
 
-def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, str]:
-    """Describe a boolean env var as a (label, value, state) display row."""
-    value = os.getenv(name, "false")
-    if value.strip().lower() not in {"true", "1", "yes"}:
-        return name, value, "off"
-    return name, value, "warn" if warn_when_true else "on"
+def _mode_field(
+    label: str, env_var: str, enabled: bool, *, warn_when_on: bool = False
+) -> tuple[str, str, str]:
+    """Describe a resolved mode as a (label, value, state) row naming its env var."""
+    if not enabled:
+        return label, f"off · {env_var}", "off"
+    return label, f"on  · {env_var}", "warn" if warn_when_on else "on"
 
 
 def _disabled_tools_field(disabled_tools: set[str]) -> tuple[str, str, str]:
     """Describe the resolved per-tool block list as a display row."""
-    name = "WORKSPACE_MCP_DISABLED_TOOLS"
+    env_var = "WORKSPACE_MCP_DISABLED_TOOLS"
     if not disabled_tools:
-        return name, "not set", "off"
-    return name, ", ".join(sorted(disabled_tools)), "on"
+        return "Disabled tools", f"none · {env_var}", "off"
+    return "Disabled tools", f"{', '.join(sorted(disabled_tools))} · {env_var}", "on"
 
 
 def _client_secret_field() -> tuple[str, str, str]:
@@ -400,14 +401,29 @@ def describe_credential_config() -> list[tuple[str, str, str]]:
 
 
 def describe_mode_config(
-    disabled_tools: set[str] = frozenset(),
+    disabled_tools: set[str] = frozenset(), *, single_user: bool = False
 ) -> list[tuple[str, str, str]]:
-    """Build the mode rows shown in the startup configuration section."""
+    """Build the mode rows shown in the startup configuration section.
+
+    Rows report the modes the server resolved, not a re-parse of the env vars,
+    so the banner cannot disagree with how the server actually runs.
+    """
+    config = get_oauth_config()
     return [
-        _flag_field("MCP_SINGLE_USER_MODE"),
-        _flag_field("MCP_ENABLE_OAUTH21"),
-        _flag_field("WORKSPACE_MCP_STATELESS_MODE"),
-        _flag_field("OAUTHLIB_INSECURE_TRANSPORT", warn_when_true=True),
+        _mode_field("OAuth 2.1", "MCP_ENABLE_OAUTH21", config.is_oauth21_enabled()),
+        _mode_field("Stateless", "WORKSPACE_MCP_STATELESS_MODE", config.stateless_mode),
+        _mode_field(
+            "Single-user",
+            "MCP_SINGLE_USER_MODE",
+            single_user or os.getenv("MCP_SINGLE_USER_MODE") == "1",
+        ),
+        # oauthlib treats any non-empty value as enabled, "false" included.
+        _mode_field(
+            "Insecure transport",
+            "OAUTHLIB_INSECURE_TRANSPORT",
+            bool(os.getenv("OAUTHLIB_INSECURE_TRANSPORT")),
+            warn_when_on=True,
+        ),
         _disabled_tools_field(disabled_tools),
     ]
 
@@ -676,7 +692,10 @@ def main():
     ui.fields(
         [
             ("Credentials", describe_credential_config()),
-            ("Modes", describe_mode_config(disabled_tools)),
+            (
+                "Modes",
+                describe_mode_config(disabled_tools, single_user=args.single_user),
+            ),
         ]
     )
 

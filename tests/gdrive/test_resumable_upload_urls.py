@@ -729,7 +729,7 @@ class TestOfferedOnlyWithoutLocalFiles:
 
         async with Client(mcp) as client:
             (tool,) = await client.list_tools()
-            assert set(tool.inputSchema["properties"]) == {"file_name", "file_path"}
+            assert set(tool.input_schema["properties"]) == {"file_name", "file_path"}
 
             ok = await client.call_tool("fn", {"file_name": "n", "file_path": "/x"})
             assert ok.content[0].text == "n:/x:False"
@@ -797,7 +797,7 @@ async def main():
     with patch.object(sd, '_authenticate_service', auth):
         async with Client(server) as client:
             tools = {t.name: t for t in await client.list_tools()}
-            props = {n: sorted(tools[n].inputSchema['properties']) for n in NAMES}
+            props = {n: sorted(tools[n].input_schema['properties']) for n in NAMES}
             print('PROPS:' + json.dumps(props))
             if CALL:
                 result = await client.call_tool(

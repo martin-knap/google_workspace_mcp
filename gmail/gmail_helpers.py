@@ -44,6 +44,14 @@ GMAIL_METADATA_HEADERS = [
     "List-Id",
 ]
 
+EMAIL_REACTION_MIME_TYPE = "text/vnd.google.email-reaction+json"
+# Reactions require MIME types, which format=metadata omits. Exclude bodies at
+# the root and first two part levels, then retain complete deeper parts (and
+# their bodies) so recursive inspection can reach every MIME type.
+THREAD_REPLY_CONTEXT_FIELDS = (
+    "messages(labelIds,payload(headers,mimeType,parts(mimeType,parts(mimeType,parts))))"
+)
+
 # Gmail accepts label colors only from a fixed palette, and rejects anything else
 # with an opaque 400. Both backgroundColor and textColor draw from this same set.
 # https://developers.google.com/gmail/api/reference/rest/v1/users.labels#Label
@@ -366,6 +374,13 @@ def _parse_message_id_chain(header_value: Optional[str]) -> list[str]:
 
     message_ids = re.findall(r"<[^>]+>", header_value)
     return message_ids or header_value.split()
+
+
+def _is_email_reaction(payload: Mapping[str, Any]) -> bool:
+    """Return True if a message payload is a Gmail emoji reaction."""
+    return payload.get("mimeType") == EMAIL_REACTION_MIME_TYPE or any(
+        _is_email_reaction(part) for part in payload.get("parts") or []
+    )
 
 
 def _derive_reply_headers(
@@ -1041,3 +1056,171 @@ async def _get_send_as_signature_html_for_tool(
 ) -> str:
     """Fetch signature HTML and convert non-benign failures to tool errors."""
     return await _get_send_as_signature_html(service, from_email=from_email)
+
+
+# users.messages.batchModify accepts at most 1000 IDs per call.
+GMAIL_BATCH_MODIFY_LIMIT = 1000
+FILTER_APPLY_DEFAULT_MAX_MESSAGES = 5000
+
+
+def _quote_search_term(value: Any) -> str:
+    """Group a multi-word value so Gmail search treats it as one operand."""
+    text = str(value).strip()
+    if " " in text:
+        return f"({text})"
+    return text
+
+
+def filter_criteria_to_query(criteria: Mapping[str, Any]) -> str:
+    """Translate Gmail filter criteria into the equivalent search query.
+
+    Covers from, to, subject, query, negatedQuery, hasAttachment and size.
+    ``excludeChats`` has no search operator and is ignored (callers report it).
+    Raises ValueError for ``size`` without an explicit ``sizeComparison``.
+    """
+    parts: List[str] = []
+    if criteria.get("from"):
+        parts.append(f"from:{_quote_search_term(criteria['from'])}")
+    if criteria.get("to"):
+        parts.append(f"to:{_quote_search_term(criteria['to'])}")
+    if criteria.get("subject"):
+        parts.append(f"subject:{_quote_search_term(criteria['subject'])}")
+    if criteria.get("query"):
+        parts.append(f"({criteria['query']})")
+    if criteria.get("negatedQuery"):
+        parts.append(f"-({criteria['negatedQuery']})")
+    if criteria.get("hasAttachment"):
+        parts.append("has:attachment")
+    if criteria.get("size"):
+        op = criteria.get("sizeComparison")
+        if op not in ("larger", "smaller"):
+            raise ValueError(
+                "size criteria need sizeComparison 'larger' or 'smaller' to be "
+                f"translated into a search query (got {op!r})"
+            )
+        parts.append(f"{op}:{int(criteria['size'])}")
+    return " ".join(parts)
+
+
+async def update_gmail_filter(
+    service,
+    filter_id: str,
+    criteria: Optional[Mapping[str, Any]] = None,
+    filter_action: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Replace a filter, keeping the parts the caller did not pass.
+
+    Gmail has no filter update endpoint, so the new filter is created FIRST and
+    the old one deleted afterwards: a failure never leaves the mailbox without
+    the rule. Returns the new filter; the filter ID changes.
+    """
+    filters = service.users().settings().filters()
+    old = await asyncio.to_thread(filters.get(userId="me", id=filter_id).execute)
+    body = {
+        "criteria": dict(criteria) if criteria else old.get("criteria", {}),
+        "action": dict(filter_action) if filter_action else old.get("action", {}),
+    }
+    created = await asyncio.to_thread(filters.create(userId="me", body=body).execute)
+    try:
+        await asyncio.to_thread(filters.delete(userId="me", id=filter_id).execute)
+    except Exception as error:
+        raise ToolExecutionError(
+            f"Created the new filter {created.get('id', '(unknown)')} but could "
+            f"not delete the old filter {filter_id}: both are active now. "
+            f"Delete {filter_id} manually. Cause: {error}"
+        ) from error
+    created.setdefault("criteria", body["criteria"])
+    created.setdefault("action", body["action"])
+    return created
+
+
+async def apply_gmail_filter_to_existing(
+    service,
+    criteria: Mapping[str, Any],
+    filter_action: Mapping[str, Any],
+    dry_run: bool = False,
+    max_messages: int = FILTER_APPLY_DEFAULT_MAX_MESSAGES,
+) -> Dict[str, Any]:
+    """Apply a filter's label actions to messages already in the mailbox.
+
+    Gmail filters only act on new mail. Only matching messages change, not the
+    rest of their threads, mirroring how the filter treats incoming mail.
+    Forwarding is never applied retroactively.
+    Returns a summary dict (query, matched, truncated, applied, notes).
+    """
+    query = filter_criteria_to_query(criteria)
+    if not query:
+        raise ValueError("Filter criteria produce an empty search query; refusing.")
+    add = list(filter_action.get("addLabelIds") or [])
+    remove = list(filter_action.get("removeLabelIds") or [])
+    notes: List[str] = []
+    if filter_action.get("forward"):
+        notes.append("Forwarding is not applied to existing mail.")
+    if criteria.get("excludeChats"):
+        notes.append("excludeChats has no search equivalent and was ignored.")
+
+    ids: List[str] = []
+    page_token: Optional[str] = None
+    while len(ids) < max_messages:
+        params: Dict[str, Any] = {"userId": "me", "q": query, "maxResults": 500}
+        if page_token:
+            params["pageToken"] = page_token
+        response = await asyncio.to_thread(
+            service.users().messages().list(**params).execute
+        )
+        ids.extend(m["id"] for m in response.get("messages") or [])
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    truncated = len(ids) > max_messages or bool(page_token)
+    ids = ids[:max_messages]
+
+    applied = 0
+    if not dry_run and ids and (add or remove):
+        body: Dict[str, Any] = {}
+        if add:
+            body["addLabelIds"] = add
+        if remove:
+            body["removeLabelIds"] = remove
+        for start in range(0, len(ids), GMAIL_BATCH_MODIFY_LIMIT):
+            chunk = ids[start : start + GMAIL_BATCH_MODIFY_LIMIT]
+            await asyncio.to_thread(
+                service.users()
+                .messages()
+                .batchModify(userId="me", body={"ids": chunk, **body})
+                .execute
+            )
+            applied += len(chunk)
+    if not add and not remove:
+        notes.append("The filter has no label actions; nothing to apply.")
+    return {
+        "query": query,
+        "matched": len(ids),
+        "truncated": truncated,
+        "applied": applied,
+        "add": add,
+        "remove": remove,
+        "notes": notes,
+    }
+
+
+def format_filter_apply_result(result: Mapping[str, Any], dry_run: bool) -> str:
+    """Human-readable summary for apply_gmail_filter_to_existing."""
+    matched = f"{result['matched']}{'+' if result['truncated'] else ''}"
+    lines = [
+        "DRY RUN: nothing changed."
+        if dry_run
+        else f"Applied to {result['applied']} messages.",
+        f"Query: {result['query']}",
+        f"Matching messages: {matched}",
+    ]
+    if result["add"]:
+        lines.append(f"Add labels: {', '.join(result['add'])}")
+    if result["remove"]:
+        lines.append(f"Remove labels: {', '.join(result['remove'])}")
+    lines.extend(result["notes"])
+    if result["truncated"] and not dry_run:
+        lines.append(
+            "Stopped at max_messages; raise it to process the remaining matches."
+        )
+    return "\n".join(lines)

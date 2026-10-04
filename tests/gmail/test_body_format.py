@@ -1,6 +1,7 @@
 """Tests for Gmail body_format support across helper and public tool APIs."""
 
 import base64
+import inspect
 from email import message_from_bytes
 from email.policy import SMTP
 from pathlib import Path
@@ -29,6 +30,17 @@ def _unwrap(tool):
     while hasattr(fn, "__wrapped__"):
         fn = fn.__wrapped__
     return fn
+
+
+def test_get_gmail_message_content_preserves_existing_positional_arguments():
+    signature = inspect.signature(_unwrap(get_gmail_message_content))
+    bound = signature.bind(
+        Mock(), "msg-1", "user@example.com", "html", True, "metadata"
+    )
+
+    assert bound.arguments["body_format"] == "html"
+    assert bound.arguments["full"] is True
+    assert bound.arguments["format"] == "metadata"
 
 
 def _encode(text: str) -> str:
@@ -494,6 +506,48 @@ async def test_get_gmail_messages_content_batch_rejects_metadata_with_body_forma
             user_google_email="user@example.com",
             format="metadata",
             body_format=body_format,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_gmail_message_content_metadata_format_returns_headers_only():
+    """The singular tool accepts the batch tool's format argument (#1152)."""
+    service = _build_service(
+        message_responses={
+            ("msg-1", "metadata"): _metadata_response("msg-1"),
+        }
+    )
+
+    result = await _unwrap(get_gmail_message_content)(
+        service=service,
+        message_id="msg-1",
+        user_google_email="user@example.com",
+        format="metadata",
+    )
+
+    assert "From: sender@example.com" in result
+    assert "--- BODY ---" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("options", "error"),
+    [
+        ({"body_format": "html"}, "require format='full'"),
+        ({"body_format": "raw"}, "require format='full'"),
+        ({"full": True}, "full=True requires format='full'"),
+    ],
+)
+async def test_get_gmail_message_content_rejects_metadata_with_body_options(
+    options, error
+):
+    with pytest.raises(UserInputError, match=error):
+        await _unwrap(get_gmail_message_content)(
+            service=_build_service(),
+            message_id="msg-1",
+            user_google_email="user@example.com",
+            format="metadata",
+            **options,
         )
 
 
