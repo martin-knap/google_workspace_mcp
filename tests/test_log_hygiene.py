@@ -424,3 +424,53 @@ async def test_resumable_upload_url_logs_event_not_file_name(
     info_text = _info_text(caplog)
     assert "Returned resumable upload URL" in info_text
     assert SECRET not in info_text
+
+
+def test_glide_logs_never_include_valkey_credentials():
+    pytest.importorskip("glide")
+    password = f"pw-{SECRET}".replace(" ", "-")
+    username = "svc-user-hygiene"
+    code = """
+import asyncio, logging
+from core.valkey_storage import (
+    _create_client, build_valkey_client_config, configure_glide_logging,
+)
+
+async def main():
+    logging.getLogger().setLevel(logging.DEBUG)
+    configure_glide_logging()
+    try:
+        await _create_client(build_valkey_client_config())
+    except Exception as exc:
+        print(f"create failed: {type(exc).__name__}: {exc}")
+
+asyncio.run(main())
+"""
+    prefix = "WORKSPACE_MCP_OAUTH_PROXY_VALKEY_"
+    env = os.environ.copy()
+    env.update(
+        {
+            prefix + "HOST": "127.0.0.1",
+            prefix + "PORT": "1",
+            prefix + "USERNAME": username,
+            prefix + "PASSWORD": password,
+            prefix + "CONNECTION_TIMEOUT_MS": "200",
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Connection configuration" in output
+    assert "create failed: ClosingError" in output
+    assert password not in output
+    assert username not in output

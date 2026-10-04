@@ -177,7 +177,7 @@ class TestHideLocalFileArgs:
 
         async with Client(mcp) as client:
             (tool,) = await client.list_tools()
-            assert "file_path" not in tool.inputSchema["properties"]
+            assert "file_path" not in tool.input_schema["properties"]
 
             ok = await client.call_tool("fn", {"file_name": "n"})
             assert ok.content[0].text == "n:None"
@@ -359,7 +359,7 @@ async def main():
             tools = {t.name: t for t in await client.list_tools()}
             for name in ('import_to_google_doc', 'import_to_google_slides',
                          'import_to_google_sheets', 'update_drive_file'):
-                advertised = 'file_path' in tools[name].inputSchema['properties']
+                advertised = 'file_path' in tools[name].input_schema['properties']
                 print(f'ADVERTISED:{name}={advertised}')
             result = await client.call_tool(
                 'import_to_google_slides',
@@ -416,7 +416,7 @@ async def main():
                 "description": t.description or "",
                 "properties": {
                     name: prop.get("description", "")
-                    for name, prop in t.inputSchema["properties"].items()
+                    for name, prop in t.input_schema["properties"].items()
                 },
             }
             for t in await client.list_tools()

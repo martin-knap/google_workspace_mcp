@@ -965,7 +965,7 @@ class TestThumbnailInline:
         assert isinstance(out, ToolResult)
         text, image = out.content
         assert "thumb.png" in text.text
-        assert image.type == "image" and image.mimeType == "image/png"
+        assert image.type == "image" and image.mime_type == "image/png"
         assert base64.b64decode(image.data) == png
         assert out.structured_content == {"result": text.text}
 
