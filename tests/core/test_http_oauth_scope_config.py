@@ -2,7 +2,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.google import GoogleProvider
 from key_value.aio.stores.memory import MemoryStore
+from starlette.testclient import TestClient
 
 import core.server as server_module
 
@@ -378,28 +381,47 @@ def test_configure_server_for_http_passes_expiry_config_to_external_provider(
     assert captured["fallback_refresh_token_expiry_seconds"] == 2592000
 
 
-def test_google_provider_challenges_with_tool_scopes():
-    """The 401 challenge must name the tool scopes, not just identity (#1116)."""
-    provider = server_module.WorkspaceGoogleProvider(
+TOOL_CHALLENGE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
+
+
+def _make_workspace_google_provider():
+    return server_module.WorkspaceGoogleProvider(
         client_id="client-id",
         client_secret="client-secret",
         base_url="https://workspace-mcp.example.test",
         client_storage=MemoryStore(),
         jwt_signing_key="test-signing-key",
         required_scopes=sorted(server_module.PROTOCOL_AUTH_SCOPES),
-        valid_scopes=[
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "openid",
-        ],
+        valid_scopes=TOOL_CHALLENGE_SCOPES,
     )
 
-    assert provider.get_challenge_scopes() == [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/userinfo.email",
-        "openid",
-    ]
+
+def test_google_provider_challenges_with_tool_scopes():
+    """The 401 challenge must name the tool scopes, not just identity (#1116)."""
+    provider = _make_workspace_google_provider()
+
+    assert provider.get_challenge_scopes() == TOOL_CHALLENGE_SCOPES
     assert provider.get_challenge_scopes(["openid"]) == ["openid"]
+
+
+@pytest.mark.skipif(
+    not hasattr(GoogleProvider, "challenge_scopes"),
+    reason="WWW-Authenticate scope challenge requires FastMCP 4",
+)
+def test_unauthenticated_request_challenges_with_tool_scopes():
+    app = FastMCP("test", auth=_make_workspace_google_provider()).http_app()
+
+    response = TestClient(app).post("/mcp", json={})
+
+    assert response.status_code == 401
+    assert (
+        f'scope="{" ".join(TOOL_CHALLENGE_SCOPES)}"'
+        in (response.headers["www-authenticate"])
+    )
 
 
 def test_configure_server_for_http_passes_token_validation_settings(monkeypatch):
