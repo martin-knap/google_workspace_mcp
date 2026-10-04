@@ -210,25 +210,19 @@ async def search_drive_files(
     is_structured_query = any(pattern.search(query) for pattern in DRIVE_QUERY_PATTERNS)
 
     if is_structured_query:
-        final_query = query
-        logger.debug(
-            f"[search_drive_files] Using structured query as-is: '{final_query}'"
-        )
+        final_query = normalize_drive_query_v2_compat(query)
+        if final_query != query:
+            logger.info(
+                "[search_drive_files] Normalized v2 query field names to v3 equivalents"
+            )
+        logger.debug(f"[search_drive_files] Using structured query: '{final_query}'")
     else:
         # For free text queries, wrap in fullText contains
-        escaped_query = query.replace("'", "\\'")
+        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
         final_query = f"fullText contains '{escaped_query}'"
         logger.debug(
             f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'"
         )
-
-    # Rewrite v2 field names (title, *Date) to their v3 equivalents; literals are untouched.
-    normalized_query = normalize_drive_query_v2_compat(final_query)
-    if normalized_query != final_query:
-        logger.info(
-            "[search_drive_files] Normalized v2 query field names to v3 equivalents"
-        )
-        final_query = normalized_query
 
     # Drive's files.list returns trashed items unless told otherwise. Hide them by
     # default so search agrees with list_drive_items and the Drive web UI, but never

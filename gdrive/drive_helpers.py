@@ -264,10 +264,8 @@ def has_explicit_trashed_clause(query: str) -> bool:
     return bool(TRASHED_CLAUSE_PATTERN.search(without_literals))
 
 
-# Drive API v2 -> v3 field-name compatibility for search queries.
-# v2 `title` is `name` in v3; date fields changed `Date` suffix to `Time`.
-# See https://developers.google.com/workspace/drive/api/guides/v2-guide
-# and https://developers.google.com/drive/api/guides/v2-to-v3-reference
+# Drive API v2 query field names and their v3 replacements, see
+# https://developers.google.com/drive/api/guides/v2-to-v3-reference
 DRIVE_V2_TO_V3_QUERY_FIELD_MAP = {
     "title": "name",
     "createddate": "createdTime",
@@ -275,40 +273,23 @@ DRIVE_V2_TO_V3_QUERY_FIELD_MAP = {
     "lastviewedbymedate": "viewedByMeTime",
 }
 
-_DRIVE_V2_FIELD_PATTERN = re.compile(
-    r"\b(title|createdDate|modifiedDate|lastViewedByMeDate)\b",
+# Literals are matched first so field names inside quoted values are left alone.
+_DRIVE_V2_FIELD_OR_LITERAL_PATTERN = re.compile(
+    rf"({QUERY_STRING_LITERAL_PATTERN.pattern})"
+    rf"|\b({'|'.join(DRIVE_V2_TO_V3_QUERY_FIELD_MAP)})\b",
     re.IGNORECASE,
 )
 
 
-def _replace_drive_v2_field(match: re.Match) -> str:
-    """Map a single v2 field occurrence to its v3 equivalent."""
-    return DRIVE_V2_TO_V3_QUERY_FIELD_MAP[match.group(1).lower()]
-
-
 def normalize_drive_query_v2_compat(query: str) -> str:
-    """Translate Drive API v2 query field names to v3 equivalents.
+    """Rewrite Drive API v2 field names outside string literals to their v3 names.
 
-    Only field positions outside quoted string literals are rewritten, so a
-    filename such as ``name contains 'title'`` keeps its literal untouched
-    while ``title contains 'test'`` becomes ``name contains 'test'``.
-
-    Covered translations:
-    - ``title`` -> ``name``
-    - ``createdDate`` -> ``createdTime``
-    - ``modifiedDate`` -> ``modifiedTime``
-    - ``lastViewedByMeDate`` -> ``viewedByMeTime``
+    ``title contains 'title'`` becomes ``name contains 'title'``.
     """
-    result_parts: list[str] = []
-    last_end = 0
-    for literal in QUERY_STRING_LITERAL_PATTERN.finditer(query):
-        chunk = query[last_end : literal.start()]
-        result_parts.append(_DRIVE_V2_FIELD_PATTERN.sub(_replace_drive_v2_field, chunk))
-        result_parts.append(literal.group(0))
-        last_end = literal.end()
-    tail = query[last_end:]
-    result_parts.append(_DRIVE_V2_FIELD_PATTERN.sub(_replace_drive_v2_field, tail))
-    return "".join(result_parts)
+    return _DRIVE_V2_FIELD_OR_LITERAL_PATTERN.sub(
+        lambda m: m.group(1) or DRIVE_V2_TO_V3_QUERY_FIELD_MAP[m.group(2).lower()],
+        query,
+    )
 
 
 # Precompiled regex patterns for Drive query detection

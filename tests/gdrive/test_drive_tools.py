@@ -3360,7 +3360,7 @@ async def test_check_drive_file_public_access_shared_drive(mock_resolve):
 
 
 # ---------------------------------------------------------------------------
-# search_drive_files — Drive API v2 -> v3 query compat (title -> name)
+# search_drive_files - Drive API v2 -> v3 query compat (title -> name)
 # ---------------------------------------------------------------------------
 
 
@@ -3381,6 +3381,20 @@ def test_normalize_drive_query_v2_preserves_literals():
     assert (
         normalize_drive_query_v2_compat("name contains \"title contains 'test'\"")
         == "name contains \"title contains 'test'\""
+    )
+    assert (
+        normalize_drive_query_v2_compat("name contains 'it\\'s title' and title = 'a'")
+        == "name contains 'it\\'s title' and name = 'a'"
+    )
+
+
+def test_normalize_drive_query_v2_whole_words_any_case():
+    """Matching is case-insensitive but never touches longer identifiers."""
+    assert (
+        normalize_drive_query_v2_compat(
+            "TITLE = 'a' or subtitle = 'b' or title_x = 'c'"
+        )
+        == "name = 'a' or subtitle = 'b' or title_x = 'c'"
     )
 
 
@@ -3448,3 +3462,21 @@ async def test_search_drive_files_does_not_rewrite_quoted_title():
 
     call_kwargs = mock_service.files.return_value.list.call_args.kwargs
     assert call_kwargs["q"] == "(name contains 'title') and trashed=false"
+
+
+@pytest.mark.asyncio
+async def test_search_drive_files_escapes_free_text_literal():
+    """Backslashes and quotes in free text stay inside one literal, never rewritten."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="it's a title\\",
+    )
+
+    call_kwargs = mock_service.files.return_value.list.call_args.kwargs
+    assert (
+        call_kwargs["q"] == "(fullText contains 'it\\'s a title\\\\') and trashed=false"
+    )
