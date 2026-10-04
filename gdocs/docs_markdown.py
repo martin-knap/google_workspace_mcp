@@ -614,12 +614,14 @@ def _format_footnote(num: int, comment: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_comments_appendix(comments: list[dict[str, Any]]) -> str:
+def format_comments_appendix(
+    comments: list[dict[str, Any]], title: str = "Comments"
+) -> str:
     """Format comments as an appendix section with blockquoted anchors."""
     if not comments:
         return ""
 
-    lines = ["## Comments", ""]
+    lines = [f"## {title}", ""]
     for comment in comments:
         resolved_tag = " *(Resolved)*" if comment.get("resolved") else ""
         anchor = comment.get("anchor_text", "")
