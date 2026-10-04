@@ -43,7 +43,7 @@ from core.config import (
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 import fastmcp
 from fastmcp import FastMCP
-from fastmcp.server.auth.providers.google import GoogleProvider
+from auth.google_oauth_provider import GoogleProvider
 from fastmcp.server.lifespan import lifespan
 from mcp.types import ToolAnnotations, Icon
 from starlette.applications import Starlette

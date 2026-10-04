@@ -81,6 +81,19 @@ from auth.scopes import (
 logger = logging.getLogger(__name__)
 
 
+class GoogleScopeError(GoogleAuthenticationError):
+    """The authenticated account has not granted this tool's permissions."""
+
+
+def _missing_scope_message(service_name: str, error: GoogleScopeError) -> str:
+    return (
+        f"Permission required for {service_name}: {error}. "
+        "Reconnect using your MCP client's OAuth flow and grant access to this "
+        "service if it is available for your account. Other services with granted "
+        "permissions remain usable."
+    )
+
+
 def _release_google_service_cycles() -> None:
     """Collect cyclic references retained by googleapiclient Resource objects."""
     gc.collect()
@@ -438,7 +451,7 @@ async def get_authenticated_google_service_oauth21(
             scopes_available = set(access_token.scopes)
 
         if not has_required_scopes(scopes_available, required_scopes):
-            raise GoogleAuthenticationError(
+            raise GoogleScopeError(
                 f"OAuth credentials lack required scopes. Need: {required_scopes}, Have: {sorted(scopes_available)}"
             )
 
@@ -471,7 +484,7 @@ async def get_authenticated_google_service_oauth21(
         scopes_available = set(credentials.scopes)
 
     if not has_required_scopes(scopes_available, required_scopes):
-        raise GoogleAuthenticationError(
+        raise GoogleScopeError(
             f"OAuth 2.1 credentials lack required scopes. Need: {required_scopes}, Have: {sorted(scopes_available)}"
         )
 
@@ -867,6 +880,9 @@ def require_google_service(
                     mcp_session_id,
                     authenticated_user,
                 )
+            except GoogleScopeError as e:
+                logger.info("[%s] Missing %s permissions: %s", tool_name, service_name, e)
+                return _missing_scope_message(service_name, e)
             except GoogleAuthenticationError as e:
                 logger.error(
                     f"[{tool_name}] Auth failed for {user_google_email} | "
@@ -1025,6 +1041,9 @@ def require_multiple_services(service_configs: List[Dict[str, Any]]):
                             stack.enter_context(recycling(service))
                             services_created = True
 
+                        except GoogleScopeError as e:
+                            logger.info("[%s] Missing %s permissions: %s", tool_name, service_name, e)
+                            return _missing_scope_message(service_name, e)
                         except GoogleAuthenticationError as e:
                             logger.error(
                                 f"[{tool_name}] Auth failed for {user_google_email} | "
