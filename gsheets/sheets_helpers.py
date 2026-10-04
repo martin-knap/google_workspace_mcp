@@ -1680,6 +1680,6 @@ async def _insert_cell_comment(
     comment_id = thread.get("commentId")
     if not comment_id:
         raise RuntimeError(
-            f"Sheets API did not return a comment ID for {cell}; the comment may not have been created."
+            f"Sheets API did not return a comment ID for {cell}; check list_spreadsheet_comments before retrying."
         )
     return comment_id

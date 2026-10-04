@@ -47,7 +47,7 @@ async def _manage_comment_dispatch(
 ) -> str:
     """Route comment management actions to the appropriate implementation."""
     action_lower = action.lower().strip()
-    if cell and action_lower != "create":
+    if cell and action_lower in ("reply", "resolve"):
         raise ValueError("cell is only supported for the create action")
     if action_lower == "create":
         if not comment_content:
@@ -152,12 +152,13 @@ def create_comment_tools(
             )
 
         # Use full Drive scope so comment operations remain visible to collaborators.
+        # Sheets batchUpdate also accepts it, so cell comments need no extra grant.
         @require_multiple_services(
             [
                 {"service_type": "drive", "scopes": "drive", "param_name": "service"},
                 {
                     "service_type": "sheets",
-                    "scopes": "sheets_write",
+                    "scopes": "drive",
                     "param_name": "sheets_service",
                 },
             ]

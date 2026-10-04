@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from auth.scopes import DRIVE_SCOPE, SHEETS_WRITE_SCOPE
+from auth.scopes import DRIVE_SCOPE
 from core.comments import create_comment_tools
 from core.utils import UserInputError
 from gsheets.sheets_helpers import _build_insert_comment_request, _insert_cell_comment
@@ -136,6 +136,13 @@ class TestManageSpreadsheetCommentCell:
             )
 
     @pytest.mark.asyncio
+    async def test_invalid_action_with_cell_reports_action(self, manage_comment):
+        with pytest.raises(ValueError, match="Invalid action 'bogus'"):
+            await manage_comment(
+                Mock(), Mock(), "user@example.com", "sheet123", "bogus", cell="A1"
+            )
+
+    @pytest.mark.asyncio
     async def test_cell_requires_content(self, manage_comment):
         with pytest.raises(ValueError, match="comment_content is required"):
             await manage_comment(
@@ -177,10 +184,10 @@ class TestManageSpreadsheetCommentCell:
             )
 
 
-def test_manage_comment_requires_drive_and_sheets_write_scopes():
+def test_manage_comment_requires_only_drive_scope():
     tools = create_comment_tools(
         "spreadsheet", "spreadsheet_id", insert_cell_comment=_insert_cell_comment
     )
     tool = tools["manage_comment"]
     fn = tool.fn if hasattr(tool, "fn") else tool
-    assert set(fn._required_google_scopes) >= {DRIVE_SCOPE, SHEETS_WRITE_SCOPE}
+    assert set(fn._required_google_scopes) == {DRIVE_SCOPE}
