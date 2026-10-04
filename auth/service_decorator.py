@@ -881,7 +881,9 @@ def require_google_service(
                     authenticated_user,
                 )
             except GoogleScopeError as e:
-                logger.info("[%s] Missing %s permissions: %s", tool_name, service_name, e)
+                logger.info(
+                    "[%s] Missing %s permissions: %s", tool_name, service_name, e
+                )
                 return _missing_scope_message(service_name, e)
             except GoogleAuthenticationError as e:
                 logger.error(
@@ -1042,7 +1044,12 @@ def require_multiple_services(service_configs: List[Dict[str, Any]]):
                             services_created = True
 
                         except GoogleScopeError as e:
-                            logger.info("[%s] Missing %s permissions: %s", tool_name, service_name, e)
+                            logger.info(
+                                "[%s] Missing %s permissions: %s",
+                                tool_name,
+                                service_name,
+                                e,
+                            )
                             return _missing_scope_message(service_name, e)
                         except GoogleAuthenticationError as e:
                             logger.error(
