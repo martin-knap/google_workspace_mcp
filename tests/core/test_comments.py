@@ -81,7 +81,7 @@ async def test_read_comments_includes_quoted_text():
 @pytest.mark.asyncio
 async def test_read_comments_includes_anchor():
     """Verify that the Drive `anchor` is requested and surfaced when present."""
-    # Real Google Slides anchor: the comment is attached to the shape "box_1".
+    # Slides anchor shape: the comment is attached to the shape "box_1".
     slides_anchor = (
         '{"type":"shape","subtype":"text","uid":1790843227146,'
         '"page":"p","targets":["box_1"]}'
@@ -100,7 +100,6 @@ async def test_read_comments_includes_anchor():
     ]
     assert "anchor" in requested_fields
     assert f"Anchor: {slides_anchor}" in result
-    assert '"targets":["box_1"]' in result
     # A comment without an anchor must not print an empty Anchor line.
     assert result.count("Anchor:") == 1
 

@@ -291,11 +291,7 @@ async def _read_comments_impl(
         if quoted_text:
             output.append(_format_field("Quoted text: ", quoted_text))
         if anchor:
-            # Opaque, file-type specific location the comment is attached to.
-            # Passed through unparsed. For Google Slides it is a JSON string
-            # whose `targets` hold the page element objectIds, e.g.
-            # {"type":"shape","subtype":"text","uid":1790843227146,
-            #  "page":"p","targets":["box_1"]}
+            # Opaque, file-type specific; Slides lists element objectIds in `targets`.
             output.append(_format_field("Anchor: ", anchor))
         output.append(_format_field("Content: ", content))
 
