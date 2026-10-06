@@ -4,6 +4,7 @@ import pytest
 
 from flatbee_ops.clients import (
     _mcp_payload,
+    _merge_graphiti_payloads,
     _scope_graphiti_payload,
     _unwrap_records,
     twenty_query,
@@ -66,6 +67,28 @@ def test_graphiti_project_scope_drops_cross_project_hits():
         "message": "hybrid results",
     }
     assert dropped == {"entities": 2, "relationships": 1}
+
+
+def test_graphiti_group_hits_lead_and_global_hits_fill_without_repeats():
+    in_group = {"relationships": [{"uuid": "a"}, {"uuid": "b"}]}
+    global_scoped = {
+        "relationships": [{"uuid": "b"}, {"uuid": "c"}, {"uuid": "d"}],
+        "episodes": [{"uuid": "e"}],
+    }
+
+    merged = _merge_graphiti_payloads(in_group, global_scoped, 3)
+
+    assert merged == {
+        "relationships": [{"uuid": "a"}, {"uuid": "b"}, {"uuid": "c"}],
+        "episodes": [{"uuid": "e"}],
+    }
+
+
+def test_graphiti_merge_drops_no_results_message_when_one_side_has_hits():
+    merged = _merge_graphiti_payloads(
+        {"message": "No results found"}, {"entities": [{"uuid": "n"}]}, 5
+    )
+    assert merged == {"entities": [{"uuid": "n"}]}
 
 
 @pytest.mark.asyncio

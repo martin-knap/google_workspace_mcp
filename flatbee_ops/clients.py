@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -153,6 +154,18 @@ def _mcp_payload(result: Any) -> Any:
     return texts
 
 
+# Graph groups the ingest writes each project into (graphiti/ingest.py).
+PROJECT_GRAPH_GROUPS = {
+    "P22": "P22_POBREZNI",
+    "H83": "H83_HARTIGOVA",
+    "H92": "H92_HARTIGOVA",
+    "NS6": "NS6_NA_SVIHANCE",
+    "PERN22": "PERN22_PERNEROVA_22",
+    "NP8": "NP8_NAD_PANENSKOU_8",
+    "CENTRALA": "00_CENTRALA",
+}
+
+
 async def graphiti_search(
     query: str, project_code: str | None = None, limit: int = 10
 ) -> dict[str, Any]:
@@ -161,30 +174,78 @@ async def graphiti_search(
     if not token:
         raise RuntimeError("GRAPHITI_MCP_SERVICE_TOKEN is not configured")
     routed_query = f"Project {project_code}: {query}" if project_code else query
+    arguments = {
+        "query": routed_query,
+        "num_results": max(1, min(int(limit), 20)),
+        "include_nodes": True,
+        "include_edges": True,
+        "include_episodes": True,
+        "include_communities": False,
+    }
+    group = PROJECT_GRAPH_GROUPS.get((project_code or "").upper())
     async with Client(url, auth=token, timeout=45) as client:
-        result = await client.call_tool(
-            "search_advanced",
-            {
-                "query": routed_query,
-                "num_results": max(1, min(int(limit), 20)),
-                "include_nodes": True,
-                "include_edges": True,
-                "include_episodes": True,
-                "include_communities": False,
-            },
-        )
-    payload = _mcp_payload(result)
+        if not group:
+            result = await client.call_tool("search_advanced", arguments)
+            global_payload, group_payload = _mcp_payload(result), None
+        else:
+            # The project's own group fills the page; the global search adds facts
+            # stored elsewhere (e.g. a CENTRALA e-mail) that name the project.
+            in_group, everywhere = await asyncio.gather(
+                client.call_tool(
+                    "search_advanced", {**arguments, "group_ids": [group]}
+                ),
+                client.call_tool("search_advanced", arguments),
+            )
+            group_payload, global_payload = (
+                _mcp_payload(in_group),
+                _mcp_payload(everywhere),
+            )
     if not project_code:
-        return {"query": routed_query, "result": payload}
+        return {"query": routed_query, "result": global_payload}
 
-    scoped, dropped = _scope_graphiti_payload(payload, project_code)
+    scoped, dropped = _scope_graphiti_payload(global_payload, project_code)
+    if group_payload is not None:
+        scoped = _merge_graphiti_payloads(
+            group_payload, scoped, arguments["num_results"]
+        )
     return {
         "query": routed_query,
         "project_scope": project_code,
-        "scope_mode": "explicit_project_token",
+        "scope_mode": "project_group_plus_explicit_token"
+        if group
+        else "explicit_project_token",
         "dropped_out_of_scope": dropped,
         "result": scoped,
     }
+
+
+def _merge_graphiti_payloads(first: Any, second: Any, limit: int) -> Any:
+    """Concatenate result lists per category, first payload first, without repeats."""
+    if not isinstance(first, dict):
+        return second
+    if not isinstance(second, dict):
+        return first
+    merged: dict[str, Any] = {}
+    for category in [*first, *(k for k in second if k not in first)]:
+        a, b = first.get(category), second.get(category)
+        if not isinstance(a, list) and not isinstance(b, list):
+            merged[category] = a if a is not None else b
+            continue
+        seen: set[str] = set()
+        items = []
+        for item in [
+            *(a if isinstance(a, list) else []),
+            *(b if isinstance(b, list) else []),
+        ]:
+            key = item.get("uuid") if isinstance(item, dict) else None
+            key = key or json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                items.append(item)
+        merged[category] = items[:limit]
+    if any(isinstance(v, list) and v for v in merged.values()):
+        merged.pop("message", None)
+    return merged
 
 
 def _scope_graphiti_payload(
