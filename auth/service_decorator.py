@@ -400,7 +400,9 @@ async def get_authenticated_google_service_oauth21(
 
         if not has_required_scopes(scopes_available, required_scopes):
             raise GoogleAuthenticationError(
-                f"OAuth credentials lack required scopes. Need: {required_scopes}, Have: {sorted(scopes_available)}"
+                f"OAuth credentials lack required scopes. Need: {required_scopes}, Have: {sorted(scopes_available)}. "
+                "Reconnect the Workspace MCP connector (disconnect and connect again) and allow "
+                "all requested Google permissions on the consent screen."
             )
 
         service = build(service_name, version, credentials=credentials)

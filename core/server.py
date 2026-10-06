@@ -864,6 +864,9 @@ def configure_server_for_http():
                         "WORKSPACE_MCP_REQUIRE_EMAIL_ALLOWLIST", "false"
                     ).lower()
                     == "true",
+                    # Grant the enabled tools' Google scopes even when the MCP
+                    # client asks only for the protocol identity scopes.
+                    authorize_scopes=provider_valid_scopes,
                     **expiry_kwargs,
                 )
                 if provider.client_registration_options is not None:

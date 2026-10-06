@@ -10,6 +10,7 @@ from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.providers.google import GoogleProvider
 from mcp.server.auth.provider import (
     AuthorizationCode,
+    AuthorizationParams,
     OAuthClientInformationFull,
     OAuthToken,
     TokenError,
@@ -47,15 +48,26 @@ def verified_email(access_token: AccessToken | None) -> str | None:
 
 
 class AllowlistedGoogleProvider(GoogleProvider):
-    """Reject Google identities outside an exact allowlist at token issuance and use."""
+    """Reject Google identities outside an exact allowlist at token issuance and use.
+
+    It also authorizes every Google scope the enabled tools need, whatever scope
+    the MCP client requests. Clients such as claude.ai request only the protocol
+    scopes advertised in the 401 challenge (userinfo.email, openid); forwarding
+    that subset to Google produced tokens without Drive access, and ops tools then
+    failed with "credentials lack required scopes" (seen 2026-10-06).
+    """
 
     def __init__(
         self,
         *,
         allowed_emails: str | Iterable[str] | None = None,
         require_email_allowlist: bool = False,
+        authorize_scopes: Iterable[str] | None = None,
         **kwargs: Any,
     ) -> None:
+        self.authorize_scopes = sorted(
+            {scope for scope in authorize_scopes or [] if scope}
+        )
         self.allowed_emails = parse_allowed_emails(allowed_emails)
         if require_email_allowlist and not self.allowed_emails:
             raise ValueError(
@@ -69,6 +81,17 @@ class AllowlistedGoogleProvider(GoogleProvider):
             return True
         email = verified_email(access_token)
         return email is not None and email in self.allowed_emails
+
+    async def authorize(
+        self, client: OAuthClientInformationFull, params: AuthorizationParams
+    ) -> str:
+        requested = list(params.scopes or [])
+        merged = sorted(
+            set(requested) | set(getattr(self, "authorize_scopes", []) or [])
+        )
+        if merged != sorted(requested):
+            params = params.model_copy(update={"scopes": merged})
+        return await super().authorize(client, params)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         access_token = await super().load_access_token(token)

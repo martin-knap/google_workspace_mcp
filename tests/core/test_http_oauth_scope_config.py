@@ -128,6 +128,8 @@ def test_configure_server_for_http_uses_protocol_auth_required_scopes(monkeypatc
 
     assert captured["required_scopes"] == sorted(server_module.PROTOCOL_AUTH_SCOPES)
     assert captured["valid_scopes"] == sorted(server_module.get_current_scopes())
+    # Identity-only client requests must still authorize the enabled tools' scopes.
+    assert captured["authorize_scopes"] == sorted(server_module.get_current_scopes())
     assert captured["token_expiry_threshold_seconds"] == 120
     assert captured["fastmcp_access_token_expiry_seconds"] == 86400
     assert (

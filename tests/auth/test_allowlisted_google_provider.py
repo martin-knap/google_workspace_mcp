@@ -116,3 +116,62 @@ async def test_exchange_rejects_before_fastmcp_token_is_issued():
             SimpleNamespace(), SimpleNamespace(code="client-code")
         )
     assert store.deleted is True
+
+
+@pytest.mark.asyncio
+async def test_authorize_grants_enabled_tool_scopes_for_identity_only_clients(
+    monkeypatch,
+):
+    from mcp.server.auth.provider import AuthorizationParams
+
+    captured = []
+
+    async def fake_authorize(self, client, params):
+        captured.append(params)
+        return "https://accounts.google.com/o/oauth2/auth"
+
+    monkeypatch.setattr(GoogleProvider, "authorize", fake_authorize)
+    provider = provider_with_allowlist("jakub.chodura@flatbee.cz")
+    provider.authorize_scopes = sorted(get_scopes_for_tools(["flatbee_ops"]))
+    params = AuthorizationParams(
+        state="s",
+        scopes=["https://www.googleapis.com/auth/userinfo.email", "openid"],
+        code_challenge="c" * 43,
+        redirect_uri="https://claude.ai/api/mcp/auth_callback",
+        redirect_uri_provided_explicitly=True,
+    )
+
+    await provider.authorize(SimpleNamespace(client_id="claude"), params)
+
+    granted = set(captured[0].scopes)
+    assert {DRIVE_READONLY_SCOPE, CLOUD_VISION_SCOPE, "openid"} <= granted
+    assert "https://www.googleapis.com/auth/userinfo.email" in granted
+    assert params.scopes == ["https://www.googleapis.com/auth/userinfo.email", "openid"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_keeps_params_when_client_already_requests_everything(
+    monkeypatch,
+):
+    from mcp.server.auth.provider import AuthorizationParams
+
+    captured = []
+
+    async def fake_authorize(self, client, params):
+        captured.append(params)
+        return "url"
+
+    monkeypatch.setattr(GoogleProvider, "authorize", fake_authorize)
+    provider = provider_with_allowlist()
+    provider.authorize_scopes = ["openid", DRIVE_READONLY_SCOPE]
+    params = AuthorizationParams(
+        state="s",
+        scopes=[DRIVE_READONLY_SCOPE, "openid"],
+        code_challenge="c" * 43,
+        redirect_uri="https://claude.ai/api/mcp/auth_callback",
+        redirect_uri_provided_explicitly=True,
+    )
+
+    await provider.authorize(SimpleNamespace(client_id="claude"), params)
+
+    assert captured[0] is params
