@@ -69,27 +69,47 @@ def email_from_id_token(id_token: str | None) -> str | None:
     return email or None
 
 
+def rank_grants(candidates: Iterable[GoogleGrant]) -> list[GoogleGrant]:
+    """Most scopes first, then newest. Distinct refresh tokens only."""
+    seen: set[str] = set()
+    out: list[GoogleGrant] = []
+    for c in sorted(
+        candidates, key=lambda g: (len(g.scopes), g.created_at), reverse=True
+    ):
+        if c.refresh_token not in seen:
+            seen.add(c.refresh_token)
+            out.append(c)
+    return out
+
+
 def pick_grant(candidates: Iterable[GoogleGrant]) -> GoogleGrant | None:
-    """Prefer the grant with the most scopes, then the newest."""
-    best = None
-    for c in candidates:
-        if best is None or (len(c.scopes), c.created_at) > (len(best.scopes), best.created_at):
-            best = c
-    return best
+    ranked = rank_grants(candidates)
+    return ranked[0] if ranked else None
 
 
-async def upstream_grants(provider: Any, email: str, list_keys: Callable[[], Awaitable[list[str]]]) -> list[GoogleGrant]:
+class GrantRevoked(Exception):
+    """Google rejected this refresh token (revoked, expired, password change)."""
+
+
+async def upstream_grants(
+    provider: Any, email: str, list_keys: Callable[[], Awaitable[list[str]]]
+) -> list[GoogleGrant]:
     """Grants from the proxy's upstream token store whose id_token names this email."""
     grants: list[GoogleGrant] = []
     for key in await list_keys():
         try:
             token_set = await provider._upstream_token_store.get(key=key)
-        except Exception as exc:  # undecryptable or stale schema: skip, never fail the request
+        except (
+            Exception
+        ) as exc:  # undecryptable or stale schema: skip, never fail the request
             logger.debug("skip upstream token %s: %s", key[:8], exc)
             continue
         if token_set is None or not token_set.refresh_token:
             continue
-        if email_from_id_token((token_set.raw_token_data or {}).get("id_token")) != email:
+        if (
+            email_from_id_token((token_set.raw_token_data or {}).get("id_token"))
+            != email
+        ):
             continue
         grants.append(
             GoogleGrant(
@@ -102,7 +122,9 @@ async def upstream_grants(provider: Any, email: str, list_keys: Callable[[], Awa
     return grants
 
 
-def credential_store_grant(credentials: Any, upstream_client_id: str) -> GoogleGrant | None:
+def credential_store_grant(
+    credentials: Any, upstream_client_id: str
+) -> GoogleGrant | None:
     """A credential-store entry is usable only if it was issued to the proxy's Google client."""
     if credentials is None or not getattr(credentials, "refresh_token", None):
         return None
@@ -116,9 +138,15 @@ def credential_store_grant(credentials: Any, upstream_client_id: str) -> GoogleG
     )
 
 
-async def refresh_google(provider: Any, grant: GoogleGrant, http: httpx.AsyncClient) -> dict[str, Any]:
+async def refresh_google(
+    provider: Any, grant: GoogleGrant, http: httpx.AsyncClient
+) -> dict[str, Any]:
     """Fresh Google tokens for the grant, shaped like the proxy's idp_tokens."""
-    secret = provider._upstream_client_secret.get_secret_value() if provider._upstream_client_secret else None
+    secret = (
+        provider._upstream_client_secret.get_secret_value()
+        if provider._upstream_client_secret
+        else None
+    )
     data = {
         "grant_type": "refresh_token",
         "refresh_token": grant.refresh_token,
@@ -126,9 +154,16 @@ async def refresh_google(provider: Any, grant: GoogleGrant, http: httpx.AsyncCli
     }
     if secret:
         data["client_secret"] = secret
-    resp = await http.post(GOOGLE_TOKEN_URI, data=data, timeout=20)
+    try:
+        resp = await http.post(GOOGLE_TOKEN_URI, data=data, timeout=20)
+    except httpx.HTTPError as exc:
+        raise IssuanceError(
+            502, f"Google token endpoint unreachable: {type(exc).__name__}"
+        ) from exc
+    if resp.status_code in (400, 401):
+        raise GrantRevoked(resp.status_code)
     if resp.status_code != 200:
-        raise IssuanceError(409, f"stored Google grant could not be refreshed ({resp.status_code}); the user must sign in again")
+        raise IssuanceError(502, f"Google token endpoint returned {resp.status_code}")
     tokens = resp.json()
     # Google does not return the refresh token on refresh; it stays valid and is shared.
     tokens.setdefault("refresh_token", grant.refresh_token)
@@ -157,19 +192,40 @@ async def issue_client_tokens(
         raise IssuanceError(404, "unknown client")
 
     candidates = await upstream_grants(provider, email, list_upstream_keys)
-    stored = credential_store_grant(credential_lookup(email), provider._upstream_client_id)
+    stored = credential_store_grant(
+        credential_lookup(email), provider._upstream_client_id
+    )
     if stored:
         candidates.append(stored)
-    grant = pick_grant(candidates)
-    if grant is None:
+    ranked = rank_grants(candidates)
+    if not ranked:
         raise IssuanceError(404, "no existing Google sign-in for this user")
 
-    idp_tokens = await refresh_google(provider, grant, http)
+    # A revoked or stale grant must not hide a working one: try them in rank order.
+    grant = idp_tokens = None
+    for candidate in ranked:
+        try:
+            idp_tokens = await refresh_google(provider, candidate, http)
+        except GrantRevoked:
+            logger.info(
+                "skip revoked Google grant for %s (source=%s)", email, candidate.source
+            )
+            continue
+        grant = candidate
+        break
+    if grant is None or idp_tokens is None:
+        raise IssuanceError(
+            404, "no usable Google sign-in for this user; the user must sign in again"
+        )
 
     # The candidate came from an unverified claim; Google decides who the token belongs to.
     verified = await provider._token_validator.verify_token(idp_tokens["access_token"])
+    if verified is None:
+        raise IssuanceError(502, "Google identity verification failed")
     claims = getattr(verified, "claims", None) or {}
-    if str(claims.get("email") or "").strip().lower() != email or claims.get("email_verified") not in (True, "true", "True", 1, "1"):
+    if str(claims.get("email") or "").strip().lower() != email or claims.get(
+        "email_verified"
+    ) not in (True, "true", "True", 1, "1"):
         raise IssuanceError(409, "Google grant does not belong to the requested user")
 
     # Run the proxy's own code exchange so storage, encryption, JTI mappings and
@@ -186,7 +242,7 @@ async def issue_client_tokens(
             code=code,
             client_id=client_id,
             redirect_uri=redirect_uri,
-            code_challenge=None,
+            code_challenge=None,  # the exchange runs in-process; no /token PKCE step
             code_challenge_method="S256",
             scopes=scopes,
             idp_tokens=idp_tokens,
@@ -195,19 +251,32 @@ async def issue_client_tokens(
         ),
         ttl=CODE_TTL_SECONDS,
     )
-    token = await provider.exchange_authorization_code(
-        client,
-        AuthorizationCode(
-            code=code,
-            scopes=scopes,
-            expires_at=now + CODE_TTL_SECONDS,
-            client_id=client_id,
-            code_challenge="",
-            redirect_uri=redirect_uri,
-            redirect_uri_provided_explicitly=True,
-        ),
+    from mcp.server.auth.provider import TokenError
+
+    try:
+        token = await provider.exchange_authorization_code(
+            client,
+            AuthorizationCode(
+                code=code,
+                scopes=scopes,
+                expires_at=now + CODE_TTL_SECONDS,
+                client_id=client_id,
+                code_challenge="",
+                redirect_uri=redirect_uri,
+                redirect_uri_provided_explicitly=True,
+            ),
+        )
+    except TokenError as exc:  # e.g. the exact email allowlist rejects this account
+        raise IssuanceError(
+            403, f"sign-in not allowed: {exc.error_description or exc.error}"
+        ) from exc
+    logger.info(
+        "issued agent tokens for %s to client %s (grant source=%s, scopes=%d)",
+        email,
+        client_id,
+        grant.source,
+        len(scopes),
     )
-    logger.info("issued agent tokens for %s to client %s (grant source=%s, scopes=%d)", email, client_id, grant.source, len(scopes))
     return {
         "access_token": token.access_token,
         "refresh_token": token.refresh_token,

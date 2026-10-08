@@ -1045,9 +1045,13 @@ async def admin_issue_client_token(request: Request):
     """Issue an OAuth proxy token pair for an allowlisted agent client, reusing the
     user's existing Google sign-in (see auth/agent_token_issuance.py).
 
-    Authentication: shared bearer secret in env WORKSPACE_MCP_ADMIN_BEARER.
+    Authentication: dedicated bearer secret in env WORKSPACE_MCP_ISSUE_TOKEN_BEARER.
     Allowed clients: env WORKSPACE_MCP_ISSUE_TOKEN_CLIENT_IDS (comma separated DCR client ids).
     Body: {"email": "user@flatbee.cz", "client_id": "..."}
+
+    Internal only: the reverse proxy must never route /admin/* (callers use the
+    docker bridge address). Anyone holding the bearer can obtain tokens for every
+    user with a sign-in, so keep it separate from WORKSPACE_MCP_ADMIN_BEARER.
     """
     import hmac
 
@@ -1056,7 +1060,7 @@ async def admin_issue_client_token(request: Request):
     from auth.agent_token_issuance import IssuanceError, issue_client_tokens
     from auth.credential_store import get_credential_store
 
-    expected_secret = os.getenv("WORKSPACE_MCP_ADMIN_BEARER", "").strip()
+    expected_secret = os.getenv("WORKSPACE_MCP_ISSUE_TOKEN_BEARER", "").strip()
     allowed_clients = [
         c.strip()
         for c in os.getenv("WORKSPACE_MCP_ISSUE_TOKEN_CLIENT_IDS", "").split(",")
@@ -1065,7 +1069,8 @@ async def admin_issue_client_token(request: Request):
     if not expected_secret or not allowed_clients:
         return JSONResponse({"error": "token issuance disabled"}, status_code=503)
     if not hmac.compare_digest(
-        request.headers.get("Authorization", ""), f"Bearer {expected_secret}"
+        request.headers.get("Authorization", "").encode("utf-8", "surrogateescape"),
+        f"Bearer {expected_secret}".encode(),
     ):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 

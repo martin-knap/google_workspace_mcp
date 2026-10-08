@@ -55,7 +55,9 @@ class FakeValidator:
         self.email, self.verified = email, verified
 
     async def verify_token(self, token):
-        return SimpleNamespace(claims={"email": self.email, "email_verified": self.verified, "sub": "123"})
+        return SimpleNamespace(
+            claims={"email": self.email, "email_verified": self.verified, "sub": "123"}
+        )
 
 
 # ───────────────────────── helpers
@@ -109,7 +111,13 @@ async def provider():
     return p
 
 
-async def put_upstream(provider, email, refresh="google-refresh", scope="openid drive.readonly", created=1.0):
+async def put_upstream(
+    provider,
+    email,
+    refresh="google-refresh",
+    scope="openid drive.readonly",
+    created=1.0,
+):
     key = f"up-{email}-{created}"
     await provider._upstream_token_store.put(
         key=key,
@@ -140,7 +148,9 @@ def keys_of(provider):
     return list_keys
 
 
-async def issue(provider, calls, *, email=EMAIL, client_id=AGENT_CLIENT, creds=None, status=200):
+async def issue(
+    provider, calls, *, email=EMAIL, client_id=AGENT_CLIENT, creds=None, status=200
+):
     async with httpx.AsyncClient(transport=google_transport(calls, status)) as http:
         return await issue_client_tokens(
             provider,
@@ -221,12 +231,156 @@ async def test_revoked_google_grant_asks_for_sign_in(provider):
     await put_upstream(provider, EMAIL)
     with pytest.raises(IssuanceError) as e:
         await issue(provider, [], status=400)
-    assert e.value.status == 409
+    assert e.value.status == 404
+
+
+@pytest.mark.asyncio
+async def test_google_outage_is_502_not_a_missing_sign_in(provider):
+    await put_upstream(provider, EMAIL)
+    with pytest.raises(IssuanceError) as e:
+        await issue(provider, [], status=503)
+    assert e.value.status == 502
+
+
+@pytest.mark.asyncio
+async def test_a_dead_grant_does_not_hide_a_working_one(provider):
+    # The older set has more scopes and ranks first, but Google revoked it.
+    await put_upstream(
+        provider,
+        EMAIL,
+        refresh="dead",
+        scope="openid drive.readonly gmail.readonly",
+        created=1.0,
+    )
+    await put_upstream(
+        provider, EMAIL, refresh="alive", scope="openid drive.readonly", created=2.0
+    )
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = dict(httpx.QueryParams(request.content.decode()))
+        calls.append(body["refresh_token"])
+        if body["refresh_token"] == "dead":
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "ya29.ok",
+                "expires_in": 3599,
+                "scope": "openid drive.readonly",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        out = await issue_client_tokens(
+            provider,
+            email=EMAIL,
+            client_id=AGENT_CLIENT,
+            allowed_client_ids=[AGENT_CLIENT],
+            list_upstream_keys=keys_of(provider),
+            credential_lookup=lambda e: None,
+            http=http,
+        )
+    assert calls == ["dead", "alive"]
+    assert out["access_token"]
+
+
+@pytest.mark.asyncio
+async def test_failed_verification_is_not_reported_as_wrong_user(provider):
+    await put_upstream(provider, EMAIL)
+
+    class NoneValidator:
+        async def verify_token(self, token):
+            return None
+
+    provider._token_validator = NoneValidator()
+    with pytest.raises(IssuanceError) as e:
+        await issue(provider, [])
+    assert e.value.status == 502
+
+
+@pytest.mark.asyncio
+async def test_agent_refresh_works_and_leaves_the_connector_session_alone(
+    provider, monkeypatch
+):
+    """The no-disconnect property: the agent's token refreshes on its own and the
+    connector's upstream set and refresh token stay exactly as they were."""
+    connector_key = await put_upstream(provider, EMAIL, refresh="google-refresh")
+    connector_before = await provider._upstream_token_store.get(key=connector_key)
+    out = await issue(provider, [])
+
+    client = await provider.get_client(AGENT_CLIENT)
+    refresh = await provider.load_refresh_token(client, out["refresh_token"])
+
+    upstream_refreshes = []
+
+    class FakeOAuthClient:
+        async def refresh_token(self, url, refresh_token, scope=None, **kw):
+            upstream_refreshes.append(refresh_token)
+            return {
+                "access_token": "ya29.refreshed",
+                "expires_in": 3599,
+                "token_type": "Bearer",
+                "scope": "openid drive.readonly",
+            }
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(
+        provider, "_create_upstream_oauth_client", lambda: FakeOAuthClient()
+    )
+
+    new = await provider.exchange_refresh_token(client, refresh, list(refresh.scopes))
+    assert (
+        new.access_token
+        and new.refresh_token
+        and new.refresh_token != out["refresh_token"]
+    )
+    assert upstream_refreshes == [
+        "google-refresh"
+    ]  # same Google grant, refreshed by the agent's own set
+    assert (
+        await provider._upstream_token_store.get(key=connector_key) == connector_before
+    )
+
+
+@pytest.mark.asyncio
+async def test_exact_email_allowlist_rejection_is_403():
+    from auth.allowlisted_google_provider import AllowlistedGoogleProvider
+
+    p = AllowlistedGoogleProvider(
+        allowed_emails="someone.else@flatbee.cz",
+        client_id="proxy-client",
+        client_secret="proxy-secret-long-enough-for-derivation",
+        base_url="https://mcp.example.test",
+        jwt_signing_key="test-signing-key-that-is-long-enough",
+        client_storage=MemoryStore(),
+    )
+    p.set_mcp_path("/mcp")
+    p._token_validator = FakeValidator()
+    await p.register_client(
+        OAuthClientInformationFull(
+            client_id=AGENT_CLIENT,
+            redirect_uris=["https://agent.example.test/oauth/callback"],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+    await put_upstream(p, EMAIL)
+    with pytest.raises(IssuanceError) as e:
+        await issue(p, [])
+    assert e.value.status == 403
 
 
 @pytest.mark.asyncio
 async def test_credential_store_grant_is_used_when_no_upstream_session(provider):
-    creds = SimpleNamespace(refresh_token="stored-refresh", client_id="proxy-client", scopes=["openid", "gmail.readonly"])
+    creds = SimpleNamespace(
+        refresh_token="stored-refresh",
+        client_id="proxy-client",
+        scopes=["openid", "gmail.readonly"],
+    )
     calls = []
     out = await issue(provider, calls, creds=creds)
     assert calls[0]["refresh_token"] == "stored-refresh"
