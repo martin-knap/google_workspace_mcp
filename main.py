@@ -953,6 +953,10 @@ def main():
             # Check port availability before starting HTTP server
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    # Same option uvicorn sets: without it the check fails for ~a minute
+                    # after a restart while the old process's connections sit in
+                    # TIME_WAIT, and systemd restart-loops the service on every deploy.
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     s.bind((host, port))
             except OSError as e:
                 safe_print(f"Socket error: {e}")
