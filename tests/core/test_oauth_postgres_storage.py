@@ -48,7 +48,7 @@ def _common_monkeypatches(monkeypatch, captured):
             self._cimd_manager = SimpleNamespace(default_scope=default_scope)
 
     monkeypatch.setattr(server_module, "get_transport_mode", lambda: "streamable-http")
-    monkeypatch.setattr(server_module, "GoogleProvider", FakeGoogleProvider)
+    monkeypatch.setattr(server_module, "WorkspaceGoogleProvider", FakeGoogleProvider)
     monkeypatch.setattr(
         server_module,
         "get_current_scopes",

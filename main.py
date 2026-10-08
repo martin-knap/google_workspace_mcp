@@ -7,6 +7,7 @@ import socket
 import sys
 from functools import partial
 from importlib import metadata, import_module
+from typing import NoReturn
 from dotenv import load_dotenv
 from core.startup_ui import StartupDisplay, collapse_home, wordmark_lines
 
@@ -95,9 +96,9 @@ load_dotenv(dotenv_path=dotenv_path)
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 # Suppress httpx/httpcore INFO logs that leak access tokens in URLs
-# (e.g. tokeninfo?access_token=ya29.xxx)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+# (e.g. tokeninfo?access_token=ya29.xxx). FastMCP 4 uses the httpx2 fork.
+for _http_logger in ("httpx", "httpcore", "httpx2", "httpcore2"):
+    logging.getLogger(_http_logger).setLevel(logging.WARNING)
 
 reload_oauth_config()
 
@@ -266,6 +267,22 @@ def safe_print(text):
         print(text.encode("ascii", errors="replace").decode(), file=sys.stderr)
 
 
+def fatal(ui: StartupDisplay, text: str, *details: str) -> NoReturn:
+    """Report an unrecoverable startup problem on every channel, then exit.
+
+    The startup screen is discarded when stderr is not a TTY (see safe_print),
+    which is exactly how an MCP client runs the server. Logging the same text at
+    ERROR keeps the reason on stderr for the client log and in
+    mcp_server_debug.log, so a failed launch is never indistinguishable from a
+    server that simply stopped talking.
+    """
+    ui.step(text, state="fail")
+    for detail in details:
+        ui.detail(detail)
+    logger.error("Startup aborted: %s", ". ".join([text, *details]))
+    sys.exit(1)
+
+
 def configure_safe_logging():
     """Replace console handlers with ASCII-safe formatters for Windows compatibility."""
 
@@ -339,20 +356,21 @@ def _optional_field(name: str, *, path: bool = False) -> tuple[str, str, str]:
     return name, collapse_home(os.path.expanduser(value)) if path else value, "on"
 
 
-def _flag_field(name: str, *, warn_when_true: bool = False) -> tuple[str, str, str]:
-    """Describe a boolean env var as a (label, value, state) display row."""
-    value = os.getenv(name, "false")
-    if value.strip().lower() not in {"true", "1", "yes"}:
-        return name, value, "off"
-    return name, value, "warn" if warn_when_true else "on"
+def _mode_field(
+    label: str, env_var: str, enabled: bool, *, warn_when_on: bool = False
+) -> tuple[str, str, str]:
+    """Describe a resolved mode as a (label, value, state) row naming its env var."""
+    if not enabled:
+        return label, f"off · {env_var}", "off"
+    return label, f"on  · {env_var}", "warn" if warn_when_on else "on"
 
 
 def _disabled_tools_field(disabled_tools: set[str]) -> tuple[str, str, str]:
     """Describe the resolved per-tool block list as a display row."""
-    name = "WORKSPACE_MCP_DISABLED_TOOLS"
+    env_var = "WORKSPACE_MCP_DISABLED_TOOLS"
     if not disabled_tools:
-        return name, "not set", "off"
-    return name, ", ".join(sorted(disabled_tools)), "on"
+        return "Disabled tools", f"none · {env_var}", "off"
+    return "Disabled tools", f"{', '.join(sorted(disabled_tools))} · {env_var}", "on"
 
 
 def _client_secret_field() -> tuple[str, str, str]:
@@ -396,14 +414,29 @@ def describe_credential_config() -> list[tuple[str, str, str]]:
 
 
 def describe_mode_config(
-    disabled_tools: set[str] = frozenset(),
+    disabled_tools: set[str] = frozenset(), *, single_user: bool = False
 ) -> list[tuple[str, str, str]]:
-    """Build the mode rows shown in the startup configuration section."""
+    """Build the mode rows shown in the startup configuration section.
+
+    Rows report the modes the server resolved, not a re-parse of the env vars,
+    so the banner cannot disagree with how the server actually runs.
+    """
+    config = get_oauth_config()
     return [
-        _flag_field("MCP_SINGLE_USER_MODE"),
-        _flag_field("MCP_ENABLE_OAUTH21"),
-        _flag_field("WORKSPACE_MCP_STATELESS_MODE"),
-        _flag_field("OAUTHLIB_INSECURE_TRANSPORT", warn_when_true=True),
+        _mode_field("OAuth 2.1", "MCP_ENABLE_OAUTH21", config.is_oauth21_enabled()),
+        _mode_field("Stateless", "WORKSPACE_MCP_STATELESS_MODE", config.stateless_mode),
+        _mode_field(
+            "Single-user",
+            "MCP_SINGLE_USER_MODE",
+            single_user or os.getenv("MCP_SINGLE_USER_MODE") == "1",
+        ),
+        # oauthlib treats any non-empty value as enabled, "false" included.
+        _mode_field(
+            "Insecure transport",
+            "OAUTHLIB_INSECURE_TRANSPORT",
+            bool(os.getenv("OAUTHLIB_INSECURE_TRANSPORT")),
+            warn_when_on=True,
+        ),
         _disabled_tools_field(disabled_tools),
     ]
 
@@ -498,6 +531,16 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    # Validate the memory-safety settings once at startup. Tool helpers parse them
+    # defensively as well, but a deployment typo must not silently disable the
+    # configured limit.
+    from core.file_limits import validate_file_limit_settings
+
+    try:
+        validate_file_limit_settings()
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Env var fallbacks for plugin users who configure via userConfig.
     # Non-empty but invalid values fail closed to prevent silent access widening.
@@ -664,7 +707,10 @@ def main():
     ui.fields(
         [
             ("Credentials", describe_credential_config()),
-            ("Modes", describe_mode_config(disabled_tools)),
+            (
+                "Modes",
+                describe_mode_config(disabled_tools, single_user=args.single_user),
+            ),
         ]
     )
 
@@ -722,8 +768,7 @@ def main():
             # Set the specific tools that should be registered
             set_enabled_tool_names(set(tier_tools))
         except Exception as e:
-            safe_print(f"❌ Error loading tools for tier '{args.tool_tier}': {e}")
-            sys.exit(1)
+            fatal(ui, f"Error loading tools for tier '{args.tool_tier}'", str(e))
     elif args.tools is not None:
         # Use explicit tool list without tier filtering
         tools_to_import = expand_related_tool_imports(args.tools)
@@ -787,29 +832,28 @@ def main():
     if args.single_user:
         # Check for incompatible OAuth 2.1 mode
         if os.getenv("MCP_ENABLE_OAUTH21", "false").lower() == "true":
-            ui.step(
-                "Single-user mode is incompatible with OAuth 2.1 mode", state="fail"
+            fatal(
+                ui,
+                "Single-user mode is incompatible with OAuth 2.1 mode",
+                "Single-user mode is for legacy clients that pass user emails",
+                "OAuth 2.1 mode is for multi-user scenarios with bearer tokens",
+                "Choose one: --single-user OR MCP_ENABLE_OAUTH21=true",
             )
-            ui.detail("Single-user mode is for legacy clients that pass user emails")
-            ui.detail("OAuth 2.1 mode is for multi-user scenarios with bearer tokens")
-            ui.detail("Choose one: --single-user OR MCP_ENABLE_OAUTH21=true")
-            sys.exit(1)
 
         if is_stateless_mode():
-            ui.step(
-                "Single-user mode is incompatible with stateless mode", state="fail"
+            fatal(
+                ui,
+                "Single-user mode is incompatible with stateless mode",
+                "Stateless mode requires OAuth 2.1, which is multi-user",
             )
-            ui.detail("Stateless mode requires OAuth 2.1, which is multi-user")
-            sys.exit(1)
 
         if is_service_account_enabled():
-            ui.step(
+            fatal(
+                ui,
                 "Single-user mode is incompatible with service account mode",
-                state="fail",
+                "Service account mode handles auth via domain-wide delegation",
+                "Choose one: --single-user OR GOOGLE_SERVICE_ACCOUNT_KEY_FILE",
             )
-            ui.detail("Service account mode handles auth via domain-wide delegation")
-            ui.detail("Choose one: --single-user OR GOOGLE_SERVICE_ACCOUNT_KEY_FILE")
-            sys.exit(1)
 
         os.environ["MCP_SINGLE_USER_MODE"] = "1"
         ui.step("Single-user mode enabled")
@@ -818,9 +862,11 @@ def main():
     if is_service_account_enabled():
         user_email = os.getenv("USER_GOOGLE_EMAIL")
         if not user_email:
-            ui.step("Service account mode requires USER_GOOGLE_EMAIL", state="fail")
-            ui.detail("Set USER_GOOGLE_EMAIL to the domain user to impersonate")
-            sys.exit(1)
+            fatal(
+                ui,
+                "Service account mode requires USER_GOOGLE_EMAIL",
+                "Set USER_GOOGLE_EMAIL to the domain user to impersonate",
+            )
         # Validate service account key material before advertising readiness
         sa_config = get_oauth_config()
         try:
@@ -832,25 +878,23 @@ def main():
             required_fields = {"type", "project_id", "private_key", "client_email"}
             missing = required_fields - set(key_data.keys())
             if missing:
-                ui.step("Service account key is missing required fields", state="fail")
-                ui.detail(", ".join(sorted(missing)))
-                sys.exit(1)
+                fatal(
+                    ui,
+                    "Service account key is missing required fields",
+                    ", ".join(sorted(missing)),
+                )
             if key_data.get("type") != "service_account":
-                ui.step("Service account key has unexpected type", state="fail")
-                ui.detail(repr(key_data.get("type")))
-                sys.exit(1)
+                fatal(
+                    ui,
+                    "Service account key has unexpected type",
+                    repr(key_data.get("type")),
+                )
         except FileNotFoundError as e:
-            ui.step("Service account key file not found", state="fail")
-            ui.detail(str(e))
-            sys.exit(1)
+            fatal(ui, "Service account key file not found", str(e))
         except json.JSONDecodeError as e:
-            ui.step("Service account key contains invalid JSON", state="fail")
-            ui.detail(str(e))
-            sys.exit(1)
+            fatal(ui, "Service account key contains invalid JSON", str(e))
         except (IOError, OSError) as e:
-            ui.step("Failed to read service account key", state="fail")
-            ui.detail(str(e))
-            sys.exit(1)
+            fatal(ui, "Failed to read service account key", str(e))
         ui.step("Service account mode enabled", "domain-wide delegation")
         ui.detail(f"impersonating {user_email}")
 
@@ -866,13 +910,12 @@ def main():
             check_credentials_directory_permissions()
             ui.step("Credentials directory verified")
         except (PermissionError, OSError) as e:
-            ui.step("Credentials directory permission check failed", state="fail")
-            ui.detail(str(e))
-            ui.detail(
-                "Ensure the service can create and write to the credentials directory"
+            fatal(
+                ui,
+                "Credentials directory permission check failed",
+                str(e),
+                "Ensure the service can create and write to the credentials directory",
             )
-            logger.error(f"Failed credentials directory permission check: {e}")
-            sys.exit(1)
     else:
         if is_stateless_mode():
             skip_reason = "stateless mode"
@@ -906,9 +949,7 @@ def main():
                     state="skip",
                 )
         except Exception as e:
-            ui.step("GCS credential store verification failed", state="fail")
-            ui.detail(str(e))
-            sys.exit(1)
+            fatal(ui, "GCS credential store verification failed", str(e))
 
     try:
         # Set transport mode for OAuth callback handling
@@ -959,11 +1000,11 @@ def main():
                     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     s.bind((host, port))
             except OSError as e:
-                safe_print(f"Socket error: {e}")
-                safe_print(
-                    f"❌ Port {port} is already in use. Cannot start HTTP server."
+                fatal(
+                    ui,
+                    f"Port {port} is already in use. Cannot start HTTP server.",
+                    str(e),
                 )
-                sys.exit(1)
 
             server.run(
                 transport="streamable-http",

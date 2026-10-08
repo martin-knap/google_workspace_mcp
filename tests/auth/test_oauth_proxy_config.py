@@ -2,8 +2,10 @@ import pytest
 
 from auth.oauth_proxy_config import (
     MAX_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS,
+    MAX_OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS,
     MAX_OAUTH_TOKEN_EXPIRY_THRESHOLD_SECONDS,
     OAUTH_ACCESS_TOKEN_EXPIRY_ENV,
+    OAUTH_REFRESH_TOKEN_EXPIRY_ENV,
     OAUTH_TOKEN_EXPIRY_THRESHOLD_ENV,
     get_oauth_proxy_expiry_kwargs,
 )
@@ -12,6 +14,7 @@ from auth.oauth_proxy_config import (
 def test_token_expiry_env_defaults_leave_fastmcp_behaviour_unchanged(monkeypatch):
     monkeypatch.delenv(OAUTH_TOKEN_EXPIRY_THRESHOLD_ENV, raising=False)
     monkeypatch.delenv(OAUTH_ACCESS_TOKEN_EXPIRY_ENV, raising=False)
+    monkeypatch.delenv(OAUTH_REFRESH_TOKEN_EXPIRY_ENV, raising=False)
 
     assert get_oauth_proxy_expiry_kwargs() == {}
 
@@ -19,10 +22,22 @@ def test_token_expiry_env_defaults_leave_fastmcp_behaviour_unchanged(monkeypatch
 def test_token_expiry_env_is_forwarded_to_the_provider_kwargs(monkeypatch):
     monkeypatch.setenv(OAUTH_TOKEN_EXPIRY_THRESHOLD_ENV, "120")
     monkeypatch.setenv(OAUTH_ACCESS_TOKEN_EXPIRY_ENV, "86400")
+    monkeypatch.setenv(OAUTH_REFRESH_TOKEN_EXPIRY_ENV, "2592000")
 
     assert get_oauth_proxy_expiry_kwargs() == {
         "token_expiry_threshold_seconds": 120,
         "fastmcp_access_token_expiry_seconds": 86400,
+        "fallback_refresh_token_expiry_seconds": 2592000,
+    }
+
+
+def test_refresh_token_expiry_env_can_be_set_on_its_own(monkeypatch):
+    monkeypatch.delenv(OAUTH_TOKEN_EXPIRY_THRESHOLD_ENV, raising=False)
+    monkeypatch.delenv(OAUTH_ACCESS_TOKEN_EXPIRY_ENV, raising=False)
+    monkeypatch.setenv(OAUTH_REFRESH_TOKEN_EXPIRY_ENV, "2592000")
+
+    assert get_oauth_proxy_expiry_kwargs() == {
+        "fallback_refresh_token_expiry_seconds": 2592000
     }
 
 
@@ -30,6 +45,7 @@ def test_token_expiry_env_is_forwarded_to_the_provider_kwargs(monkeypatch):
 def test_token_expiry_env_ignores_unusable_values(monkeypatch, value):
     monkeypatch.setenv(OAUTH_TOKEN_EXPIRY_THRESHOLD_ENV, value)
     monkeypatch.setenv(OAUTH_ACCESS_TOKEN_EXPIRY_ENV, value)
+    monkeypatch.setenv(OAUTH_REFRESH_TOKEN_EXPIRY_ENV, value)
 
     assert get_oauth_proxy_expiry_kwargs() == {}
 
@@ -37,6 +53,7 @@ def test_token_expiry_env_ignores_unusable_values(monkeypatch, value):
 def test_zero_is_valid_only_for_token_expiry_threshold(monkeypatch):
     monkeypatch.setenv(OAUTH_TOKEN_EXPIRY_THRESHOLD_ENV, "0")
     monkeypatch.setenv(OAUTH_ACCESS_TOKEN_EXPIRY_ENV, "0")
+    monkeypatch.setenv(OAUTH_REFRESH_TOKEN_EXPIRY_ENV, "0")
 
     assert get_oauth_proxy_expiry_kwargs() == {"token_expiry_threshold_seconds": 0}
 
@@ -49,6 +66,10 @@ def test_token_expiry_env_rejects_values_above_safe_limits(monkeypatch):
     monkeypatch.setenv(
         OAUTH_ACCESS_TOKEN_EXPIRY_ENV,
         str(MAX_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS + 1),
+    )
+    monkeypatch.setenv(
+        OAUTH_REFRESH_TOKEN_EXPIRY_ENV,
+        str(MAX_OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS + 1),
     )
 
     assert get_oauth_proxy_expiry_kwargs() == {}
@@ -63,8 +84,13 @@ def test_token_expiry_env_accepts_safe_limit_boundaries(monkeypatch):
         OAUTH_ACCESS_TOKEN_EXPIRY_ENV,
         str(MAX_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS),
     )
+    monkeypatch.setenv(
+        OAUTH_REFRESH_TOKEN_EXPIRY_ENV,
+        str(MAX_OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS),
+    )
 
     assert get_oauth_proxy_expiry_kwargs() == {
         "token_expiry_threshold_seconds": 300,
         "fastmcp_access_token_expiry_seconds": 2_592_000,
+        "fallback_refresh_token_expiry_seconds": 31_536_000,
     }

@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from fastmcp.server.auth import AccessToken
-from fastmcp.server.auth.providers.google import GoogleProvider
+from auth.google_oauth_provider import GoogleProvider
 from mcp.server.auth.provider import (
     AuthorizationCode,
     AuthorizationParams,

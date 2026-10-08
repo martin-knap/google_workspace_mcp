@@ -11,8 +11,12 @@ OAUTH_TOKEN_EXPIRY_THRESHOLD_ENV = (
     "WORKSPACE_MCP_OAUTH_PROXY_TOKEN_EXPIRY_THRESHOLD_SECONDS"
 )
 OAUTH_ACCESS_TOKEN_EXPIRY_ENV = "WORKSPACE_MCP_OAUTH_PROXY_ACCESS_TOKEN_EXPIRY_SECONDS"
+OAUTH_REFRESH_TOKEN_EXPIRY_ENV = (
+    "WORKSPACE_MCP_OAUTH_PROXY_REFRESH_TOKEN_EXPIRY_SECONDS"
+)
 MAX_OAUTH_TOKEN_EXPIRY_THRESHOLD_SECONDS = 5 * 60
 MAX_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS = 30 * 24 * 60 * 60
+MAX_OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS = 365 * 24 * 60 * 60
 
 
 def _parse_expiry_seconds_env(
@@ -55,6 +59,11 @@ def get_oauth_proxy_expiry_kwargs() -> dict[str, int]:
         minimum=1,
         maximum=MAX_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS,
     )
+    fallback_refresh_token_expiry_seconds = _parse_expiry_seconds_env(
+        OAUTH_REFRESH_TOKEN_EXPIRY_ENV,
+        minimum=1,
+        maximum=MAX_OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS,
+    )
 
     expiry_kwargs: dict[str, int] = {}
     if token_expiry_threshold_seconds is not None:
@@ -70,5 +79,13 @@ def get_oauth_proxy_expiry_kwargs() -> dict[str, int]:
         )
         expiry_kwargs["fastmcp_access_token_expiry_seconds"] = (
             fastmcp_access_token_expiry_seconds
+        )
+    if fallback_refresh_token_expiry_seconds is not None:
+        logger.info(
+            "OAuth 2.1: issuing FastMCP refresh tokens with a %ds lifetime",
+            fallback_refresh_token_expiry_seconds,
+        )
+        expiry_kwargs["fallback_refresh_token_expiry_seconds"] = (
+            fallback_refresh_token_expiry_seconds
         )
     return expiry_kwargs

@@ -13,8 +13,11 @@ Thanks for your interest in contributing! This guide covers what you need to kno
 uv sync --extra test
 
 # Run the linter and formatter
-uvx ruff check
-uvx ruff format
+# `uv run` uses the pinned ruff from pyproject.toml, which is the version CI
+# runs. A bare `uvx ruff` floats to the latest release instead, and ruff 0.16
+# expands the default rule set -- you would see thousands of errors CI does not.
+uv run ruff check
+uv run ruff format
 
 # Run tests
 uv run pytest
@@ -28,7 +31,7 @@ Every PR must pass these automated checks before review:
 - **Pytest** - the full test suite must pass
 - **Maintainer edits enabled** - fork PRs must have "Allow edits from maintainers" checked
 
-Run `uvx ruff check && uvx ruff format --check && uv run pytest` locally before pushing. If CI fails, your PR will not be reviewed.
+Run `uv run ruff check && uv run ruff format --check && uv run pytest` locally before pushing. If CI fails, your PR will not be reviewed.
 
 ## Code Organization
 
