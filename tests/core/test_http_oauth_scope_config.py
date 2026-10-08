@@ -375,3 +375,55 @@ def test_configure_server_for_http_passes_expiry_config_to_external_provider(
 
     assert captured["token_expiry_threshold_seconds"] == 120
     assert captured["fastmcp_access_token_expiry_seconds"] == 86400
+
+
+def test_extra_authorize_scopes_are_granted_but_never_required(monkeypatch):
+    """Extra scopes widen what sign-in asks Google for, so tools enabled later work
+    without a second sign-in; existing tokens keep validating because required
+    scopes stay the protocol ones."""
+    captured = {}
+
+    class FakeGoogleProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.client_registration_options = SimpleNamespace(
+                valid_scopes=kwargs.get("valid_scopes"), default_scopes=None
+            )
+            self._default_scope_str = ""
+            self._cimd_manager = SimpleNamespace(default_scope="")
+
+    gmail = "https://www.googleapis.com/auth/gmail.readonly"
+    calendar = "https://www.googleapis.com/auth/calendar.readonly"
+    monkeypatch.setenv("WORKSPACE_MCP_AUTHORIZE_EXTRA_SCOPES", f"{gmail}, {calendar}")
+    monkeypatch.setattr(server_module, "get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr(server_module, "GoogleProvider", FakeGoogleProvider)
+    monkeypatch.setattr(
+        server_module,
+        "get_current_scopes",
+        lambda: ["https://www.googleapis.com/auth/drive.readonly", "openid"],
+    )
+    monkeypatch.setattr(server_module, "set_auth_provider", lambda provider: None)
+    monkeypatch.setattr(server_module, "get_oauth_proxy_expiry_kwargs", lambda: {})
+    monkeypatch.setattr(server_module, "_auth_provider", server_module._auth_provider)
+    monkeypatch.setattr(server_module.server, "auth", server_module.server.auth)
+    monkeypatch.setattr(
+        "auth.oauth_config.get_oauth_config",
+        lambda: SimpleNamespace(
+            is_oauth21_enabled=lambda: True,
+            is_configured=lambda: True,
+            is_public_client=lambda: False,
+            is_external_oauth21_provider=lambda: False,
+            client_id="client-id",
+            client_secret="client-secret",
+            get_oauth_base_url=lambda: "https://workspace-mcp.example.test",
+            redirect_path="/oauth2callback",
+        ),
+    )
+
+    server_module.configure_server_for_http()
+
+    assert captured["required_scopes"] == sorted(server_module.PROTOCOL_AUTH_SCOPES)
+    for key in ("authorize_scopes", "valid_scopes"):
+        assert gmail in captured[key] and calendar in captured[key]
+        assert "https://www.googleapis.com/auth/drive.readonly" in captured[key]
+    assert gmail in server_module.server.auth._default_scope_str

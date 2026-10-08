@@ -540,7 +540,21 @@ def configure_server_for_http():
             from cryptography.fernet import Fernet
             from fastmcp.server.auth.jwt_issuer import derive_jwt_key
 
+            # Extra Google scopes granted at sign-in on purpose, so tools enabled later
+            # work without asking users to sign in again. Token validation still
+            # requires only the protocol scopes, so existing tokens are unaffected.
+            extra_authorize_scopes = {
+                scope.strip()
+                for scope in os.getenv(
+                    "WORKSPACE_MCP_AUTHORIZE_EXTRA_SCOPES", ""
+                ).replace(",", " ").split()
+                if scope.strip()
+            }
             provider_valid_scopes: List[str] = sorted(get_current_scopes())
+            # Used only to *grant* scopes at sign-in (never as required scopes).
+            provider_authorize_scopes: List[str] = sorted(
+                set(provider_valid_scopes) | extra_authorize_scopes
+            )
             provider_required_scopes: List[str] = sorted(PROTOCOL_AUTH_SCOPES)
 
             client_storage = None
@@ -855,7 +869,7 @@ def configure_server_for_http():
                     base_url=config.get_oauth_base_url(),
                     redirect_path=config.redirect_path,
                     required_scopes=provider_required_scopes,
-                    valid_scopes=provider_valid_scopes,
+                    valid_scopes=provider_authorize_scopes,
                     client_storage=client_storage,
                     jwt_signing_key=jwt_signing_key,
                     allowed_client_redirect_uris=allowed_client_redirect_uris,
@@ -866,7 +880,7 @@ def configure_server_for_http():
                     == "true",
                     # Grant the enabled tools' Google scopes even when the MCP
                     # client asks only for the protocol identity scopes.
-                    authorize_scopes=provider_valid_scopes,
+                    authorize_scopes=provider_authorize_scopes,
                     **expiry_kwargs,
                 )
                 if provider.client_registration_options is not None:
@@ -874,11 +888,11 @@ def configure_server_for_http():
                     # allow dynamically registered MCP clients to request any scope
                     # needed by enabled tools during subsequent authorization flows.
                     provider.client_registration_options.default_scopes = (
-                        provider_valid_scopes
+                        provider_authorize_scopes
                     )
                 # CIMD clients can bypass DCR defaults and fall back to FastMCP's
                 # internal scope string, so keep it aligned with valid scopes too.
-                cimd_default_scope = " ".join(provider_valid_scopes)
+                cimd_default_scope = " ".join(provider_authorize_scopes)
                 provider._default_scope_str = cimd_default_scope
                 cimd_manager = getattr(provider, "_cimd_manager", None)
                 if cimd_manager is not None:
@@ -993,6 +1007,101 @@ async def admin_import_user_session(request: Request):
     )
     logger.info("admin imported OAuth 2.1 session for %s", email)
     return JSONResponse({"ok": True, "user_email": email})
+
+
+async def _list_upstream_token_keys(provider) -> list[str]:
+    """Keys of the OAuth proxy's upstream token collection, whatever the backend."""
+    from auth.agent_token_issuance import UPSTREAM_COLLECTION
+
+    store = provider._client_storage
+    while hasattr(store, "key_value"):  # unwrap encryption and other wrappers
+        store = store.key_value
+    if hasattr(store, "keys"):
+        return await store.keys(collection=UPSTREAM_COLLECTION)
+    dsn = os.getenv("WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_DSN", "").strip()
+    if dsn:
+        import asyncpg
+
+        table = (
+            os.getenv("WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_TABLE", "").strip()
+            or "fastmcp_oauth_kv"
+        )
+        if not table.replace("_", "").isalnum():
+            raise ValueError("invalid WORKSPACE_MCP_OAUTH_PROXY_POSTGRES_TABLE")
+        conn = await asyncpg.connect(dsn)
+        try:
+            rows = await conn.fetch(
+                f"SELECT key FROM {table} WHERE collection = $1",
+                UPSTREAM_COLLECTION,
+            )
+        finally:
+            await conn.close()
+        return [r["key"] for r in rows]
+    return []
+
+
+@server.custom_route("/admin/issue-client-token", methods=["POST"])
+async def admin_issue_client_token(request: Request):
+    """Issue an OAuth proxy token pair for an allowlisted agent client, reusing the
+    user's existing Google sign-in (see auth/agent_token_issuance.py).
+
+    Authentication: shared bearer secret in env WORKSPACE_MCP_ADMIN_BEARER.
+    Allowed clients: env WORKSPACE_MCP_ISSUE_TOKEN_CLIENT_IDS (comma separated DCR client ids).
+    Body: {"email": "user@flatbee.cz", "client_id": "..."}
+    """
+    import hmac
+
+    import httpx
+
+    from auth.agent_token_issuance import IssuanceError, issue_client_tokens
+    from auth.credential_store import get_credential_store
+
+    expected_secret = os.getenv("WORKSPACE_MCP_ADMIN_BEARER", "").strip()
+    allowed_clients = [
+        c.strip()
+        for c in os.getenv("WORKSPACE_MCP_ISSUE_TOKEN_CLIENT_IDS", "").split(",")
+        if c.strip()
+    ]
+    if not expected_secret or not allowed_clients:
+        return JSONResponse({"error": "token issuance disabled"}, status_code=503)
+    if not hmac.compare_digest(
+        request.headers.get("Authorization", ""), f"Bearer {expected_secret}"
+    ):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    provider = get_auth_provider()
+    if provider is None or not hasattr(provider, "exchange_authorization_code"):
+        return JSONResponse({"error": "OAuth proxy not enabled"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    def lookup(email: str):
+        try:
+            return get_credential_store().get_credential(email)
+        except Exception:
+            return None
+
+    try:
+        async with httpx.AsyncClient() as http:
+            result = await issue_client_tokens(
+                provider,
+                email=str(body.get("email", "")),
+                client_id=str(body.get("client_id", "")),
+                allowed_client_ids=allowed_clients,
+                list_upstream_keys=lambda: _list_upstream_token_keys(provider),
+                credential_lookup=lookup,
+                http=http,
+            )
+    except IssuanceError as exc:
+        logger.warning("admin token issuance refused: %s", exc.message)
+        return JSONResponse({"error": exc.message}, status_code=exc.status)
+    except Exception:
+        logger.exception("admin token issuance failed")
+        return JSONResponse({"error": "token issuance failed"}, status_code=500)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
 @server.custom_route("/attachments/{file_id}", methods=["GET"])
